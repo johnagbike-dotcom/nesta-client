@@ -1,13 +1,46 @@
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/* src/index.css */
+
+/* Tailwind core */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Brand fonts (loaded in public/index.html) */
+:root {
+  --brand-ink: #0b0f14;      /* deep charcoal */
+  --brand-amber: #fbbf24;    /* amber-400 */
+  --brand-amber-deep: #f59e0b; /* amber-500 */
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+/* Page background */
+html, body, #root {
+  height: 100%;
+  background: var(--brand-ink);
+  color: white;
 }
+
+/* Smooth fonts */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* Optional utility for hero overlay image used on Home & Browse */
+.hero-overlay {
+  @apply absolute inset-0 opacity-20 bg-cover bg-center;
+}
+
+/* Buttons (keep brand look even without Tailwind classes) */
+.btn-amber {
+  background: linear-gradient(to bottom, var(--brand-amber), var(--brand-amber-deep));
+  color: #111827;
+  border-radius: 0.75rem; /* rounded-xl */
+  padding: 0.625rem 1rem; /* px-4 py-2.5 */
+  font-weight: 600;
+  box-shadow: 0 4px 0 #c47e00;
+  transition: transform 120ms, box-shadow 120ms;
+}
+.btn-amber:hover   { transform: translateY(1px); box-shadow: 0 3px 0 #c47e00; }
+.btn-amber:active  { transform: translateY(2px); box-shadow: 0 2px 0 #c47e00; }
+a {text-decoration: none;}

@@ -1,0 +1,115 @@
+// firestore.rules
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Ensure writes do not add unexpected fields
+    function onlyAllowsKeys(allowedKeys) {
+      return request.resource.data.keys().hasOnly(allowedKeys);
+    }
+
+    // --- Public listings ---
+    // Collection: listings
+    // Fields (example): ownerId, status("active"|"draft"), isFeatured(bool), pricePerNight(number), createdAt, updatedAt, city, state, type, liveInHost(bool), billsIncluded(bool)
+    match /listings/{listingId} {
+
+      // Anyone can read ACTIVE listings. Drafts are only visible to owner.
+      allow read: if resource.data.status == "active"
+                  || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+
+      // Create: only signed-in users; server adds immutable ownerId = auth.uid
+      allow create: if isSignedIn()
+                    && request.resource.data.ownerId == request.auth.uid
+                    && onlyAllowsKeys([
+                      "ownerId","status","isFeatured","pricePerNight",
+                      "createdAt","updatedAt","city","state","type",
+                      "liveInHost","billsIncluded","title","summary","photos",
+                      "bedrooms","bathrooms","addressPublic","geo"
+                    ]);
+
+      // Update: only owner; prevent ownerId changes
+      allow update: if isSignedIn()
+                    && resource.data.ownerId == request.auth.uid
+                    && request.resource.data.ownerId == resource.data.ownerId;
+
+      // Delete: only owner
+      allow delete: if isSignedIn()
+                    && resource.data.ownerId == request.auth.uid;
+    }
+
+    // --- Users profile ---
+    // Collection: users
+    // Public read for minimal fields when publicProfile==true; full read/write by owner
+    match /users/{uid} {
+      allow read: if isOwner(uid)
+                  || (resource.data.publicProfile == true);
+      allow create: if isOwner(uid);
+      allow update, delete: if isOwner(uid);
+    }
+
+    // --- Bookings ---
+    // Collection: bookings (guestId, hostId, listingId, status, createdAt ...)
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn()
+                  && (request.auth.uid == resource.data.guestId
+                      || request.auth.uid == resource.data.hostId);
+
+      // guest creates booking for themselves only
+      allow create: if isSignedIn()
+                    && request.resource.data.guestId == request.auth.uid;
+
+      // updates:
+      // - guest can cancel their own booking
+      // - host can accept/decline for their listing
+      allow update: if isSignedIn() && (
+                      (request.auth.uid == resource.data.guestId
+                       && request.resource.data.status in ["cancelled"])
+                      ||
+                      (request.auth.uid == resource.data.hostId
+                       && request.resource.data.status in ["accepted","declined"])
+                    );
+
+      // delete: forbid (keep audit) — or allow host/guest if you prefer
+      allow delete: if false;
+    }
+
+    // --- Chats ---
+    // Collection group: chats/{chatId} with participants array, and subcollection messages
+    match /chats/{chatId} {
+      allow read, update, delete: if isSignedIn()
+                                  && resource.data.participants.hasAny([request.auth.uid]);
+      allow create: if isSignedIn()
+                    && request.resource.data.participants.hasAll([request.auth.uid])
+                    && request.resource.data.participants.size() <= 10;
+     
+      match /messages/{messageId} {
+        allow read, create: if isSignedIn()
+                            && get(/databases/$(database)/documents/chats/$(chatId))
+                               .data.participants.hasAny([request.auth.uid]);
+        allow update, delete: if false; // messages immutable
+      }
+    }
+
+    // --- Admin configs (optional) ---
+    // Lock down any configs unless you add custom claims
+    match /admin/{docId} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // --- Everything else: deny ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
