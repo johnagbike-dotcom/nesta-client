@@ -1,428 +1,386 @@
 // src/pages/EditListing.js
-import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   doc,
   getDoc,
   updateDoc,
   serverTimestamp,
+  addDoc,
+  collection,
 } from "firebase/firestore";
-import {
-  ref as storageRef,
-  uploadBytesResumable,
-  getDownloadURL,
-  deleteObject,
-} from "firebase/storage";
-import { auth, db, storage } from "../firebase"; // adjust path if different
+import { db } from "../firebase";
+import { useAuth } from "../auth/AuthContext";
+import useUserProfile from "../hooks/useUserProfile";
+import ImageUploader from "../components/ImageUploader";
 
-const MAX_FILES = 20;
-const MAX_MB = 5;
-const ACCEPT = ["image/jpeg", "image/png", "image/webp"];
+/**
+ * EditListing
+ * - Loads listing
+ * - Allows editing all fields + photos
+ * - “Request Featured” button posts into featureRequests
+ */
+
+const TYPES = ["Apartment", "Bungalow", "Studio", "Loft", "Villa", "Penthouse", "Hotel", "Other"];
+const STATUS = ["active", "inactive", "review"];
+
+function Section({ title, subtitle, children }) {
+  return (
+    <section className="rounded-2xl border border-white/10 bg-white/5 p-4 md:p-5">
+      <h3 className="text-lg md:text-xl font-bold text-white">{title}</h3>
+      {subtitle ? <p className="text-white/60 mt-1">{subtitle}</p> : null}
+      <div className="mt-4 grid gap-3">{children}</div>
+    </section>
+  );
+}
+function Field({ label, hint, children }) {
+  return (
+    <label className="block">
+      <div className="text-sm text-white/80">{label}</div>
+      {hint ? <div className="text-xs text-white/50 mt-0.5">{hint}</div> : null}
+      <div className="mt-1">{children}</div>
+    </label>
+  );
+}
+const TextInput = (p) => (
+  <input
+    {...p}
+    className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 outline-none focus:border-yellow-400"
+  />
+);
+const Select = (p) => (
+  <select
+    {...p}
+    className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 outline-none focus:border-yellow-400"
+  />
+);
+const TextArea = (p) => (
+  <textarea
+    {...p}
+    className="w-full min-h-[120px] rounded-xl bg-white/5 border border-white/10 px-3 py-2 outline-none focus:border-yellow-400"
+  />
+);
 
 export default function EditListing() {
   const { id } = useParams();
-  const navigate = useNavigate();
+  const nav = useNavigate();
+  const { user } = useAuth();
+  const { profile } = useUserProfile(user?.uid);
 
-  // ----- form state -----
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
 
-  const [title, setTitle] = useState("");
-  const [city, setCity] = useState("");
-  const [area, setArea] = useState("");
-  const [type, setType] = useState("Flat"); // Flat | House | Spare Room
-  const [pricePerNight, setPricePerNight] = useState(0);
-  const [liveInHost, setLiveInHost] = useState(false);
-  const [billsIncluded, setBillsIncluded] = useState(false);
-  const [status, setStatus] = useState("active"); // optional
+  const [form, setForm] = useState({
+    title: "",
+    type: "Apartment",
+    city: "",
+    area: "",
+    pricePerNight: "",
+    status: "active",
+    description: "",
+    bedrooms: "",
+    bathrooms: "",
+    size: "",
+    amenities: [],
+    houseRules: "",
+    images: [],
+    sponsored: false,
+    featured: false, // legacy
+    partnerUid: null,
+    ownerId: null,
+  });
 
-  // Photos
-  const [existingUrls, setExistingUrls] = useState([]); // strings
-  const [removedUrls, setRemovedUrls] = useState(new Set()); // strings to drop
-  const [files, setFiles] = useState([]); // File[]
+  function setField(k, v) {
+    setForm((p) => ({ ...p, [k]: v }));
+  }
 
-  // cache uid to avoid eslint/useEffect dependency noise
-  const uid = auth.currentUser?.uid || null;
+  const canSave = useMemo(() => {
+    return (
+      form.title.trim().length >= 5 &&
+      form.city.trim().length >= 2 &&
+      form.area.trim().length >= 2 &&
+      Number(form.pricePerNight) > 0 &&
+      (form.images?.length || 0) > 0
+    );
+  }, [form]);
 
-  // ---------- load listing ----------
   useEffect(() => {
     let alive = true;
-
     (async () => {
       setLoading(true);
-      setError("");
+      setErr("");
       try {
         const snap = await getDoc(doc(db, "listings", id));
         if (!snap.exists()) {
-          setError("Listing not found.");
-          setLoading(false);
+          setErr("Listing not found.");
           return;
         }
-        const data = snap.data();
-
-        // Owner-only client guard (server is still the source of truth via rules)
-        if (!uid || (data.ownerId && data.ownerId !== uid)) {
-          setError("You do not have permission to edit this listing.");
-          setLoading(false);
-          return;
-        }
-
+        const d = snap.data();
         if (!alive) return;
-        setTitle(data.title || "");
-        setCity(data.city || "");
-        setArea(data.area || "");
-        setType(data.type || "Flat");
-        setPricePerNight(Number(data.pricePerNight || 0));
-        setLiveInHost(Boolean(data.liveInHost));
-        setBillsIncluded(Boolean(data.billsIncluded));
-        setStatus(data.status || "active");
-        setExistingUrls(Array.isArray(data.photoUrls) ? data.photoUrls : []);
+
+        setForm({
+          title: d.title || "",
+          type: d.type || "Apartment",
+          city: d.city || "",
+          area: d.area || "",
+          pricePerNight: d.pricePerNight || "",
+          status: d.status || "active",
+          description: d.description || "",
+          bedrooms: d.bedrooms ?? "",
+          bathrooms: d.bathrooms ?? "",
+          size: d.size ?? "",
+          amenities: Array.isArray(d.amenities) ? d.amenities : [],
+          houseRules: d.houseRules || "",
+          images: Array.isArray(d.images) ? d.images : d.imageUrls || [],
+          sponsored: !!d.sponsored,
+          featured: !!d.featured,
+          partnerUid: d.partnerUid || null,
+          ownerId: d.ownerId || null,
+        });
       } catch (e) {
-        setError(e.message || "Failed to load listing.");
+        console.error(e);
+        setErr("Could not load listing.");
       } finally {
         if (alive) setLoading(false);
       }
     })();
-
     return () => {
       alive = false;
     };
-  }, [id, uid]);
+  }, [id]);
 
-  // ---------- file helpers ----------
-  const remainingSlots = useMemo(
-    () => MAX_FILES - (existingUrls.length - removedUrls.size) - files.length,
-    [existingUrls.length, removedUrls.size, files.length]
-  );
-
-  const validateFile = (f) => {
-    if (!ACCEPT.includes(f.type)) return `Unsupported type: ${f.type}`;
-    if (f.size > MAX_MB * 1024 * 1024)
-      return `File too large (> ${MAX_MB}MB): ${f.name}`;
-    return null;
-  };
-
-  const addFiles = useCallback(
-    (list) => {
-      const next = [];
-      const existingNames = new Set(files.map((f) => `${f.name}|${f.size}`));
-      for (const f of list) {
-        if (next.length >= remainingSlots) break;
-        const err = validateFile(f);
-        if (err) {
-          setError(err);
-          continue;
-        }
-        const sig = `${f.name}|${f.size}`;
-        if (existingNames.has(sig)) continue;
-        next.push(f);
-      }
-      if (next.length) setFiles((prev) => [...prev, ...next]);
-    },
-    [files, remainingSlots]
-  );
-
-  const onDrop = (e) => {
-    e.preventDefault();
-    setError("");
-    if (remainingSlots <= 0) return;
-    const list = Array.from(e.dataTransfer.files || []);
-    addFiles(list);
-  };
-
-  const onPick = (e) => {
-    setError("");
-    const list = Array.from(e.target.files || []);
-    addFiles(list);
-    e.target.value = "";
-  };
-
-  const removeNewFile = (idx) =>
-    setFiles((prev) => prev.filter((_, i) => i !== idx));
-
-  const toggleRemoveExisting = (url) => {
-    setRemovedUrls((prev) => {
-      const clone = new Set(prev);
-      if (clone.has(url)) clone.delete(url);
-      else clone.add(url);
-      return clone;
-    });
-  };
-
-  // ---------- save ----------
-  const handleSave = async (e) => {
-    e.preventDefault();
-    setError("");
-    setSaving(true);
+  async function save() {
+    if (!canSave) {
+      setErr("Please complete all required fields before saving.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
     try {
-      // guard again on save
-      const current = await getDoc(doc(db, "listings", id));
-      if (!current.exists()) throw new Error("Listing not found.");
-      const d = current.data();
-      if (!uid || (d.ownerId && d.ownerId !== uid)) {
-        throw new Error("You do not have permission to edit this listing.");
-      }
-
-      // 1) upload new files
-      const uploadedUrls = [];
-      for (const f of files) {
-        const path = `listings/${id}/${Date.now()}_${f.name}`;
-        const ref = storageRef(storage, path);
-        const task = uploadBytesResumable(ref, f);
-        await new Promise((res, rej) => {
-          task.on(
-            "state_changed",
-            undefined,
-            (err) => rej(err),
-            async () => {
-              const url = await getDownloadURL(task.snapshot.ref);
-              uploadedUrls.push(url);
-              res();
-            }
-          );
-        });
-      }
-
-      // 2) merge urls (keep those not removed + new ones)
-      const keptExisting = existingUrls.filter((u) => !removedUrls.has(u));
-      const photoUrls = [...keptExisting, ...uploadedUrls].slice(0, MAX_FILES);
-
-      // 3) update doc
       await updateDoc(doc(db, "listings", id), {
-        title,
-        city,
-        area,
-        type,
-        pricePerNight: Number(pricePerNight || 0),
-        liveInHost,
-        billsIncluded,
-        status,
-        photoUrls,
+        ...form,
+        pricePerNight: Number(form.pricePerNight || 0),
         updatedAt: serverTimestamp(),
       });
-
-      // 4) (Optional) delete removed files from Storage (best-effort)
-      const deletions = [];
-      removedUrls.forEach((url) => {
-        try {
-          const delRef = storageRef(storage, url); // works with HTTPS/gs://
-          deletions.push(deleteObject(delRef));
-        } catch {
-          // ignore non-Firebase URLs
-        }
-      });
-      if (deletions.length) {
-        Promise.allSettled(deletions);
-      }
-
-      navigate(`/listing/${id}`);
-    } catch (e2) {
-      setError(e2.message || "Failed to save listing.");
+      alert("✅ Changes saved.");
+      nav(`/listing/${id}`);
+    } catch (e) {
+      console.error(e);
+      setErr("Could not save changes. Try again.");
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
-  };
+  }
+
+  async function requestFeatured() {
+    try {
+      await addDoc(collection(db, "featureRequests"), {
+        listingId: id,
+        title: form.title || "Untitled",
+        requestedBy: user?.uid || null,
+        requesterRole: profile?.role || "",
+        status: "pending",
+        createdAt: serverTimestamp(),
+      });
+      alert("📣 Request sent. An admin will review shortly.");
+    } catch (e) {
+      console.error(e);
+      alert("Could not send request. Please try again later.");
+    }
+  }
 
   if (loading) {
     return (
-      <div className="p-6 text-sm text-gray-300">Loading listing…</div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-6">
-        <p className="text-red-400 mb-3">{error}</p>
-        <Link className="underline" to="/dashboard">
-          ← Back to Dashboard
-        </Link>
-      </div>
+      <main className="container mx-auto px-4 py-6 text-white">Loading…</main>
     );
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-4 sm:p-6">
-      <div className="mb-4">
-        <Link to="/dashboard" className="text-sm underline">
-          ← Back
-        </Link>
+    <main className="container mx-auto px-4 py-6 text-white">
+      <button
+        className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
+        onClick={() => nav(-1)}
+      >
+        ← Back
+      </button>
+
+      <div className="mt-4">
+        <h1 className="text-2xl md:text-3xl font-extrabold text-yellow-400">
+          Edit Listing
+        </h1>
+        <p className="text-white/70">
+          Keep your details fresh. Great photos and accurate pricing boost
+          conversions.
+        </p>
       </div>
 
-      <h1 className="text-2xl sm:text-3xl font-bold mb-4">Edit listing</h1>
-
-      <form onSubmit={handleSave} className="space-y-6">
-        {/* Basic details */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <label className="block">
-            <span className="block text-sm mb-1">Title</span>
-            <input
-              className="w-full px-3 py-2 rounded bg-[#0b0f14] border border-gray-700"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              required
-            />
-          </label>
-          <label className="block">
-            <span className="block text-sm mb-1">City</span>
-            <input
-              className="w-full px-3 py-2 rounded bg-[#0b0f14] border border-gray-700"
-              value={city}
-              onChange={(e) => setCity(e.target.value)}
-              required
-            />
-          </label>
-          <label className="block">
-            <span className="block text-sm mb-1">Area</span>
-            <input
-              className="w-full px-3 py-2 rounded bg-[#0b0f14] border border-gray-700"
-              value={area}
-              onChange={(e) => setArea(e.target.value)}
-              required
-            />
-          </label>
-          <label className="block">
-            <span className="block text-sm mb-1">Type</span>
-            <select
-              className="w-full px-3 py-2 rounded bg-[#0b0f14] border border-gray-700"
-              value={type}
-              onChange={(e) => setType(e.target.value)}
-            >
-              <option>Flat</option>
-              <option>House</option>
-              <option>Spare Room</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="block text-sm mb-1">₦ per night</span>
-            <input
-              type="number"
-              min="0"
-              className="w-full px-3 py-2 rounded bg-[#0b0f14] border border-gray-700"
-              value={pricePerNight}
-              onChange={(e) => setPricePerNight(e.target.value)}
-              required
-            />
-          </label>
-          <div className="flex items-center gap-6">
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={liveInHost}
-                onChange={(e) => setLiveInHost(e.target.checked)}
-              />
-              <span className="text-sm">Live-in host</span>
-            </label>
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={billsIncluded}
-                onChange={(e) => setBillsIncluded(e.target.checked)}
-              />
-              <span className="text-sm">Bills included</span>
-            </label>
-          </div>
+      {err ? (
+        <div className="mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 p-3 text-red-200">
+          {err}
         </div>
+      ) : null}
 
-        {/* Photos */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold">Photos</h2>
-            <span className="text-xs text-gray-400">
-              {`You can add ${Math.max(0, remainingSlots)} more (max ${MAX_FILES})`}
-            </span>
-          </div>
-
-          {/* Existing URLs */}
-          {existingUrls.length > 0 && (
-            <div className="mb-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {existingUrls.map((url) => {
-                const removed = removedUrls.has(url);
-                return (
-                  <div key={url} className="relative group">
-                    {/* eslint-disable-next-line jsx-a11y/alt-text */}
-                    <img
-                      src={url}
-                      className={`w-full h-28 object-cover rounded border ${
-                        removed ? "opacity-40" : "opacity-100"
-                      }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => toggleRemoveExisting(url)}
-                      className="absolute top-1 right-1 text-xs px-2 py-1 rounded bg-black/60 border border-gray-600"
-                      title={removed ? "Undo remove" : "Remove"}
-                    >
-                      {removed ? "Keep" : "Remove"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* New files previews */}
-          {files.length > 0 && (
-            <div className="mb-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {files.map((f, i) => (
-                <div key={`${f.name}|${f.size}`} className="relative">
-                  {/* eslint-disable-next-line jsx-a11y/alt-text */}
-                  <img
-                    src={URL.createObjectURL(f)}
-                    className="w-full h-28 object-cover rounded border"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeNewFile(i)}
-                    className="absolute top-1 right-1 text-xs px-2 py-1 rounded bg-black/60 border border-gray-600"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onDrop}
-            className="rounded border border-dashed border-gray-600 p-4 text-sm text-gray-300"
-          >
-            <p className="mb-2">Drag & drop images here, or</p>
-            <label className="inline-block px-3 py-2 rounded bg-[#111827] border border-gray-600 cursor-pointer">
-              Choose files
-              <input
-                type="file"
-                accept={ACCEPT.join(",")}
-                multiple
-                hidden
-                onChange={onPick}
+      <div className="mt-5 grid gap-4 max-w-5xl">
+        <Section title="Essentials">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Title">
+              <TextInput
+                value={form.title}
+                onChange={(e) => setField("title", e.target.value)}
+                maxLength={80}
               />
-            </label>
-            <p className="mt-2 text-xs text-gray-500">
-              JPG/PNG/WEBP • up to {MAX_MB}MB each • max {MAX_FILES} total
-            </p>
+            </Field>
+            <Field label="Type">
+              <Select
+                value={form.type}
+                onChange={(e) => setField("type", e.target.value)}
+              >
+                {TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field label="City">
+              <TextInput
+                value={form.city}
+                onChange={(e) => setField("city", e.target.value)}
+              />
+            </Field>
+            <Field label="Area">
+              <TextInput
+                value={form.area}
+                onChange={(e) => setField("area", e.target.value)}
+              />
+            </Field>
+
+            <Field label="Price per night (₦)">
+              <TextInput
+                type="number"
+                min={0}
+                value={form.pricePerNight}
+                onChange={(e) => setField("pricePerNight", e.target.value)}
+              />
+            </Field>
+            <Field label="Status">
+              <Select
+                value={form.status}
+                onChange={(e) => setField("status", e.target.value)}
+              >
+                {STATUS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </Select>
+            </Field>
           </div>
-        </div>
 
-        {error && <p className="text-red-400 text-sm">{error}</p>}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <Field label="Bedrooms">
+              <TextInput
+                type="number"
+                min={0}
+                value={form.bedrooms}
+                onChange={(e) => setField("bedrooms", e.target.value)}
+              />
+            </Field>
+            <Field label="Bathrooms">
+              <TextInput
+                type="number"
+                min={0}
+                value={form.bathrooms}
+                onChange={(e) => setField("bathrooms", e.target.value)}
+              />
+            </Field>
+            <Field label="Size (m²)">
+              <TextInput
+                value={form.size}
+                onChange={(e) => setField("size", e.target.value)}
+              />
+            </Field>
+          </div>
 
-        <div className="flex gap-3">
+          <Field label="Description">
+            <TextArea
+              value={form.description}
+              onChange={(e) => setField("description", e.target.value)}
+              maxLength={1000}
+            />
+          </Field>
+        </Section>
+
+        <Section title="Photos" subtitle="Drag to reorder.">
+          <ImageUploader
+            value={form.images}
+            onChange={(urls) => setField("images", urls)}
+            folder={`listing-images/${form.ownerId || form.partnerUid || "anon"}`}
+          />
+        </Section>
+
+        <Section title="House rules">
+          <TextArea
+            value={form.houseRules}
+            onChange={(e) => setField("houseRules", e.target.value)}
+            placeholder="Check-in after 2pm, ID required at check-in, no parties, etc."
+          />
+        </Section>
+
+        <Section title="Meta">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm">
+              <div className="text-white/70">Owner UID</div>
+              <div className="text-white mt-1">{form.ownerId || "—"}</div>
+            </div>
+            <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm">
+              <div className="text-white/70">Partner UID</div>
+              <div className="text-white mt-1">{form.partnerUid || "—"}</div>
+            </div>
+          </div>
+          <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm">
+            <div className="text-white/70">Featured (carousel)</div>
+            <div className="text-white mt-1">{form.sponsored ? "Yes" : "No"}</div>
+          </div>
+        </Section>
+
+        <div className="flex flex-wrap items-center gap-3">
           <button
-            type="submit"
-            disabled={saving}
-            className="px-4 py-2 rounded bg-indigo-600 disabled:opacity-60"
+            disabled={busy || !canSave}
+            onClick={save}
+            className={[
+              "px-5 py-3 rounded-xl font-semibold",
+              busy || !canSave
+                ? "bg-yellow-500/40 text-black/60 cursor-not-allowed"
+                : "bg-yellow-400 text-black hover:bg-yellow-500",
+            ].join(" ")}
           >
-            {saving ? "Saving…" : "Save changes"}
+            {busy ? "Saving…" : "Save Changes"}
           </button>
-          <Link
-            to={`/listing/${id}`}
-            className="px-4 py-2 rounded border border-gray-600"
+
+          <button
+            type="button"
+            onClick={() => nav(-1)}
+            className="px-5 py-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10"
           >
             Cancel
-          </Link>
+          </button>
+
+          <button
+            type="button"
+            onClick={requestFeatured}
+            className="px-5 py-3 rounded-xl border border-amber-400/50 bg-amber-500/10 hover:bg-amber-500/20"
+          >
+            Request Featured
+          </button>
+
+          <div className="ml-auto text-sm text-white/60">
+            Role: <strong>{profile?.role || "host/partner"}</strong>
+          </div>
         </div>
-      </form>
-    </div>
+      </div>
+    </main>
   );
 }

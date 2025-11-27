@@ -1,0 +1,668 @@
+/* lux.css – Nesta Admin Luxury Styling */
+
+/* ------------- COLORS ------------- */
+:root {
+  --lux-black: #0f0f10;
+  --lux-dark: #1a1b1f;
+  --lux-gray: #2b2d31;
+  --lux-muted: #999;
+  --lux-white: #fff;
+
+  --lux-brand: #7a5cff; /* elegant purple */
+  --lux-brand-hover: #6348d6;
+
+  --lux-danger: #e63946;
+  --lux-danger-hover: #c82333;
+
+  --lux-warn: #f4a261;
+  --lux-warn-hover: #e38b3c;
+
+  --lux-success: #2a9d8f;
+  --lux-success-hover: #21867a;
+}
+
+/* ------------- PAGE LAYOUT ------------- */
+.lux-page {
+  background: var(--lux-black);
+  min-height: 100vh;
+  padding: 20px;
+  color: var(--lux-white);
+}
+
+.lux-wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* ------------- HEADINGS ------------- */
+.lux-h1 {
+  font-size: 1.8rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+/* ------------- TOOLBAR ------------- */
+.lux-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+/* ------------- INPUT ------------- */
+.lux-input {
+  background: var(--lux-gray);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--lux-white);
+  font-size: 0.9rem;
+}
+
+.lux-input::placeholder {
+  color: var(--lux-muted);
+}
+
+/* ------------- BUTTONS ------------- */
+.lux-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  white-space: nowrap;
+  min-width: 80px;   /* ✅ consistent sizing */
+  text-align: center;
+}
+
+.lux-btn.brand {
+  background: var(--lux-brand);
+  color: var(--lux-white);
+}
+.lux-btn.brand:hover {
+  background: var(--lux-brand-hover);
+}
+
+.lux-btn.danger {
+  background: var(--lux-danger);
+  color: var(--lux-white);
+}
+.lux-btn.danger:hover {
+  background: var(--lux-danger-hover);
+}
+
+.lux-btn.warn {
+  background: var(--lux-warn);
+  color: var(--lux-black);
+}
+.lux-btn.warn:hover {
+  background: var(--lux-warn-hover);
+}
+
+.lux-btn.ghost {
+  background: transparent;
+  color: var(--lux-muted);
+  border: 1px solid var(--lux-gray);
+}
+.lux-btn.ghost:hover {
+  color: var(--lux-white);
+  border-color: var(--lux-muted);
+}
+
+/* ------------- BADGES ------------- */
+.lux-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.lux-badge.ok {
+  background: var(--lux-success);
+  color: var(--lux-white);
+}
+.lux-badge.fail {
+  background: var(--lux-danger);
+  color: var(--lux-white);
+}
+.lux-badge.warn {
+  background: var(--lux-warn);
+  color: var(--lux-black);
+}
+.lux-badge.muted {
+  background: var(--lux-gray);
+  color: var(--lux-muted);
+}
+
+/* ------------- CARD & TABLE ------------- */
+.lux-card {
+  background: var(--lux-dark);
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+.lux-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.lux-table th,
+.lux-table td {
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.lux-table th {
+  color: var(--lux-muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--lux-gray);
+}
+
+.lux-table td {
+  border-bottom: 1px solid var(--lux-gray);
+}
+
+.lux-table td:last-child {
+  text-align: right;   /* ✅ fixes Actions alignment */
+}
+
+/* ------------- CHIPS (tabs) ------------- */
+.lux-chip {
+  background: var(--lux-gray);
+  border-radius: 16px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  color: var(--lux-muted);
+  cursor: pointer;
+  transition: 0.2s;
+}
+.lux-chip.active {
+  background: var(--lux-brand);
+  color: var(--lux-white);
+}
+.lux-chip-count {
+  font-weight: 600;
+  margin-left: 6px;
+} 
+/* ===== Admin > Transactions layout helpers ===== */
+
+/* fixed layout keeps columns from bouncing */
+.lux-table--txn {
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* explicit column widths (tweak to taste) */
+.lux-table--txn .col-date    { width: 160px; }
+.lux-table--txn .col-guest   { width: 220px; }
+.lux-table--txn .col-listing { width: 260px; }
+.lux-table--txn .col-nights  { width: 70px; }
+.lux-table--txn .col-amount  { width: 140px; }
+.lux-table--txn .col-status  { width: 130px; }
+.lux-table--txn .col-ref     { width: 110px; }
+.lux-table--txn .col-gateway { width: 120px; }
+.lux-table--txn .col-actions { width: 280px; }
+
+/* keep long text neat inside fixed-width cells */
+.lux-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+/* action buttons in a tight row, right aligned */
+.actions-row {
+  display: inline-flex;
+  gap: 10px;
+  justify-content: flex-end;
+  align-items: center;
+  width: 100%;
+}
+
+/* smaller padding variant for dense tables */
+.lux-btn--tight { padding: 8px 14px; }
+
+/* widen search input */
+.lux-input--wide { min-width: 360px; }
+
+/* little chip tab */
+.chip {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+.chip--active {
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  box-shadow: 0 0 0 2px rgba(139,125,255,.25), 0 10px 25px rgba(0,0,0,.3) inset;
+  color: var(--ink);
+}
+
+/* monospaced small cols */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+/* scroll wrapper so header stays clean on narrow screens */
+.lux-table-scroll { overflow-x: auto; }
+
+/* table text alignment helper */
+.txt-right { text-align: right; }
+
+/* pager */
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 12px 6px;
+}
+.pager__label { color: var(--muted); } 
+/* ===== Transactions table layout (keeps buttons aligned) ===== */
+.table-wrap { width:100%; overflow:auto; }
+
+.tx-table { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; }
+.tx-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--panel-2);
+  text-align: left;
+  font-weight: 700;
+  padding: 10px 12px;
+}
+.tx-table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+
+/* Column widths */
+.tx-col-date    { width: 150px; }
+.tx-col-guest   { width: 200px; }
+.tx-col-listing { width: 240px; }
+.tx-col-nights  { width: 70px;  text-align:center; }
+.tx-col-amount  { width: 130px; text-align:right; }
+.tx-col-status  { width: 130px; }
+.tx-col-ref     { width: 80px;  text-align:center; }
+.tx-col-gateway { width: 120px; }
+.tx-col-actions { width: 300px; }
+
+/* Text truncation for long cells */
+.tx-clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display:block; }
+
+/* Action buttons row */
+.tx-actions { display:flex; gap:10px; }
+.tx-actions .lux-btn { flex: 0 0 auto; }
+
+/* Badge colors are already defined in your theme:
+   .badge.ok (green), .badge.fail (red), .badge.pending (gold)
+   If you need stronger contrast, ensure they include:
+*/
+.badge { padding: 6px 12px; border-radius: 999px; font-weight: 700; font-size: 12px; }
+
+/* Optional: keep table header shadow when scrolling */
+.table-wrap { position:relative; }
+.tx-table thead::after {
+  content:""; position:absolute; left:0; right:0; top:38px; height:1px; background:transparent;
+  box-shadow: 0 6px 12px rgba(0,0,0,.15);
+} 
+/* src/pages/admin/adminStyles.css */
+
+/* Layout utils */
+.tx-table-wrap {
+  overflow-x: auto;
+}
+
+.tx-table {
+  table-layout: fixed;      /* <- critical: keeps columns aligned */
+  width: 100%;
+}
+
+.tx-cell-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  white-space: nowrap;
+}
+
+.tx-center { text-align: center; }
+.tx-right { text-align: right; }
+
+.tx-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-start;
+}
+
+/* Filters/header */
+.tx-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 18px 0;
+}
+.tx-filter-left {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tx-filter-right {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* Luxury chips (tabs) */
+.lux-chip {
+  padding: 8px 14px;
+  border-radius: 9999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  letter-spacing: .2px;
+}
+.lux-chip--active {
+  background: radial-gradient(circle at 30% 30%, rgba(140,120,255,.25), transparent 60%), #14161b;
+  border-color: #5e56ff3d;
+  color: #bfc5ff;
+}
+
+/* Luxury inputs */
+.lux-input {
+  background: #111319;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--ink);
+  min-width: 320px;
+  outline: none;
+}
+.lux-input--search::placeholder { color: #6c76a8; }
+
+/* Buttons (use the approved luxury palette) */
+.lux-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.05) inset, 0 6px 18px rgba(0,0,0,.35);
+  transition: transform .06s ease, box-shadow .2s ease, filter .2s ease;
+}
+.lux-btn:disabled { opacity: .6; cursor: default; }
+.lux-btn:active { transform: translateY(1px); }
+
+/* royal (action blue), danger (red), gold (refund) */
+.lux-btn--royal {
+  background: linear-gradient(180deg, #4d63ff, #3648d9);
+  border-color: #2c39a8;
+  color: #eaf0ff;
+}
+.lux-btn--danger {
+  background: linear-gradient(180deg, #ff4d5e, #d92e3f);
+  border-color: #9f1d2b;
+  color: #ffeeee;
+}
+.lux-btn--gold {
+  background: linear-gradient(180deg, #ffbf3a, #e09c10);
+  border-color: #a6780e;
+  color: #2a1d00;
+}
+
+/* Status pills */
+.lux-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 118px;
+  padding: 8px 14px;
+  border-radius: 9999px;
+  border: 1px solid var(--line);
+  font-weight: 700;
+}
+.lux-pill--success {
+  background: linear-gradient(180deg, #19c563, #0c9f4a);
+  border-color: #0b6f36;
+  color: #eafff3;
+}
+.lux-pill--danger {
+  background: linear-gradient(180deg, #ff4a63, #c81f33);
+  border-color: #8f1423;
+  color: #ffecef;
+}
+.lux-pill--warn {
+  background: linear-gradient(180deg, #ffcc64, #d1a02a);
+  border-color: #8d6d14;
+  color: #2a1d00;
+}
+
+/* Container cards (match luxury look) */
+.lux-card {
+  background: #0e1117;
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 16px;
+  padding: 18px;
+}
+.lux-card--panel {
+  background:
+    radial-gradient(1200px 700px at 85% -10%, rgba(140,120,255,.06), transparent 60%),
+    #0e1117;
+}
+
+/* Headings */
+.lux-h1 { font-size: 34px; font-weight: 800; letter-spacing: .3px; margin: 0 0 10px; }
+.lux-h2 { font-size: 18px; font-weight: 700; letter-spacing: .4px; margin: 0 0 14px; color: #cdd6ff; }
+
+/* Table baseline (works with table-layout: fixed) */
+.lux-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.lux-table th, .lux-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.lux-table thead th {
+  font-weight: 800;
+  color: #aeb4cf;
+  text-align: left;
+  letter-spacing: .3px;
+} 
+/* ——— Host dashboard luxury polish (non-breaking) ——— */
+.dash-wrap { max-width: 1200px; margin: 0 auto; }
+.listing-card {
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+  border: 1px solid rgba(255,255,255,.10);
+  padding: 14px;
+  transition: transform .12s ease, box-shadow .2s ease, border-color .2s ease;
+}
+.listing-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  border-color: rgba(255,215,0,.45);
+}
+.listing-card h3 { letter-spacing: .2px; }
+.fact-chip {
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  padding: 8px 10px;
+}
+.btn.view-btn { background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.14); }
+.btn.view-btn:hover { background: rgba(255,255,255,.16); }
+.badge-demo {
+  display:inline-block; font-size:11px; font-weight:800; padding:3px 8px;
+  border-radius:10px; border:1px solid rgba(255,215,0,.55); color:#ffd7001a;
+  color:#ffe8a3; background:rgba(255,215,0,.10); text-transform:uppercase;
+} 
+/* ======= Luxury Chat Styles (dark, minimal) ======= */
+.chatWrap {
+  max-width: 1100px;
+  margin: 28px auto 40px;
+  padding: 0 16px;
+  color: #e9eef5;
+}
+
+.chatHeader .pageTitle {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: #ffd166; /* Nesta accent */
+  margin: 0 0 12px;
+}
+
+.chatBanner.warn {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.35);
+  color: #ffd166;
+  padding: 10px 12px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+
+.chatPanel {
+  background: #1a1c22;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  padding: 14px;
+}
+
+.msgList {
+  height: 54vh;
+  min-height: 360px;
+  overflow-y: auto;
+  background: radial-gradient(1000px 500px at 90% -200px, rgba(255,209,102,0.04), transparent 60%);
+  border-radius: 12px;
+  padding: 14px 12px;
+}
+
+/* subtle scrollbar */
+.msgList::-webkit-scrollbar { width: 10px; }
+.msgList::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+.msgList::-webkit-scrollbar-track { background: transparent; }
+
+.emptyHint {
+  opacity: 0.8;
+  text-align: center;
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  margin: 6px 8px;
+  max-width: 68%;
+}
+.msg.mine { margin-left: auto; align-items: flex-end; }
+.msg.theirs { margin-right: auto; align-items: flex-start; }
+
+.bubble {
+  background: #ffd166;
+  color: #1a1c22;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border-top-right-radius: 4px;
+  box-shadow: 0 6px 20px rgba(255,209,102,0.25);
+  line-height: 1.35;
+  font-weight: 600;
+}
+.msg.theirs .bubble {
+  background: rgba(255,255,255,0.08);
+  color: #f3f6fb;
+  border-top-left-radius: 4px;
+  border-top-right-radius: 16px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+
+.meta {
+  font-size: 11px;
+  opacity: 0.65;
+  margin-top: 6px;
+}
+
+.quickBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 6px 6px;
+}
+.quickBtn {
+  background: rgba(255,255,255,0.07);
+  color: #dfe7f3;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease, border 0.12s ease;
+}
+.quickBtn:hover { transform: translateY(-1px); background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.18); }
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  margin-top: 10px;
+  align-items: end;
+}
+.composer textarea {
+  resize: none;
+  padding: 12px 14px;
+  min-height: 44px;
+  max-height: 160px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: #eaf1fb;
+  outline: none;
+}
+.composer textarea:focus {
+  border-color: rgba(255,209,102,0.6);
+  box-shadow: 0 0 0 3px rgba(255,209,102,0.15);
+}
+
+.sendBtn {
+  height: 44px;
+  padding: 0 18px;
+  border-radius: 12px;
+  background: #ffd166;
+  color: #1a1c22;
+  font-weight: 800;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+  box-shadow: 0 10px 24px rgba(255,209,102,0.28);
+}
+.sendBtn:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(255,209,102,0.34); }
+.sendBtn[disabled],
+.sendBtn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.disclaimer {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.65;
+} 

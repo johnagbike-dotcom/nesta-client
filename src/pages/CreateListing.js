@@ -1,415 +1,493 @@
 // src/pages/CreateListing.js
-import React, { useState, useCallback, useMemo, useRef } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   addDoc,
   collection,
   serverTimestamp,
 } from "firebase/firestore";
-import {
-  ref as storageRef,
-  uploadBytesResumable,
-  getDownloadURL,
-} from "firebase/storage";
-import { auth, db, storage } from "../firebase";
+import { db } from "../firebase";
+import { useAuth } from "../auth/AuthContext";
+import useUserProfile from "../hooks/useUserProfile";
+import ImageUploader from "../components/ImageUploader";
 
-const MAX_FILES = 20;
-const MAX_MB = 8; // per file
-const ACCEPTED = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+/**
+ * CreateListing
+ * - Luxury-styled form with strict validation
+ * - Supports Host (ownerId) and Verified Partner (partnerUid + managers[])
+ * - Adds SEO slug + searchable keywords
+ * - Lets user pre-check “request_featured” (saved as a separate doc that admin can approve)
+ */
+
+const TYPES = ["Apartment", "Bungalow", "Studio", "Loft", "Villa", "Penthouse", "Hotel", "Other"];
+const STATUS = ["active", "inactive", "review"];
+const AMENITIES = [
+  "Wi-Fi",
+  "Air conditioning",
+  "24/7 Power",
+  "Smart TV",
+  "Workspace",
+  "Kitchen",
+  "Security",
+  "Parking",
+  "Pool",
+  "Gym",
+];
+
+function Section({ title, subtitle, children }) {
+  return (
+    <section className="rounded-2xl border border-white/10 bg-white/5 p-4 md:p-5">
+      <h3 className="text-lg md:text-xl font-bold text-white">{title}</h3>
+      {subtitle ? <p className="text-white/60 mt-1">{subtitle}</p> : null}
+      <div className="mt-4 grid gap-3">{children}</div>
+    </section>
+  );
+}
+
+function Field({ label, hint, children }) {
+  return (
+    <label className="block">
+      <div className="text-sm text-white/80">{label}</div>
+      {hint ? <div className="text-xs text-white/50 mt-0.5">{hint}</div> : null}
+      <div className="mt-1">{children}</div>
+    </label>
+  );
+}
+
+function TextInput(props) {
+  return (
+    <input
+      {...props}
+      className={[
+        "w-full rounded-xl bg-white/5 border border-white/10",
+        "px-3 py-2 outline-none focus:border-yellow-400",
+      ].join(" ")}
+    />
+  );
+}
+
+function Select(props) {
+  return (
+    <select
+      {...props}
+      className={[
+        "w-full rounded-xl bg-white/5 border border-white/10",
+        "px-3 py-2 outline-none focus:border-yellow-400",
+      ].join(" ")}
+    />
+  );
+}
+
+function TextArea(props) {
+  return (
+    <textarea
+      {...props}
+      className={[
+        "w-full min-h-[120px] rounded-xl bg-white/5 border border-white/10",
+        "px-3 py-2 outline-none focus:border-yellow-400",
+      ].join(" ")}
+    />
+  );
+}
+
+function Toggle({ checked, onChange, label }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={[
+        "inline-flex items-center gap-2 rounded-full px-3 py-1",
+        checked
+          ? "bg-yellow-400/20 border border-yellow-400/60 text-yellow-300"
+          : "bg-white/5 border border-white/10 text-white/70",
+      ].join(" ")}
+    >
+      <span
+        className={[
+          "inline-block h-3 w-3 rounded-full",
+          checked ? "bg-yellow-400" : "bg-white/30",
+        ].join(" ")}
+      />
+      <span className="text-sm">{label}</span>
+    </button>
+  );
+}
 
 export default function CreateListing() {
-  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { profile } = useUserProfile(user?.uid);
+  const nav = useNavigate();
 
-  // form fields
-  const [title, setTitle] = useState("");
-  const [type, setType] = useState("Flat");
-  const [pricePerNight, setPricePerNight] = useState("");
-  const [city, setCity] = useState("");
-  const [area, setArea] = useState("");
-  const [liveInHost, setLiveInHost] = useState(false);
-  const [billsIncluded, setBillsIncluded] = useState(false);
-  const [isFeatured, setIsFeatured] = useState(false);
-  const [about, setAbout] = useState("");
+  const [form, setForm] = useState({
+    title: "",
+    type: "Apartment",
+    city: "",
+    area: "",
+    pricePerNight: "",
+    status: "active",
+    description: "",
+    bedrooms: "",
+    bathrooms: "",
+    size: "",
+  });
 
-  // files & upload
-  const [files, setFiles] = useState([]); // File[]
-  const [errors, setErrors] = useState([]);
+  const [amenities, setAmenities] = useState([]);
+  const [houseRules, setHouseRules] = useState("");
+  const [images, setImages] = useState([]); // array of URLs from ImageUploader
+  const [requestFeatured, setRequestFeatured] = useState(false);
+
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [err, setErr] = useState("");
 
-  const inputRef = useRef(null);
+  const isPartner =
+    (profile?.role || "").toLowerCase() === "partner" ||
+    (profile?.role || "").toLowerCase() === "verified_partner";
 
-  // ---------- File Helpers ----------
+  const isHost =
+    (profile?.role || "").toLowerCase() === "host" || !isPartner;
 
-  // Add files (dedupe + size/type checks). Wrapped in useCallback (fixes ESLint).
-  const addFiles = useCallback(
-    (list) => {
-      if (!list || !list.length) return;
+  const canSubmit = useMemo(() => {
+    return (
+      form.title.trim().length >= 5 &&
+      form.city.trim().length >= 2 &&
+      form.area.trim().length >= 2 &&
+      Number(form.pricePerNight) > 0 &&
+      images.length > 0
+    );
+  }, [form, images.length]);
 
-      const prev = files;
-      const existing = new Set(prev.map((f) => `${f.name}|${f.size}`));
-      const next = [];
-      const newErrors = [];
+  const priceFieldRef = useRef(null);
 
-      Array.from(list).forEach((file) => {
-        const key = `${file.name}|${file.size}`;
+  function setField(k, v) {
+    setForm((p) => ({ ...p, [k]: v }));
+  }
 
-        if (existing.has(key)) return;
+  function toggleAmenity(a) {
+    setAmenities((prev) =>
+      prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]
+    );
+  }
 
-        if (!ACCEPTED.includes(file.type)) {
-          newErrors.push(`Unsupported type: ${file.name}`);
-          return;
-        }
-        if (file.size > MAX_MB * 1024 * 1024) {
-          newErrors.push(`Too large (> ${MAX_MB}MB): ${file.name}`);
-          return;
-        }
-        next.push(file);
-      });
+  function slugify(s) {
+    return s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)+/g, "");
+  }
 
-      const merged = [...prev, ...next].slice(0, MAX_FILES);
-      if (newErrors.length) setErrors((e) => [...e, ...newErrors]);
-      setFiles(merged);
-    },
-    [files]
-  );
+  function keywords() {
+    const bag = [
+      form.title,
+      form.type,
+      form.city,
+      form.area,
+      ...(amenities || []),
+    ]
+      .join(" ")
+      .toLowerCase();
+    const k = new Set();
+    bag
+      .split(/[\s,./-]+/)
+      .filter(Boolean)
+      .forEach((w) => k.add(w));
+    return Array.from(k);
+  }
 
-  const onPick = (e) => addFiles(e.target.files);
-
-  const onDrop = useCallback(
-    (e) => {
-      e.preventDefault();
-      if (e.dataTransfer?.files?.length) {
-        addFiles(e.dataTransfer.files);
-      }
-    },
-    [addFiles]
-  );
-
-  const onDragOver = (e) => e.preventDefault();
-
-  const removeAt = (idx) =>
-    setFiles((arr) => arr.filter((_, i) => i !== idx));
-
-  const clearAll = () => setFiles([]);
-
-  const fileCountText = useMemo(
-    () => `${files.length}/${MAX_FILES} selected`,
-    [files.length]
-  );
-
-  // ---------- Submit ----------
-
-  const handleCreate = async (e) => {
+  async function handleCreate(e) {
     e.preventDefault();
-    setErrors([]);
-    if (!auth.currentUser) {
-      setErrors(["You must be logged in to post a listing."]);
+    if (!user?.uid) {
+      alert("Please log in to create a listing.");
+      return;
+    }
+    if (!canSubmit) {
+      setErr(
+        "Please complete all required fields and add at least one photo."
+      );
+      priceFieldRef.current?.focus();
       return;
     }
 
-    if (!title.trim() || !city.trim() || !area.trim() || !pricePerNight) {
-      setErrors(["Please fill title, price, city and area."]);
-      return;
-    }
+    setBusy(true);
+    setErr("");
 
     try {
-      setBusy(true);
-      setProgress(0);
+      const nowSlug = slugify(`${form.title}-${form.city}-${form.area}`);
+      const price = Number(form.pricePerNight || 0);
 
-      // 1) Upload images (if any)
-      const ownerId = auth.currentUser.uid;
-      const uploadedUrls = [];
+      const payload = {
+        title: form.title.trim(),
+        type: form.type,
+        city: form.city.trim(),
+        area: form.area.trim(),
+        pricePerNight: price,
+        status: form.status,
+        description: form.description.trim(),
+        bedrooms: form.bedrooms ? Number(form.bedrooms) : null,
+        bathrooms: form.bathrooms ? Number(form.bathrooms) : null,
+        size: form.size ? String(form.size) : "",
+        images,
+        amenities,
+        houseRules: houseRules?.trim() || "",
+        slug: nowSlug,
+        keywords: keywords(),
 
-      if (files.length) {
-        // upload sequentially for simple progress
-        for (let i = 0; i < files.length; i += 1) {
-          const f = files[i];
-          const path = `listings/${ownerId}/${Date.now()}_${i}_${f.name}`;
-          const ref = storageRef(storage, path);
-          const task = uploadBytesResumable(ref, f, {
-            contentType: f.type,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+
+        ownerId: isHost ? user.uid : null,
+        partnerUid: isPartner ? user.uid : null,
+        managers: isPartner ? [user.uid] : [],
+
+        sponsored: false, // admin flips to true after approval
+        featured: false, // legacy flag; keep false
+      };
+
+      const docRef = await addDoc(collection(db, "listings"), payload);
+
+      // create a "featureRequests" record if they asked for it
+      if (requestFeatured) {
+        try {
+          await addDoc(collection(db, "featureRequests"), {
+            listingId: docRef.id,
+            title: payload.title,
+            requestedBy: user.uid,
+            requesterRole: profile?.role || "",
+            status: "pending",
+            createdAt: serverTimestamp(),
           });
-
-          // Promise wrapper for progress + completion
-          const url = await new Promise((resolve, reject) => {
-            task.on(
-              "state_changed",
-              (snap) => {
-                const pct = Math.round(
-                  (snap.bytesTransferred / snap.totalBytes) * 100
-                );
-                // overall progress: average of completed + current
-                const overall =
-                  Math.round(((i + pct / 100) / files.length) * 100);
-                setProgress(overall);
-              },
-              (err) => reject(err),
-              async () => {
-                const u = await getDownloadURL(task.snapshot.ref);
-                resolve(u);
-              }
-            );
-          });
-
-          uploadedUrls.push(url);
+        } catch (e) {
+          // Non-fatal
+          console.warn("feature request failed", e);
         }
       }
 
-      // 2) Create Firestore doc
-      const docRef = await addDoc(collection(db, "listings"), {
-        title: title.trim(),
-        type,
-        pricePerNight: Number(pricePerNight),
-        city: city.trim(),
-        area: area.trim(),
-        liveInHost,
-        billsIncluded,
-        isFeatured,
-        about: about.trim(),
-        ownerId,
-        photos: uploadedUrls, // array of storage URLs
-        status: "active",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      // 3) Done
+      alert("✅ Listing created.");
+      nav(`/listing/${docRef.id}`);
+    } catch (e) {
+      console.error(e);
+      setErr(
+        e?.message ||
+          "We couldn’t create your listing right now. Please try again."
+      );
+    } finally {
       setBusy(false);
-      setProgress(100);
-      navigate(`/listing/${docRef.id}`);
-    } catch (err) {
-      console.error(err);
-      setBusy(false);
-      setErrors([
-        "Failed to create listing. Please check your connection and try again.",
-      ]);
     }
-  };
-
-  // ---------- UI ----------
+  }
 
   return (
-    <div className="max-w-4xl mx-auto p-4">
-      <button className="text-violet-300 mb-3" onClick={() => navigate(-1)}>
+    <main className="container mx-auto px-4 py-6 text-white">
+      <button
+        className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
+        onClick={() => nav(-1)}
+      >
         ← Back
       </button>
-      <h1 className="text-3xl font-bold mb-4">Post a new listing</h1>
 
-      {/* Errors */}
-      {errors.length > 0 && (
-        <div className="mb-4 rounded bg-red-900/30 border border-red-500 p-3 text-sm">
-          <ul className="list-disc ml-5">
-            {errors.map((e, i) => (
-              <li key={i}>{e}</li>
+      <div className="mt-4">
+        <h1 className="text-2xl md:text-3xl font-extrabold text-yellow-400">
+          Post a Listing
+        </h1>
+        <p className="text-white/70">
+          Share a premium stay. Keep details clear and pricing accurate.
+        </p>
+      </div>
+
+      {err ? (
+        <div className="mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 p-3 text-red-200">
+          {err}
+        </div>
+      ) : null}
+
+      <form onSubmit={handleCreate} className="mt-5 grid gap-4 max-w-5xl">
+        {/* Essentials */}
+        <Section
+          title="Essentials"
+          subtitle="Core info guests see first."
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Title" hint="e.g. Cozy Loft in Ikoyi GRA">
+              <TextInput
+                value={form.title}
+                onChange={(e) => setField("title", e.target.value)}
+                maxLength={80}
+              />
+            </Field>
+            <Field label="Type">
+              <Select
+                value={form.type}
+                onChange={(e) => setField("type", e.target.value)}
+              >
+                {TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field label="City">
+              <TextInput
+                value={form.city}
+                onChange={(e) => setField("city", e.target.value)}
+                maxLength={40}
+              />
+            </Field>
+            <Field label="Area / Neighbourhood">
+              <TextInput
+                value={form.area}
+                onChange={(e) => setField("area", e.target.value)}
+                maxLength={50}
+              />
+            </Field>
+
+            <Field label="Price per night (₦)">
+              <TextInput
+                ref={priceFieldRef}
+                inputMode="numeric"
+                type="number"
+                min={0}
+                value={form.pricePerNight}
+                onChange={(e) => setField("pricePerNight", e.target.value)}
+              />
+            </Field>
+            <Field label="Status">
+              <Select
+                value={form.status}
+                onChange={(e) => setField("status", e.target.value)}
+              >
+                {STATUS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <Field label="Bedrooms">
+              <TextInput
+                inputMode="numeric"
+                type="number"
+                min={0}
+                value={form.bedrooms}
+                onChange={(e) => setField("bedrooms", e.target.value)}
+              />
+            </Field>
+            <Field label="Bathrooms">
+              <TextInput
+                inputMode="numeric"
+                type="number"
+                min={0}
+                value={form.bathrooms}
+                onChange={(e) => setField("bathrooms", e.target.value)}
+              />
+            </Field>
+            <Field label="Size (m²)">
+              <TextInput
+                placeholder="e.g. 85"
+                value={form.size}
+                onChange={(e) => setField("size", e.target.value)}
+              />
+            </Field>
+          </div>
+
+          <Field label="Description" hint="Tell guests what makes this place exceptional.">
+            <TextArea
+              value={form.description}
+              onChange={(e) => setField("description", e.target.value)}
+              maxLength={1000}
+            />
+          </Field>
+        </Section>
+
+        {/* Amenities */}
+        <Section
+          title="Amenities"
+          subtitle="Quick highlights guests care about."
+        >
+          <div className="flex flex-wrap gap-2">
+            {AMENITIES.map((a) => (
+              <Toggle
+                key={a}
+                label={a}
+                checked={amenities.includes(a)}
+                onChange={() => toggleAmenity(a)}
+              />
             ))}
-          </ul>
-        </div>
-      )}
-
-      <form onSubmit={handleCreate} className="space-y-6">
-        {/* Basic fields */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <label className="block">
-            <span className="text-sm">Title</span>
-            <input
-              className="mt-1 w-full rounded bg-[#0b0f14] border border-gray-700 p-2"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Modern Apartment in Lagos"
-              required
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-sm">Type</span>
-            <select
-              className="mt-1 w-full rounded bg-[#0b0f14] border border-gray-700 p-2"
-              value={type}
-              onChange={(e) => setType(e.target.value)}
-            >
-              <option>Flat</option>
-              <option>House</option>
-              <option>Spare Room</option>
-              <option>Studio</option>
-            </select>
-          </label>
-
-          <label className="block">
-            <span className="text-sm">Price per night (₦)</span>
-            <input
-              type="number"
-              min="0"
-              className="mt-1 w-full rounded bg-[#0b0f14] border border-gray-700 p-2"
-              value={pricePerNight}
-              onChange={(e) => setPricePerNight(e.target.value)}
-              placeholder="35000"
-              required
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-sm">City</span>
-            <input
-              className="mt-1 w-full rounded bg-[#0b0f14] border border-gray-700 p-2"
-              value={city}
-              onChange={(e) => setCity(e.target.value)}
-              placeholder="Lagos"
-              required
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-sm">Area / Landmark</span>
-            <input
-              className="mt-1 w-full rounded bg-[#0b0f14] border border-gray-700 p-2"
-              value={area}
-              onChange={(e) => setArea(e.target.value)}
-              placeholder="Victoria Island"
-              required
-            />
-          </label>
-
-          <div className="flex items-center gap-6">
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={liveInHost}
-                onChange={(e) => setLiveInHost(e.target.checked)}
-              />
-              <span className="text-sm">Live-in host</span>
-            </label>
-
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={billsIncluded}
-                onChange={(e) => setBillsIncluded(e.target.checked)}
-              />
-              <span className="text-sm">Bills included</span>
-            </label>
-
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={isFeatured}
-                onChange={(e) => setIsFeatured(e.target.checked)}
-              />
-              <span className="text-sm">Featured</span>
-            </label>
           </div>
-        </div>
+        </Section>
 
-        <label className="block">
-          <span className="text-sm">About this stay</span>
-          <textarea
-            rows={4}
-            className="mt-1 w-full rounded bg-[#0b0f14] border border-gray-700 p-2"
-            value={about}
-            onChange={(e) => setAbout(e.target.value)}
-            placeholder="Describe the apartment, amenities, nearby landmarks, house rules, etc."
+        {/* Photos */}
+        <Section
+          title="Photos"
+          subtitle="Upload bright images that sell the experience."
+        >
+          <ImageUploader
+            value={images}
+            onChange={setImages}
+            folder={`listing-images/${user?.uid || "anon"}`}
           />
-        </label>
+        </Section>
 
-        {/* Images */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold">Photos</h2>
-            <span className="text-xs text-gray-400">{fileCountText}</span>
-          </div>
-
-          <div
-            onDrop={onDrop}
-            onDragOver={onDragOver}
-            className="rounded border-2 border-dashed border-gray-700 p-6 text-center bg-[#0b0f14]/60"
-          >
-            <p className="mb-3 text-sm">
-              Drag & drop images here, or{" "}
-              <button
-                type="button"
-                className="underline text-violet-300"
-                onClick={() => inputRef.current?.click()}
-              >
-                browse
-              </button>
-            </p>
-            <p className="text-xs text-gray-400">
-              JPEG / PNG / WEBP • up to {MAX_MB}MB each • max {MAX_FILES} files
-            </p>
-            <input
-              ref={inputRef}
-              type="file"
-              accept={ACCEPTED.join(",")}
-              multiple
-              className="hidden"
-              onChange={onPick}
+        {/* Rules + Feature */}
+        <Section title="Extras">
+          <Field label="House rules (optional)">
+            <TextArea
+              value={houseRules}
+              onChange={(e) => setHouseRules(e.target.value)}
+              placeholder="Check-in after 2pm, no smoking indoors, quiet hours 10pm–7am, etc."
             />
-          </div>
+          </Field>
 
-          {files.length > 0 && (
-            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
-              {files.map((f, i) => {
-                const url = URL.createObjectURL(f);
-                return (
-                  <div
-                    key={`${f.name}-${i}`}
-                    className="relative rounded overflow-hidden border border-gray-700"
-                  >
-                    <img
-                      src={url}
-                      alt={f.name}
-                      className="h-28 w-full object-cover"
-                      onLoad={() => URL.revokeObjectURL(url)}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeAt(i)}
-                      className="absolute top-1 right-1 text-xs bg-black/70 px-2 py-1 rounded"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {files.length > 0 && (
-            <div className="mt-2">
-              <button
-                type="button"
-                onClick={clearAll}
-                className="text-xs underline text-gray-300"
-              >
-                Clear all
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Progress */}
-        {busy && (
           <div className="flex items-center gap-3">
-            <div className="relative w-full h-2 bg-gray-800 rounded">
-              <div
-                className="absolute left-0 top-0 h-2 bg-violet-500 rounded"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <span className="text-xs">{progress}%</span>
+            <input
+              id="req-featured"
+              type="checkbox"
+              className="h-5 w-5 accent-yellow-400"
+              checked={requestFeatured}
+              onChange={(e) => setRequestFeatured(e.target.checked)}
+            />
+            <label htmlFor="req-featured" className="text-sm text-white/90">
+              Request to be <span className="font-semibold text-yellow-400">Featured</span> in the carousel
+            </label>
           </div>
-        )}
+        </Section>
 
-        <div className="pt-2">
+        {/* Submit */}
+        <div className="flex items-center gap-3">
           <button
-            type="submit"
-            disabled={busy}
-            className="px-4 py-2 rounded bg-violet-600 hover:bg-violet-700 disabled:opacity-50"
+            disabled={busy || !canSubmit}
+            className={[
+              "px-5 py-3 rounded-xl font-semibold",
+              busy || !canSubmit
+                ? "bg-yellow-500/40 text-black/60 cursor-not-allowed"
+                : "bg-yellow-400 text-black hover:bg-yellow-500",
+            ].join(" ")}
           >
-            {busy ? "Creating…" : "Create listing"}
+            {busy ? "Publishing…" : "Publish"}
           </button>
+          <button
+            type="button"
+            onClick={() => nav(-1)}
+            className="px-5 py-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10"
+          >
+            Cancel
+          </button>
+
+          <div className="ml-auto text-sm text-white/60">
+            {isPartner ? (
+              <span>
+                Role: <strong>Verified Partner</strong> • managers set to you
+              </span>
+            ) : (
+              <span>
+                Role: <strong>Host</strong> • ownerId will be your UID
+              </span>
+            )}
+          </div>
         </div>
       </form>
-    </div>
+    </main>
   );
 }

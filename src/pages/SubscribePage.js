@@ -1,167 +1,299 @@
 // src/pages/SubscribePage.js
-import React from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { db } from "../firebase";
+import { useAuth } from "../auth/AuthContext";
+import FeaturedCarousel from "../components/FeaturedCarousel";
+// Payments
+import PaystackPop from "@paystack/inline-js";
+import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
 
-export default function SubscribePage() {
-  const navigate = useNavigate();
+/* ---------------- Pricing (edit as you like) ---------------- */
+const PLAN_PRICES_NGN = {
+  weekly: 2000,
+  monthly: 5000,
+  annual: 50000,
+};
+const PLAN_MS = {
+  weekly: 7 * 24 * 60 * 60 * 1000,
+  monthly: 30 * 24 * 60 * 60 * 1000,
+  annual: 365 * 24 * 60 * 60 * 1000,
+};
+const VALID_PLANS = Object.keys(PLAN_PRICES_NGN);
 
+/* --------------- Firestore helper: activate sub --------------- */
+async function activateSubscription(uid, plan = "monthly") {
+  const now = Date.now();
+  const expiresAtISO = new Date(now + (PLAN_MS[plan] || PLAN_MS.monthly)).toISOString();
+
+  // Use setDoc(..., { merge: true }) so we don't error if the doc doesn't exist yet
+  await setDoc(
+    doc(db, "users", uid),
+    {
+      activeSubscription: true,
+      subscriptionPlan: plan, // weekly | monthly | annual
+      subscriptionStartedAt: serverTimestamp(),
+      subscriptionExpiresAt: expiresAtISO,
+      // (optional) add audit trail fields if you like
+      lastSubscriptionUpdateAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/* -------------------------- UI -------------------------- */
+function PlanCard({ title, price, note, active, onSelect, featured = false }) {
   return (
-    <main className="dash-bg">
-      <div className="container dash-wrap">
-        <button className="btn ghost" onClick={() => navigate(-1)}>
-          ← Back
-        </button>
-
-        <div
-          className="card"
-          style={{
-            marginTop: 30,
-            padding: 32,
-            borderRadius: 20,
-            border: "1px solid rgba(255,255,255,0.15)",
-            background:
-              "linear-gradient(180deg, rgba(15,23,42,0.85), rgba(15,23,42,0.65))",
-            boxShadow:
-              "0 20px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
-            maxWidth: 780,
-            marginLeft: "auto",
-            marginRight: "auto",
-            textAlign: "center",
-          }}
-        >
-          <h1 style={{ marginBottom: 10, color: "#f3f4f6" }}>
-            Unlock Host Contact Details
-          </h1>
-          <p className="muted" style={{ marginBottom: 30 }}>
-            Choose a subscription plan to view phone numbers and emails of hosts
-            and agents. Chat is always free.
-          </p>
-
-          {/* Subscription Options */}
-          <div
+    <button
+      type="button"
+      onClick={onSelect}
+      style={{
+        textAlign: "left",
+        borderRadius: 16,
+        padding: 16,
+        background: featured
+          ? "linear-gradient(135deg, rgba(240,180,41,0.25), rgba(217,154,11,0.1))"
+          : "linear-gradient(135deg, rgba(240,180,41,0.15), rgba(217,154,11,0.05))",
+        border: featured ? "2px solid #f0b429" : "1px solid rgba(240,180,41,0.35)",
+        boxShadow: featured ? "0 14px 28px rgba(0,0,0,0.35)" : "0 10px 24px rgba(0,0,0,0.25)",
+        transform: featured ? "scale(1.02)" : "none",
+        color: "#f3f4f6",
+        outline: active ? "2px solid rgba(240,180,41,0.75)" : "none",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+        <h3 style={{ margin: 0, color: "#f0b429" }}>{title}</h3>
+        {active && (
+          <span
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-              gap: 20,
+              fontSize: 12,
+              padding: "2px 8px",
+              borderRadius: 999,
+              border: "1px solid rgba(240,180,41,0.55)",
+              color: "#f0b429",
+              background: "rgba(240,180,41,0.12)",
             }}
           >
-            {/* Weekly */}
-            <div
-              style={{
-                borderRadius: 16,
-                padding: 20,
-                background:
-                  "linear-gradient(135deg, rgba(240,180,41,0.15), rgba(217,154,11,0.05))",
-                border: "1px solid rgba(240,180,41,0.35)",
-                boxShadow: "0 10px 24px rgba(0,0,0,0.25)",
-              }}
-            >
-              <h3 style={{ color: "#f0b429", marginBottom: 8 }}>Weekly</h3>
-              <p style={{ fontSize: "0.9rem", color: "#e5e7eb" }}>
-                Try Nesta Premium for a week.
-              </p>
-              <div
-                style={{
-                  fontSize: "1.5rem",
-                  fontWeight: "700",
-                  margin: "14px 0",
-                  color: "#f3f4f6",
-                }}
-              >
-                ₦2,000
-              </div>
-              <button
-                className="btn"
-                style={{ width: "100%" }}
-                onClick={() => alert("Connect to Paystack/Flutterwave here")}
-              >
-                Subscribe
-              </button>
-            </div>
+            Selected
+          </span>
+        )}
+      </div>
+      <p className="muted" style={{ margin: "4px 0 10px", color: "#e5e7eb" }}>{note}</p>
+      <div style={{ fontSize: "1.4rem", fontWeight: 800, color: "#f3f4f6" }}>{price}</div>
+    </button>
+  );
+}
 
-            {/* Monthly */}
-            <div
-              style={{
-                borderRadius: 16,
-                padding: 20,
-                background:
-                  "linear-gradient(135deg, rgba(240,180,41,0.25), rgba(217,154,11,0.1))",
-                border: "2px solid #f0b429",
-                boxShadow: "0 14px 28px rgba(0,0,0,0.35)",
-                transform: "scale(1.05)",
-              }}
-            >
-              <h3 style={{ color: "#f0b429", marginBottom: 8 }}>Monthly</h3>
-              <p style={{ fontSize: "0.9rem", color: "#e5e7eb" }}>
-                Best for frequent users.
-              </p>
-              <div
-                style={{
-                  fontSize: "1.8rem",
-                  fontWeight: "700",
-                  margin: "14px 0",
-                  color: "#f3f4f6",
-                }}
-              >
-                ₦5,000
-              </div>
-              <button
-                className="btn"
-                style={{
-                  width: "100%",
-                  background: "linear-gradient(90deg, #f0b429, #d99a0b)",
-                  color: "#1f2937",
-                  fontWeight: 700,
-                }}
-                onClick={() => alert("Connect to Paystack/Flutterwave here")}
-              >
-                Subscribe
-              </button>
-            </div>
+export default function SubscribePage() {
+  const { user } = useAuth();
+  const nav = useNavigate();
+  const [params] = useSearchParams();
 
-            {/* Annual */}
-            <div
-              style={{
-                borderRadius: 16,
-                padding: 20,
-                background:
-                  "linear-gradient(135deg, rgba(240,180,41,0.15), rgba(217,154,11,0.05))",
-                border: "1px solid rgba(240,180,41,0.35)",
-                boxShadow: "0 10px 24px rgba(0,0,0,0.25)",
-              }}
-            >
-              <h3 style={{ color: "#f0b429", marginBottom: 8 }}>Annual</h3>
-              <p style={{ fontSize: "0.9rem", color: "#e5e7eb" }}>
-                Save more with yearly access.
-              </p>
-              <div
-                style={{
-                  fontSize: "1.5rem",
-                  fontWeight: "700",
-                  margin: "14px 0",
-                  color: "#f3f4f6",
-                }}
-              >
-                ₦50,000
-              </div>
-              <button
-                className="btn"
-                style={{ width: "100%" }}
-                onClick={() => alert("Connect to Paystack/Flutterwave here")}
-              >
-                Subscribe
-              </button>
-            </div>
-          </div>
+  // Accept only weekly/monthly/annual from URL. If something else (e.g. host-luxe), ignore.
+  const rawFromUrl = (params.get("plan") || "").toLowerCase();
+  const planFromUrl = VALID_PLANS.includes(rawFromUrl) ? rawFromUrl : "";
 
-          {/* Note */}
-          <p
-            className="muted"
-            style={{ marginTop: 28, fontSize: "0.85rem", color: "#cbd5e1" }}
-          >
-            Your subscription helps us keep Nesta safe, secure, and growing.
-          </p>
+  // state
+  const [plan, setPlan] = useState(planFromUrl || "monthly"); // weekly | monthly | annual
+
+  const amountNGN = useMemo(
+    () => PLAN_PRICES_NGN[plan] || PLAN_PRICES_NGN.monthly,
+    [plan]
+  );
+
+  useEffect(() => {
+    if (planFromUrl) setPlan(planFromUrl);
+  }, [planFromUrl]);
+
+  // Flutterwave config + hook
+  const flwPublicKey = process.env.REACT_APP_FLW_PUBLIC_KEY || "";
+  const flwConfig = useMemo(
+    () => ({
+      public_key: flwPublicKey,
+      tx_ref: `nesta_sub_${Date.now()}`,
+      amount: amountNGN,
+      currency: "NGN",
+      payment_options: "card, banktransfer, ussd",
+      customer: {
+        email: user?.email || "guest@example.com",
+        name: user?.displayName || "Nesta User",
+      },
+      customizations: {
+        title: "Nesta Subscription",
+        description: `Plan: ${plan}`,
+        logo: "/logo192.png",
+      },
+    }),
+    [flwPublicKey, amountNGN, plan, user?.email, user?.displayName]
+  );
+  const initializeFlw = useFlutterwave(flwConfig);
+
+  // Pay handlers
+  const payWithPaystack = () => {
+    if (!user) {
+      alert("Please log in to subscribe.");
+      nav("/login");
+      return;
+    }
+    const pub = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY;
+    if (!pub) {
+      alert("Missing REACT_APP_PAYSTACK_PUBLIC_KEY in .env.local");
+      return;
+    }
+    const paystack = new PaystackPop();
+    paystack.newTransaction({
+      key: pub,
+      email: user.email || "guest@example.com",
+      amount: amountNGN * 100, // Kobo
+      metadata: {
+        plan,
+        customer_name: user.displayName || "Nesta User",
+        uid: user.uid,
+        purpose: "nesta_subscription",
+      },
+      onSuccess: async () => {
+        try {
+          await activateSubscription(user.uid, plan);
+          alert("✅ Subscription activated");
+          nav(-1);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error(e);
+          alert("Payment succeeded, but activating subscription failed.");
+        }
+      },
+      onCancel: () => {
+        alert("❌ Payment cancelled");
+      },
+    });
+  };
+
+  const payWithFlutterwave = () => {
+    if (!user) {
+      alert("Please log in to subscribe.");
+      nav("/login");
+      return;
+    }
+    if (!flwPublicKey) {
+      alert("Missing REACT_APP_FLW_PUBLIC_KEY in .env.local");
+      return;
+    }
+    initializeFlw({
+      callback: async (data) => {
+        try {
+          if (data?.status === "successful") {
+            await activateSubscription(user.uid, plan);
+            alert("✅ Subscription activated");
+            closePaymentModal();
+            nav(-1);
+          } else {
+            alert("❌ Payment failed");
+            closePaymentModal();
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error(e);
+          alert("Payment succeeded, but activating subscription failed.");
+          closePaymentModal();
+        }
+      },
+      onClose: () => {},
+    });
+  };
+
+  // Early return for guests (we still show a taste of luxury with the carousel)
+  if (!user) {
+    return (
+      <main className="container section-pad">
+        <FeaturedCarousel useDemo />
+        <div
+          style={{
+            borderRadius: 16,
+            border: "1px solid rgba(255,255,255,0.15)",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(15,23,42,0.65))",
+            boxShadow: "0 20px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
+            maxWidth: 780,
+            margin: "16px auto 0",
+            padding: 18,
+            color: "#e5e7eb",
+          }}
+        >
+          <h2 style={{ margin: "6px 0 6px" }}>Please log in to subscribe</h2>
+          <p className="muted">Subscriptions unlock host/partner contact visibility after bookings and other premium tools.</p>
         </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="container section-pad">
+      {/* Sponsored / Featured listings carousel */}
+      <FeaturedCarousel />
+
+      <div
+        style={{
+          borderRadius: 16,
+          border: "1px solid rgba(255,255,255,0.15)",
+          background: "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(15,23,42,0.65))",
+          boxShadow: "0 20px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
+          maxWidth: 780,
+          margin: "16px auto 0",
+          padding: 18,
+        }}
+      >
+        <h1 style={{ margin: "6px 0 2px", color: "#f3f4f6" }}>Unlock Premium Visibility</h1>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Choose a plan to reveal phone numbers & emails in chat (after guest bookings), enable premium partner/host tools,
+          and support Nesta’s luxury experience.
+        </p>
+
+        {/* Plan selector */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: 12,
+            marginTop: 14,
+          }}
+        >
+          <PlanCard
+            title="Weekly"
+            price={`₦${PLAN_PRICES_NGN.weekly.toLocaleString()}`}
+            active={plan === "weekly"}
+            onSelect={() => setPlan("weekly")}
+            note="Try Nesta Premium for 7 days."
+          />
+          <PlanCard
+            title="Monthly"
+            price={`₦${PLAN_PRICES_NGN.monthly.toLocaleString()}`}
+            active={plan === "monthly"}
+            onSelect={() => setPlan("monthly")}
+            note="Best for frequent users."
+            featured
+          />
+          <PlanCard
+            title="Annual"
+            price={`₦${PLAN_PRICES_NGN.annual.toLocaleString()}`}
+            active={plan === "annual"}
+            onSelect={() => setPlan("annual")}
+            note="Save more with yearly access."
+          />
+        </div>
+
+        {/* Pay actions */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 16 }}>
+          <button className="btn btn-gold" onClick={payWithPaystack}>
+            Pay with Paystack (₦{amountNGN.toLocaleString()})
+          </button>
+          <button className="btn" onClick={payWithFlutterwave}>
+            Pay with Flutterwave (₦{amountNGN.toLocaleString()})
+          </button>
+        </div>
+
+        <p className="muted" style={{ marginTop: 18, fontSize: "0.85rem", color: "#cbd5e1" }}>
+          Your subscription helps us keep Nesta safe, secure, and growing. You can upgrade or extend at any time.
+        </p>
       </div>
     </main>
   );

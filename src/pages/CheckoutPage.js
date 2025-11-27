@@ -1,215 +1,292 @@
 // src/pages/CheckoutPage.js
-import React, { useMemo, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import React, { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "../firebase";
 
-const CheckoutPage = () => {
-  const { id } = useParams();
+/** Currency helper (₦ with thousand separators) */
+function ngn(n) {
+  const v = Number(n || 0);
+  return `₦${v.toLocaleString("en-NG")}`;
+}
 
-  // --- Form state ---
-  const [email, setEmail] = useState("");
-  const [nights, setNights] = useState(1);
-  const [saving, setSaving] = useState(false);
+/** LocalStorage key to allow refreshing checkout without losing the id */
+const LS_KEY = "nesta:lastListingId";
 
-  // --- Env vars (.env.local) ---
-  const paystackKey = process.env.REACT_APP_PAYSTACK_PK;     // pk_test_...
-  const flutterwaveKey = process.env.REACT_APP_FLW_PK || "";  // optional for now
-  const apiBase = process.env.REACT_APP_API_BASE || "http://localhost:4000";
+export default function CheckoutPage() {
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
 
-  // --- Mock listing (replace with Firestore fetch later) ---
-  const listing = useMemo(
-    () => ({ id, title: "Room in Ikeja GRA", pricePerNight: 20000 }),
-    [id]
-  );
+  // ---- Resolve listing id & mode (book/reserve) ----
+  const queryId = searchParams.get("id");
+  const stateId = location.state?.id;
+  const lastId = typeof window !== "undefined" ? localStorage.getItem(LS_KEY) : null;
+  const listingId = queryId || stateId || lastId || null;
 
-  const total = useMemo(
-    () => Number(listing.pricePerNight) * Number(nights || 0),
-    [listing.pricePerNight, nights]
-  );
+  const mode = (searchParams.get("mode") || location.state?.mode || "book")
+    .toString()
+    .toLowerCase(); // "book" | "reserve"
+  const title = mode === "reserve" ? "Reserve your stay" : "Confirm your stay";
 
-  const emailValid =
-    email.length > 3 && email.includes("@") && email.includes(".");
+  // ---- Listing data ----
+  const [listing, setListing] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
 
-  // --- Helpers ---
-  const saveBooking = async ({ provider, reference, n, amt }) => {
-    try {
-      setSaving(true);
-      const res = await fetch(`${apiBase}/api/bookings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          listingId: listing.id,
-          title: listing.title,
-          nights: n,
-          total: amt,
-          email,
-          reference,
-          provider,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.ok) {
-        alert(`Booking saved! id: ${data.id}`);
-      } else {
-        alert("Payment ok, but saving the booking failed. Check server logs.");
-        console.error("Booking save error:", data);
+  // ---- Form state ----
+  const [checkIn, setCheckIn] = useState("");
+  const [checkOut, setCheckOut] = useState("");
+  const [guests, setGuests] = useState(1);
+
+  // Persist id so a refresh still works
+  useEffect(() => {
+    if (listingId) localStorage.setItem(LS_KEY, listingId);
+  }, [listingId]);
+
+  // Fetch listing
+  useEffect(() => {
+    let alive = true;
+
+    async function run() {
+      try {
+        setErr("");
+        setLoading(true);
+
+        if (!listingId) {
+          setListing(null);
+          return;
+        }
+
+        const snap = await getDoc(doc(db, "listings", listingId));
+        if (!alive) return;
+
+        if (snap.exists()) {
+          setListing({ id: snap.id, ...snap.data() });
+        } else {
+          setErr("Could not find this listing.");
+          setListing(null);
+        }
+      } catch (e) {
+        console.error("[Checkout] load listing failed:", e);
+        if (alive) setErr("We couldn't load this listing right now.");
+      } finally {
+        if (alive) setLoading(false);
       }
-    } catch (err) {
-      console.error(err);
-      alert("Payment ok, but a network error occurred while saving the booking.");
-    } finally {
-      setSaving(false);
     }
+
+    run();
+    return () => {
+      alive = false;
+    };
+  }, [listingId]);
+
+  // Parse dates & compute nights
+  const parsed = useMemo(() => {
+    const inDate = checkIn ? new Date(checkIn) : null;
+    const outDate = checkOut ? new Date(checkOut) : null;
+
+    let nights = 0;
+    if (inDate && outDate) {
+      // 00:00 normalize to avoid DST hiccups
+      const a = new Date(inDate.getFullYear(), inDate.getMonth(), inDate.getDate());
+      const b = new Date(outDate.getFullYear(), outDate.getMonth(), outDate.getDate());
+      const diff = (b - a) / (1000 * 60 * 60 * 24);
+      nights = Math.max(0, Math.ceil(diff));
+    }
+
+    return { inDate, outDate, nights };
+  }, [checkIn, checkOut]);
+
+  // Totals
+  const price = Number(listing?.pricePerNight || 0);
+  const subtotal = parsed.nights * price;
+  const fee = Math.round(subtotal * 0.05); // 5% service fee
+  const total = subtotal + fee;
+
+  const canPay = Boolean(listing && parsed.nights > 0 && guests > 0);
+
+  const onProceed = () => {
+    if (!canPay) return;
+    // TODO: plug your gateway here (Stripe/Paystack/Flutterwave).
+    // You have the full payload below:
+    const payload = {
+      listingId: listing.id,
+      title: listing.title || "Listing",
+      city: listing.city || "",
+      area: listing.area || "",
+      pricePerNight: price,
+      mode,
+      checkIn,
+      checkOut,
+      nights: parsed.nights,
+      guests,
+      fee,
+      total,
+    };
+    console.log("[Checkout] Proceeding with:", payload);
+    // Example: navigate("/payment", { state: payload });
+    alert("Proceeding to payment… (check console for payload)");
   };
 
-  // --- Paystack flow ---
-  const openPaystack = () => {
-    if (!paystackKey) {
-      alert("Paystack key missing. Add REACT_APP_PAYSTACK_PK to .env.local and restart.");
-      return;
-    }
-    if (!emailValid) {
-      alert("Please enter a valid email for the receipt.");
-      return;
-    }
-    const n = Number(nights);
-    if (!Number.isFinite(n) || n < 1) {
-      alert("Nights must be at least 1.");
-      return;
-    }
-    const amt = Number(listing.pricePerNight) * n;
-    if (!Number.isFinite(amt) || amt <= 0) {
-      alert("Amount is invalid.");
-      return;
-    }
-    if (!window.PaystackPop || typeof window.PaystackPop.setup !== "function") {
-      alert("Paystack script not loaded. Ensure the script tag is in public/index.html.");
-      return;
-    }
-
-    const handler = window.PaystackPop.setup({
-      key: paystackKey,
-      email,
-      amount: amt * 100, // kobo
-      currency: "NGN",
-      ref: `${Date.now()}`,
-      metadata: {
-        custom_fields: [
-          { display_name: "Listing", variable_name: "listing", value: listing.title },
-          { display_name: "Nights", variable_name: "nights", value: String(n) },
-        ],
-      },
-      // ✅ The callback must be a valid function directly in the setup config
-      callback: async (response) => {
-        const reference = response?.reference || "";
-        await saveBooking({ provider: "paystack", reference, n, amt });
-      },
-      onClose: () => {
-        alert("Transaction was not completed, window closed.");
-      },
-    });
-
-    handler.openIframe();
-  };
-
-  // --- Flutterwave flow (optional for now) ---
-  const openFlutterwave = () => {
-    if (!flutterwaveKey.startsWith("FLWPUBK")) {
-      alert("Flutterwave isn’t configured yet. We’ll enable this later.");
-      return;
-    }
-    if (!emailValid) {
-      alert("Please enter a valid email for the receipt.");
-      return;
-    }
-    const n = Number(nights);
-    const amt = Number(listing.pricePerNight) * n;
-
-    // eslint-disable-next-line no-undef
-    window.FlutterwaveCheckout({
-      public_key: flutterwaveKey,
-      tx_ref: `flw_${Date.now()}`,
-      amount: amt,
-      currency: "NGN",
-      payment_options: "card,ussd,banktransfer",
-      customer: { email },
-      callback: async (flwResponse) => {
-        const reference = flwResponse?.transaction_id || "";
-        await saveBooking({ provider: "flutterwave", reference, n, amt });
-      },
-      onclose: () => {},
-    });
-  };
+  // Simple banner when id is missing
+  const missingId = !listingId;
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
-      <Link to={`/listing/${id}`} className="text-purple-400 underline block mb-4">
-        ← Back to {listing.title}
-      </Link>
+    <main className="dash-bg">
+      <div className="container dash-wrap" style={{ paddingBottom: 40 }}>
+        <button className="btn ghost" onClick={() => navigate(-1)}>← Back</button>
 
-      <h1 className="text-2xl font-bold mb-4">Checkout</h1>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.2fr 0.8fr",
+            gap: 20,
+            marginTop: 16,
+          }}
+        >
+          {/* Left: form */}
+          <section className="card" style={{ padding: 16, borderRadius: 14 }}>
+            <h2 style={{ marginTop: 0 }}>{title}</h2>
+            <p className="muted" style={{ marginTop: 6 }}>
+              Choose dates and guests, then proceed to payment.
+            </p>
 
-      <p className="mb-2">
-        You’re booking: <span className="font-semibold">{listing.title}</span>
-      </p>
-      <p className="mb-2">Price per night: ₦{listing.pricePerNight.toLocaleString()}</p>
+            {missingId && (
+              <div
+                style={{
+                  marginTop: 12,
+                  marginBottom: 12,
+                  background: "rgba(239,68,68,0.12)",
+                  border: "1px solid rgba(239,68,68,0.4)",
+                  color: "#fecaca",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                }}
+              >
+                Missing listing id. Please return to <strong>Browse</strong> and try again.
+              </div>
+            )}
 
-      <label className="block mt-4">
-        Email (for receipt):
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="block w-full p-2 mt-1 bg-gray-800 border border-gray-600 rounded"
-          placeholder="you@example.com"
-        />
-      </label>
+            {err && !missingId && (
+              <div
+                style={{
+                  marginTop: 12,
+                  marginBottom: 12,
+                  background: "rgba(239,68,68,0.12)",
+                  border: "1px solid rgba(239,68,68,0.4)",
+                  color: "#fecaca",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                }}
+              >
+                {err}
+              </div>
+            )}
 
-      <label className="block mt-4">
-        Nights:
-        <input
-          type="number"
-          value={nights}
-          min="1"
-          onChange={(e) => setNights(Number(e.target.value))}
-          className="block w-24 p-2 mt-1 bg-gray-800 border border-gray-600 rounded"
-        />
-      </label>
+            {/* Form rows */}
+            <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+              <div>
+                <label className="muted">Check-in</label>
+                <input
+                  type="date"
+                  value={checkIn}
+                  onChange={(e) => setCheckIn(e.target.value)}
+                  min={todayISO()}
+                />
+              </div>
 
-      <p className="mt-4 text-lg">
-        <strong>Total:</strong> ₦{(isFinite(total) ? total : 0).toLocaleString()}
-      </p>
+              <div>
+                <label className="muted">Check-out</label>
+                <input
+                  type="date"
+                  value={checkOut}
+                  onChange={(e) => setCheckOut(e.target.value)}
+                  min={checkIn || todayISO()}
+                />
+              </div>
 
-      <div className="mt-6 flex gap-4 items-center">
-        {paystackKey ? (
-          <button
-            onClick={openPaystack}
-            disabled={!emailValid || !nights || nights < 1 || saving}
-            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Pay with Paystack"}
-          </button>
-        ) : (
-          <p className="text-sm text-red-400">⚠️ Paystack not configured.</p>
-        )}
+              <div>
+                <label className="muted">Guests</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={guests}
+                  onChange={(e) => setGuests(Math.max(1, Number(e.target.value || 1)))}
+                />
+              </div>
+            </div>
 
-        {flutterwaveKey && flutterwaveKey.startsWith("FLWPUBK") ? (
-          <button
-            onClick={openFlutterwave}
-            disabled={!emailValid || !nights || nights < 1 || saving}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-50"
-          >
-            Pay with Flutterwave
-          </button>
-        ) : (
-          <p className="text-sm text-yellow-400">⚠️ Flutterwave placeholder (not yet active).</p>
-        )}
+            {/* Totals */}
+            <div style={{ marginTop: 16 }}>
+              <div className="muted">
+                {ngn(price)} × {parsed.nights} {parsed.nights === 1 ? "night" : "nights"}
+              </div>
+              <div className="muted">Service fee (5%): <strong>{ngn(fee)}</strong></div>
+
+              <div
+                style={{
+                  marginTop: 10,
+                  borderTop: "1px dashed rgba(255,255,255,0.12)",
+                  paddingTop: 10,
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div style={{ fontWeight: 700 }}>Total</div>
+                <div style={{ fontWeight: 800 }}>{ngn(total)}</div>
+              </div>
+            </div>
+
+            <button
+              className="btn"
+              style={{ marginTop: 16 }}
+              onClick={onProceed}
+              disabled={!canPay || loading || missingId}
+            >
+              Proceed to payment
+            </button>
+          </section>
+
+          {/* Right: summary */}
+          <aside className="card" style={{ padding: 16, borderRadius: 14 }}>
+            <h3 style={{ marginTop: 0 }}>Stay summary</h3>
+
+            {loading ? (
+              <p className="muted">Loading listing…</p>
+            ) : !listing ? (
+              <p className="muted">No listing selected.</p>
+            ) : (
+              <div>
+                <div
+                  style={{
+                    borderRadius: 12,
+                    background: "linear-gradient(120deg, rgba(255,214,102,0.12), rgba(255,255,255,0.06))",
+                    height: 120,
+                    marginBottom: 10,
+                  }}
+                />
+                <div style={{ fontWeight: 700 }}>
+                  {listing.title || "Listing"}
+                </div>
+                <div className="muted" style={{ marginTop: 2 }}>
+                  {(listing.city || "—")} • {(listing.area || "—")}
+                </div>
+                <div style={{ marginTop: 6 }}>{ngn(price)}/night</div>
+              </div>
+            )}
+          </aside>
+        </div>
       </div>
-
-      <p className="mt-8 text-sm text-gray-400">
-        Sandbox mode. In production you must verify the transaction server-side before confirming a booking.
-      </p>
-    </div>
+    </main>
   );
-};
+}
 
-export default CheckoutPage;
+// Small helper to produce today's date as yyyy-mm-dd (for <input type="date"> mins)
+function todayISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}

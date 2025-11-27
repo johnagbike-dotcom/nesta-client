@@ -1,0 +1,198 @@
+/* ===== Inbox polish ===== */
+.nesta-inbox { padding-top: 4px; }
+
+.nesta-chat-row {
+  border: 1px solid rgba(255, 200, 0, 0.15);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.03);
+  transition: box-shadow 180ms ease, border-color 180ms ease, transform 120ms ease;
+  position: relative;
+  overflow: hidden;
+}
+
+/* soft separator inside each row (top edge) */
+.nesta-chat-row + .nesta-chat-row { margin-top: 14px; }
+.nesta-chat-row::after {
+  content: "";
+  position: absolute;
+  left: 14px; right: 14px; bottom: -1px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.06) 15%,
+    rgba(255,255,255,0.06) 85%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* hover halo */
+.nesta-chat-row:hover {
+  border-color: rgba(255, 200, 0, 0.35);
+  box-shadow: 0 0 0 3px rgba(255, 200, 0, 0.08), 0 8px 24px rgba(0,0,0,0.35);
+  transform: translateY(-1px);
+}
+
+/* subtle unread dot already present? give it a glow */
+.nesta-unread-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #ffb300;
+  box-shadow: 0 0 0 4px rgba(255,179,0,0.12);
+}
+
+/* keep action buttons aligned consistently */
+.nesta-chat-actions { display: flex; gap: 10px; align-items: center; } 
+/* ===== GuestBookings polish ===== */
+.nesta-bookings { padding-top: 8px; }
+
+.nesta-booking-card {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.03);
+  padding: 16px;
+  margin-bottom: 18px;
+  transition: box-shadow 160ms ease, border-color 160ms ease, transform 120ms ease;
+}
+.nesta-booking-card:hover {
+  border-color: rgba(255, 200, 0, 0.28);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.32);
+  transform: translateY(-1px);
+}
+
+.nesta-booking-top { display: flex; justify-content: space-between; gap: 14px; }
+.nesta-booking-meta { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* disabled/placeholder button */
+.btn-ghost-disabled {
+  opacity: 0.55; cursor: not-allowed;
+  border: 1px dashed rgba(255,255,255,0.25);
+}
+.btn-ghost-disabled:hover { transform: none; box-shadow: none; } 
+/* --- Glow & motion pack --- */
+.btn-amber {
+  transition: transform .15s ease, box-shadow .15s ease, background-color .15s ease;
+  box-shadow: 0 0 0 rgba(251,191,36,0);
+}
+.btn-amber:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(251,191,36,.25), inset 0 0 0 1px rgba(251,191,36,.35);
+}
+.btn-amber:active { transform: translateY(0); }
+
+.card-glow {
+  transition: box-shadow .18s ease, border-color .18s ease, background-color .18s ease;
+}
+.card-glow:hover {
+  box-shadow: 0 8px 28px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.06) inset;
+  background: rgba(17,24,39,.75);
+}
+
+/* subtle focus for inputs */
+.lux-focus {
+  transition: box-shadow .15s ease, border-color .15s ease;
+}
+.lux-focus:focus {
+  box-shadow: 0 0 0 3px rgba(251,191,36,.25);
+  border-color: rgba(251,191,36,.45);
+}
+
+/* typing dots (local hint only) */
+.typing-dots {
+  display:inline-block; width:26px; text-align:left;
+}
+.typing-dots i {
+  display:inline-block; width:4px; height:4px; margin:0 2px;
+  background: rgba(255,255,255,.5); border-radius:50%;
+  animation: td 1s infinite ease-in-out;
+}
+.typing-dots i:nth-child(2){ animation-delay:.15s }
+.typing-dots i:nth-child(3){ animation-delay:.3s }
+@keyframes td {
+  0%, 80%, 100% { transform: translateY(0); opacity:.5 }
+  40% { transform: translateY(-4px); opacity:1 }
+} 
+/* FeaturedCarousel — minimalist luxury look */
+.carousel {
+  width: 100%;
+  margin: 14px auto 0;
+}
+.carousel-card {
+  position: relative;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(15,23,42,0.6));
+  box-shadow: 0 20px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.carousel-card.skeleton {
+  height: 220px;
+  animation: pulse 1.2s ease-in-out infinite;
+  background: linear-gradient(90deg, rgba(255,255,255,0.05), rgba(255,255,255,0.08), rgba(255,255,255,0.05));
+  background-size: 400% 400%;
+}
+@keyframes pulse { 0%{background-position:0% 50%} 100%{background-position:100% 50%} }
+
+.carousel-card .media {
+  height: 200px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+.carousel-card .media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.carousel-card .media-fallback {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, rgba(240,180,41,0.12), rgba(17,24,39,0.6));
+}
+
+.carousel-card .meta {
+  padding: 12px 14px 14px;
+  color: #e5e7eb;
+}
+.carousel-card .meta .title {
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: #f3f4f6;
+}
+.carousel-card .meta .sub {
+  margin-top: 2px;
+  font-size: 0.9rem;
+  color: #cbd5e1;
+}
+
+.carousel-card .nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 36px;
+  width: 36px;
+  line-height: 36px;
+  text-align: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(15,23,42,0.55);
+  color: #f3f4f6;
+  font-size: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+.carousel-card .nav.left { left: 10px; }
+.carousel-card .nav.right { right: 10px; }
+.carousel-card .nav:hover { background: rgba(15,23,42,0.75); }
+
+.dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 8px;
+}
+.dot {
+  width: 8px; height: 8px; border-radius: 999px;
+  background: rgba(255,255,255,0.25);
+  cursor: pointer;
+}
+.dot.active { background: #f0b429; }

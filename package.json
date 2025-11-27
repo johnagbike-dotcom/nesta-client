@@ -2,15 +2,20 @@
   "name": "nesta-client",
   "version": "0.1.0",
   "private": true,
-  "dependencies": {
+    "dependencies": {
+    "@paystack/inline-js": "^2.22.7",
     "@tailwindcss/cli": "^4.1.12",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^13.5.0",
     "axios": "^1.11.0",
+    "clsx": "^2.1.1",
+    "dayjs": "^1.11.18",
+    "file-saver": "^2.0.5",
     "firebase": "^12.2.1",
     "flutterwave-react-v3": "^1.3.2",
+    "framer-motion": "^12.23.24",
     "lucide-react": "^0.542.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -25,7 +30,10 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "start:client": "react-scripts start",
+    "start:server": "cd ../nesta-server && npm run dev",
+    "dev": "concurrently \"npm run start:client\""
   },
   "eslintConfig": {
     "extends": [
@@ -46,10 +54,13 @@
     ]
   },
   "devDependencies": {
+    "@tailwindcss/forms": "^0.5.10",
+    "@tailwindcss/postcss": "^4.1.13",
     "ajv": "^6.12.6",
     "ajv-keywords": "^3.5.2",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
     "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.12"
+    "tailwindcss": "^3.4.17"
   }
 }

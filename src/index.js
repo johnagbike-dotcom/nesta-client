@@ -1,18 +1,20 @@
-import "./index.css";
+// src/index.js
 import React from "react";
-import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
-import App from "./App";
-import { AuthProvider } from "./context/AuthContext";
-import "./firebase";
+import { createRoot } from "react-dom/client";
+import AppRouter from "./AppRouter";
+import { AuthProvider } from "./auth/AuthContext";
+import { ToastProvider } from "./context/ToastContext"; // <-- add this
+import "./index.css";
+import "./styles/lux.css";
+import "./styles/polish.css";
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
+const root = createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
-    <BrowserRouter>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </BrowserRouter>
+    <AuthProvider>
+      <ToastProvider>
+        <AppRouter />
+      </ToastProvider>
+    </AuthProvider>
   </React.StrictMode>
 );

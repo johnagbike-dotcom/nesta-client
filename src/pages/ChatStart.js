@@ -1,85 +1,30 @@
-// src/pages/ChatStart.js
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import {
-  addDoc,
-  collection,
-  getDocs,
-  limit,
-  query,
-  serverTimestamp,
-  where,
-} from "firebase/firestore";
-import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 
+/**
+ * Landing screen for chat from a listing card.
+ * Expects (optionally) location.state = { listingId, listingTitle, hostId }
+ * If present, we push these along to /chat/thread so the thread can be created/resolved there.
+ */
 export default function ChatStart() {
-  const { user } = useAuth();
   const navigate = useNavigate();
-  const { search } = useLocation();
-  const params = new URLSearchParams(search);
-  const listingId = params.get("listing") || "";
-  const hostUid = params.get("host") || "";
+  const location = useLocation();
+  const { user } = useAuth();
 
-  const [err, setErr] = useState("");
-
+  // If we already have needed info, send the user to the thread UI immediately.
   useEffect(() => {
-    const go = async () => {
-      if (!user) {
-        navigate("/signup", { replace: true, state: { next: `/chat/new?listing=${listingId}&host=${hostUid}` } });
-        return;
-      }
-      if (!listingId || !hostUid) {
-        setErr("Missing listing or host information.");
-        return;
-      }
+    if (!user) return; // ProtectedRoute should block unauth, but extra guard is fine
 
-      try {
-        // Try to find an existing thread
-        const q = query(
-          collection(db, "threads"),
-          where("listingId", "==", listingId),
-          where("participants", "array-contains", user.uid),
-          limit(10)
-        );
-        const snap = await getDocs(q);
-        const existing = snap.docs.find(d => {
-          const data = d.data();
-          return Array.isArray(data.participants) && data.participants.includes(hostUid);
-        });
-
-        if (existing) {
-          navigate(`/chat/${existing.id}`, { replace: true });
-          return;
-        }
-
-        // Create a new thread
-        const docRef = await addDoc(collection(db, "threads"), {
-          listingId,
-          participants: [user.uid, hostUid].filter(Boolean),
-          createdAt: serverTimestamp(),
-          lastMessageAt: serverTimestamp(),
-          lastMessage: "",
-        });
-
-        navigate(`/chat/${docRef.id}`, { replace: true });
-      } catch (e) {
-        console.error(e);
-        setErr("Could not start chat.");
-      }
-    };
-    go();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const state = location.state || {};
+    // Always navigate to /chat/thread; that screen will resolve/create the thread
+    navigate("/chat/thread", { replace: true, state });
+  }, [user, location.state, navigate]);
 
   return (
-    <main className="dash-bg">
-      <div className="container dash-wrap">
-        <div className="form-card" style={{ textAlign: "center" }}>
-          <h1>Preparing your chat…</h1>
-          {err ? <p className="alert-error" style={{ marginTop: 10 }}>{err}</p> : <p className="muted">Just a moment.</p>}
-        </div>
-      </div>
+    <main className="container" style={{ padding: 24 }}>
+      <h2>Chat</h2>
+      <p className="muted">Preparing your chat room…</p>
     </main>
   );
 }

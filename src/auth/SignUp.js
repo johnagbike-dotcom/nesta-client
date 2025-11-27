@@ -2,124 +2,228 @@
 import React, { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebase";
+
+function humanizeFirebaseError(e) {
+  const code = e?.code || "";
+  if (code === "auth/email-already-in-use") return "Email is already in use.";
+  if (code === "auth/invalid-email") return "Invalid email address.";
+  if (code === "auth/weak-password") return "Password is too weak.";
+  return e?.message?.replace(/^Firebase:\s*/i, "") || "Could not create your account.";
+}
 
 export default function SignUp() {
   const navigate = useNavigate();
-  const { state } = useLocation(); // may carry { next: '/host-dashboard' } later
+  const { state } = useLocation(); // may carry { next: '/host' } later
 
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
   const [name, setName] = useState("");
-  const [show, setShow] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  const onSubmit = async (e) => {
+  async function ensureUserProfile(uid, emailVal, displayName) {
+    const ref = doc(db, "users", uid);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        email: emailVal,
+        displayName: displayName || null,
+        role: "guest",             // default; can be changed after role-selection
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  }
+
+  async function onSubmit(e) {
     e.preventDefault();
     setErr("");
-    setBusy(true);
+
+    if (!email.trim() || !pw) {
+      setErr("Please enter an email and password.");
+      return;
+    }
+    if (pw !== pw2) {
+      setErr("Passwords do not match.");
+      return;
+    }
+
     try {
-      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      // Optional: set displayName for a nicer dashboard greeting
-      if (name.trim()) {
-        await updateProfile(cred.user, { displayName: name.trim() });
-      }
-      // Create a user doc if it doesn't exist (no role yet)
-      const uref = doc(db, "users", cred.user.uid);
-      const snap = await getDoc(uref);
-      if (!snap.exists()) {
-        await setDoc(uref, {
-          email: email.trim(),
-          displayName: name.trim() || null,
-          role: null,
-          createdAt: Date.now()
-        });
-      }
-      // Send them to role selection first time
-      const next = state?.next || "/dashboard";
-      navigate("/role-selection", { replace: true, state: { next } });
+      setLoading(true);
+      const cred = await createUserWithEmailAndPassword(auth, email.trim(), pw);
+
+      const displayName = name.trim() || email.split("@")[0];
+      try {
+        await updateProfile(cred.user, { displayName });
+      } catch {}
+
+      await ensureUserProfile(cred.user.uid, cred.user.email || email.trim(), displayName);
+
+      const next = state?.next || "/role-selection";
+      navigate(next, { replace: true });
     } catch (e2) {
       console.error(e2);
-      setErr("Could not create account. Please try again.");
+      setErr(humanizeFirebaseError(e2));
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
-  };
+  }
 
   return (
-    <main className="min-h-screen bg-[#0b0f14] text-white flex items-center justify-center px-4">
-      <div className="max-w-md w-full card p-6">
-        <h1 className="text-2xl font-bold text-amber-400 text-center">Create your Nesta account</h1>
-        <p className="mt-1 text-center muted">
-          Join Nesta to list or discover premium stays — <strong>fast, safe, and easy</strong>.
+    <main
+      className="min-h-screen grid place-items-center px-4"
+      style={{
+        background: "linear-gradient(135deg, #0f0f0f, #1a1a1a)",
+        fontFamily: "'Playfair Display', serif",
+      }}
+    >
+      <form
+        onSubmit={onSubmit}
+        className="w-full max-w-md"
+        style={{
+          padding: 28,
+          borderRadius: 18,
+          background: "rgba(255,255,255,0.04)",
+          backdropFilter: "blur(8px)",
+          border: "1px solid rgba(212,175,55,0.35)",
+          color: "#fff",
+        }}
+      >
+        <h2 style={{ margin: 0, marginBottom: 6, color: "#d4af37" }}>
+          Create account
+        </h2>
+        <p style={{ marginTop: 0, color: "#bbb" }}>
+          Join Nesta — Nigeria’s home of luxury stays.
         </p>
 
-        {err && <div className="alert-error mt-3">{err}</div>}
-
-        <form onSubmit={onSubmit} className="mt-4 space-y-3">
-          <div>
-            <label htmlFor="name" className="muted">Full name (optional)</label>
-            <input
-              id="name"
-              className="input mt-1"
-              type="text"
-              placeholder="Jane Doe"
-              value={name}
-              onChange={(e)=>setName(e.target.value)}
-            />
+        {err && (
+          <div
+            style={{
+              background: "rgba(239,68,68,0.1)",
+              border: "1px solid rgba(239,68,68,0.35)",
+              color: "#fca5a5",
+              borderRadius: 10,
+              padding: "10px 12px",
+              marginTop: 12,
+              marginBottom: 10,
+              fontSize: 14,
+            }}
+          >
+            {err}
           </div>
-          <div>
-            <label htmlFor="email" className="muted">Email</label>
-            <input
-              id="email"
-              className="input mt-1"
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e)=>setEmail(e.target.value)}
-              required
-            />
+        )}
+
+        <label style={{ display: "block", marginTop: 12 }}>
+          <div style={{ marginBottom: 6, color: "#ddd", fontSize: 14 }}>
+            Full name (optional)
           </div>
+          <input
+            type="text"
+            placeholder="Jane Doe"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full"
+            style={{
+              width: "100%",
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 10,
+              padding: "10px 12px",
+              outline: "none",
+            }}
+          />
+        </label>
 
-          <div className="password-row mt-1">
-            <div>
-              <label htmlFor="password" className="muted">Password</label>
-              <input
-                id="password"
-                className="input mt-1"
-                type={show ? "text" : "password"}
-                placeholder="Create a strong password"
-                value={password}
-                onChange={(e)=>setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <button
-              type="button"
-              className="btn ghost small self-end"
-              onClick={() => setShow(s => !s)}
-            >
-              {show ? "Hide" : "Show"}
-            </button>
+        <label style={{ display: "block", marginTop: 12 }}>
+          <div style={{ marginBottom: 6, color: "#ddd", fontSize: 14 }}>
+            Email
           </div>
+          <input
+            type="email"
+            placeholder="you@nesta.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            required
+            style={{
+              width: "100%",
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 10,
+              padding: "10px 12px",
+              outline: "none",
+            }}
+          />
+        </label>
 
-          <button className="btn w-full mt-2" type="submit" disabled={busy}>
-            {busy ? "Creating…" : "Create Account"}
-          </button>
+        <label style={{ display: "block", marginTop: 12 }}>
+          <div style={{ marginBottom: 6, color: "#ddd", fontSize: 14 }}>
+            Password
+          </div>
+          <input
+            type="password"
+            placeholder="Create a strong password"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            autoComplete="new-password"
+            required
+            style={{
+              width: "100%",
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 10,
+              padding: "10px 12px",
+              outline: "none",
+            }}
+          />
+        </label>
 
-          <p className="mt-2 text-center muted">
-            Already have an account?{" "}
-            <Link to="/login" className="link gold">Sign in</Link>
-          </p>
-          <p className="mt-1 text-center muted text-xs">
-            By creating an account, you agree to our{" "}
-            <Link to="/terms" className="link gold">Terms</Link> and{" "}
-            <Link to="/privacy" className="link gold">Privacy Policy</Link>.
-          </p>
-        </form>
-      </div>
+        <label style={{ display: "block", marginTop: 12 }}>
+          <div style={{ marginBottom: 6, color: "#ddd", fontSize: 14 }}>
+            Confirm password
+          </div>
+          <input
+            type="password"
+            placeholder="Re-enter password"
+            value={pw2}
+            onChange={(e) => setPw2(e.target.value)}
+            autoComplete="new-password"
+            required
+            style={{
+              width: "100%",
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 10,
+              padding: "10px 12px",
+              outline: "none",
+            }}
+          />
+        </label>
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="btn"
+          style={{
+            marginTop: 16,
+            width: "100%",
+            backgroundColor: "#d4af37",
+            color: "#000",
+            fontWeight: 700,
+            borderRadius: 10,
+            padding: "12px 14px",
+          }}
+        >
+          {loading ? "Creating…" : "Sign up"}
+        </button>
+
+        <p style={{ marginTop: 14, color: "#bbb", fontSize: 14 }}>
+          Already have an account? <Link to="/login">Sign in</Link>
+        </p>
+      </form>
     </main>
   );
 }

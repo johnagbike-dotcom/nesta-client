@@ -1,101 +1,179 @@
-// src/App.js
-import { useEffect, useState } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
-import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
+import React from "react";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 
-// Components / Pages (adjust paths if your files live elsewhere)
 import Header from "./components/Header";
+import Footer from "./components/Footer";
+
+import RequireAuth from "./components/RequireAuth";
+import RequireRole from "./components/RequireRole";
+
 import HomePage from "./pages/HomePage";
-import CheckoutPage from "./pages/CheckoutPage";
-import SearchBrowse from "./pages/SearchBrowse";
-import ListingDetail from "./pages/ListingDetails";
+import NotFound from "./pages/NotFound";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import ProfilePage from "./pages/ProfilePage";
+
+import HostDashboard from "./pages/HostDashboard";
 import CreateListing from "./pages/CreateListing";
 import EditListing from "./pages/EditListing";
+import ListingDetails from "./pages/ListingDetails";
+
 import PartnerDashboard from "./pages/PartnerDashboard";
-import DevSeed from "./pages/DevSeed"; // optional, if you still have the seeder page
 
-function RequireAuth({ children }) {
-  const auth = getAuth();
-  const [ready, setReady] = useState(false);
-  const [user, setUser] = useState(null);
+import KycReviewPage from "./pages/admin/KycReviewPage";
+import Transactions from "./pages/admin/Transactions";
+import AdminFeatureRequests from "./pages/admin/AdminFeatureRequests";
+import Settings from "./pages/admin/Settings";
+import ManageUsers from "./pages/admin/ManageUsers";
+import { RequireAuth, RequireKycApproved, RequireRole } from "./router/guards";
+// Small helper so /listing/* can't be swallowed by order mistakes
+function ListingSwitch() {
+  const { pathname } = useLocation(); // e.g. /listing/host-vi-loft or /listing/host-vi-loft/edit
+  const parts = pathname.split("/").filter(Boolean); // ["listing","<id>", "edit"?]
+  const id = parts[1];
+  const isEdit = parts[2] === "edit";
+  if (!id) return <NotFound />;
+  return isEdit ? <EditListing /> : <ListingDetails />;
+}
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setReady(true);
-    });
-    return () => unsub();
-  }, [auth]);
-
-  if (!ready) return <div style={{ padding: 16 }}>Loading…</div>;
-  if (!user) return <Navigate to="/" replace />; // kick back to home if not signed in
-  return children;
+function Ping() {
+  return (
+    <div style={{ padding: 24 }}>
+      <h1 style={{ fontWeight: 800 }}>Router OK</h1>
+      <p>Ping route rendered. If you can see this, routing works.</p>
+    </div>
+  );
 }
 
 export default function App() {
-  const auth = getAuth();
-
   return (
-    <div className="min-h-screen bg-[#0b0f14] text-white">
-      {/* Render the global header once here so we never get a double header */}
-      <Header
-        onLogout={() => {
-          signOut(auth).catch(() => {});
-        }}
-      />
-
-      {/* Keep page content inside <main> so the header stays single */}
-      <main className="max-w-5xl mx-auto p-4">
+    <BrowserRouter>
+      <Header />
+      <main style={{ minHeight: "72vh" }}>
         <Routes>
+          {/* Public */}
           <Route path="/" element={<HomePage />} />
-          <Route path="/browse" element={<SearchBrowse />} />
-          <Route path="/listing/:id" element={<ListingDetail />} />
-          <Route path="/checkout/:id" element={<CheckoutPage />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/ping" element={<Ping />} />
+          <Route path="/onboarding/kyc" element={<KycGate />} />
+          <Route path="/onboarding/host" element={<HostOnboarding />} />
+          <Route path="/onboarding/partner" element={<PartnerOnboarding />} />
 
-          {/* Partner routes (protected) */}
+
+          {/* Profile */}
           <Route
-            path="/dashboard"
+            path="/profile"
             element={
               <RequireAuth>
-                <PartnerDashboard />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/listing/new"
-            element={
-              <RequireAuth>
-                <CreateListing />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/listing/:id/edit"
-            element={
-              <RequireAuth>
-                <EditListing />
+                <ProfilePage />
               </RequireAuth>
             }
           />
 
-          {/* Optional dev seeder */}
-          <Route path="/dev/seed" element={<DevSeed />} />
+          // Host dashboard
+<Route
+  path="/host"
+  element={
+    <RequireAuth>
+      <RequireKycApproved>
+        <RequireRole role="host">
+          <HostDashboard />
+        </RequireRole>
+      </RequireKycApproved>
+    </RequireAuth>
+  }
+/>
+          {/* Alias used by some buttons */}
+          <Route path="/host-listings" element={<Navigate to="/host" replace />} />
 
-          {/* Fallback */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* Create listing */}
+          <Route
+            path="/post/new"
+            element={
+              <RequireAuth>
+                <RequireRole allow={["host", "partner", "admin"]}>
+                  <CreateListing />
+                </RequireRole>
+              </RequireAuth>
+            }
+          />
+          <Route path="/post" element={<Navigate to="/post/new" replace />} />
+
+          {/* Listing details / edit (handled by switch to avoid order problems) */}
+          <Route path="/listing/*" element={<ListingSwitch />} />
+
+          // Partner dashboard
+<Route
+  path="/partner"
+  element={
+    <RequireAuth>
+      <RequireKycApproved>
+        <RequireRole role="partner">
+          <PartnerDashboard />
+        </RequireRole>
+      </RequireKycApproved>
+    </RequireAuth>
+  }
+/>
+
+          {/* Admin */}
+          <Route
+            path="/admin/kyc"
+            element={
+              <RequireAuth>
+                <RequireRole allow={["admin"]}>
+                  <KycReviewPage />
+                </RequireRole>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/transactions"
+            element={
+              <RequireAuth>
+                <RequireRole allow={["admin"]}>
+                  <Transactions />
+                </RequireRole>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/feature-requests"
+            element={
+              <RequireAuth>
+                <RequireRole allow={["admin"]}>
+                  <AdminFeatureRequests />
+                </RequireRole>
+              </RequireAuth>
+            }
+            />
+          <Route
+            path="/admin/manage-users"
+            element={
+              <RequireAuth>
+                <RequireRole allow={["admin"]}>
+                  <ManageUsers />
+                </RequireRole>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/settings"
+            element={
+              <RequireAuth>
+                <RequireRole allow={["admin"]}>
+                  <Settings />
+                </RequireRole>
+              </RequireAuth>
+            }
+          />
+
+          {/* 404 last */}
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
-
-      <footer className="max-w-5xl mx-auto p-4 opacity-70">
-        <div>© 2025 Nesta. All rights reserved.</div>
-        <div className="text-sm">
-          <a href="/terms" className="underline">Terms</a>
-          {" "}
-          <a href="/privacy" className="underline">Privacy</a>
-          {" "}
-          <a href="/help" className="underline">Help</a>
-        </div>
-      </footer>
-    </div>
+      <Footer />
+    </BrowserRouter>
   );
 }

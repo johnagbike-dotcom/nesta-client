@@ -1,0 +1,387 @@
+// src/AppRouter.js
+import React from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+
+import Header from "./components/Header";
+import Footer from "./components/Footer";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
+import { ToastProvider } from "./components/Toast";
+import { InboxProvider } from "./context/InboxContext";
+import ReserveSuccessPage from "./pages/ReserveSuccessPage";
+
+// Onboarding / KYC
+import KycPage from "./pages/onboarding/KycPage";
+import KycStart from "./pages/onboarding/KycStart";
+import KycApplicationPage from "./pages/onboarding/KycApplicationPage";
+import KycGate from "./pages/onboarding/KycGate";
+import KycPending from "./pages/onboarding/KycPending";
+import KycRetry from "./pages/onboarding/KycRetry";
+import OnboardingHost from "./pages/onboarding/HostOnboarding";
+import OnboardingPartner from "./pages/onboarding/PartnerOnboarding";
+
+// Public / user pages
+import HomePage from "./pages/HomePage";
+import GuestDashboard from "./pages/GuestDashboard";
+import ListingDetails from "./pages/ListingDetails";
+import ReservePage from "./pages/ReservePage";
+import ChatPage from "./pages/ChatPage";
+import Wishlist from "./pages/Wishlist";
+import GuestBookings from "./pages/GuestBookings";
+import InboxPage from "./pages/InboxPage";
+import AboutPage from "./pages/AboutPage";
+import PostAdLanding from "./pages/PostAdLanding";
+import PostListing from "./pages/PostListing";
+import PostAdRouter from "./pages/PostAdRouter";
+import ContactPage from "./pages/ContactPage";
+import PressPage from "./pages/PressPage";
+import CareersPage from "./pages/CareersPage";
+import HelpPage from "./pages/HelpPage";
+import GuestExplorePage from "./pages/GuestExplorePage";
+
+// Host / Partner dashboards & tools
+import HostDashboard from "./pages/HostDashboard";
+import PartnerDashboard from "./pages/PartnerDashboard";
+import HostReservationsPage from "./pages/HostReservationsPage";
+import PartnerReservationsPage from "./pages/PartnerReservationsPage";
+import CreateListing from "./pages/CreateListing";
+import EditListing from "./pages/EditListing";
+// unified listings page
+import ManageMyListings from "./pages/ManageMyListings";
+import SubscribePage from "./pages/SubscribePage";
+
+// Admin router
+import AdminRouter from "./pages/admin/AdminRouter";
+import AdminDashboard from "./pages/admin/AdminDashboard";
+
+// Auth pages
+import LoginPage from "./pages/LoginPage";
+import SignUpPage from "./pages/SignUpPage";
+import Login from "./auth/Login";
+import SignUp from "./auth/SignUp";
+import PhoneSignin from "./auth/PhoneSignin";
+import ResetPassword from "./auth/ResetPassword";
+import MfaSetup from "./auth/MfaSetup";
+import AuthActionHandler from "./auth/AuthActionHandler";
+
+// Guards
+import {
+  RequireAuth,
+  RequireKycApproved,
+  RequireRole,
+  OnboardingGate,
+} from "./routes/guards";
+
+/* ---------- Local admin guard ---------- */
+function RequireAdmin({ children }) {
+  const { user, profile, loading } = useAuth();
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" replace />;
+  const role = (profile?.role || "").toLowerCase();
+  if (role !== "admin" && profile?.isAdmin !== true) {
+    return <Navigate to="/" replace />;
+  }
+  return children;
+}
+
+export default function AppRouter() {
+  return (
+    <AuthProvider>
+      <InboxProvider>
+        <BrowserRouter>
+          <ToastProvider>
+            <Header />
+            <Routes>
+              {/* ---------- Public ---------- */}
+              <Route path="/" element={<HomePage />} />
+              <Route path="/explore" element={<GuestExplorePage />} />
+              <Route path="/listing/:id" element={<ListingDetails />} />
+              <Route path="/about" element={<AboutPage />} />
+              <Route path="/post-ad" element={<PostAdLanding />} />
+              <Route path="/PostListing" element={<PostListing />} />
+              <Route path="/post" element={<PostAdRouter />} />
+              <Route path="/contact" element={<ContactPage />} />
+              <Route path="/press" element={<PressPage />} />
+              <Route path="/careers" element={<CareersPage />} />
+              <Route path="/help" element={<HelpPage />} />
+
+              {/* ---------- Auth (public) ---------- */}
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/signup" element={<SignUpPage />} />
+              <Route path="/login-legacy" element={<Login />} />
+              <Route path="/signup-legacy" element={<SignUp />} />
+              <Route path="/phone" element={<PhoneSignin />} />
+              <Route path="/reset" element={<ResetPassword />} />
+              <Route path="/mfa-setup" element={<MfaSetup />} />
+              <Route path="/action" element={<AuthActionHandler />} />
+
+              {/* ---------- Logged-in guest space ---------- */}
+              <Route
+                path="/dashboard"
+                element={
+                  <RequireAuth>
+                    <GuestDashboard />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/reserve/success"
+                element={
+                  <RequireAuth>
+                    <ReserveSuccessPage />
+                  </RequireAuth>
+                }
+              />
+
+              {/* ---------- Subscriptions ---------- */}
+              <Route
+                path="/subscribe"
+                element={
+                  <RequireAuth>
+                    <SubscribePage />
+                  </RequireAuth>
+                }
+              />
+
+              {/* ---------- Listing create / edit ---------- */}
+              <Route
+                path="/post/new"
+                element={
+                  <RequireAuth>
+                    <CreateListing />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/listing/:id/edit"
+                element={
+                  <RequireAuth>
+                    <EditListing />
+                  </RequireAuth>
+                }
+              />
+
+              {/* ---------- KYC / Onboarding flows ---------- */}
+              {/* Old entry – generic KYC page */}
+              <Route
+                path="/onboarding/kyc"
+                element={
+                  <RequireAuth>
+                    <KycPage />
+                  </RequireAuth>
+                }
+              />
+
+              {/* New luxury flow:
+                  1) KycGate decides where to send user
+                  2) KycStart = “let’s verify you” + CTA
+                  3) KycApplicationPage = form
+                  4) KycPending = after submit
+                  5) KycRetry = if rejected
+              */}
+              <Route
+                path="/onboarding/kyc/gate"
+                element={
+                  <RequireAuth>
+                    <KycGate />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/onboarding/kyc/start"
+                element={
+                  <RequireAuth>
+                    <KycStart />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/onboarding/kyc/apply"
+                element={
+                  <RequireAuth>
+                    <KycApplicationPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/onboarding/kyc/pending"
+                element={
+                  <RequireAuth>
+                    <KycPending />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/onboarding/kyc/retry"
+                element={
+                  <RequireAuth>
+                    <KycRetry />
+                  </RequireAuth>
+                }
+              />
+
+              {/* ---------- Role-specific onboarding ---------- */}
+              <Route
+                path="/onboarding/host"
+                element={
+                  <OnboardingGate wantRole="host" alreadyHasRoleTo="/host">
+                    <OnboardingHost />
+                  </OnboardingGate>
+                }
+              />
+              <Route
+                path="/onboarding/partner"
+                element={
+                  <OnboardingGate
+                    wantRole="partner"
+                    alreadyHasRoleTo="/partner"
+                  >
+                    <OnboardingPartner />
+                  </OnboardingGate>
+                }
+              />
+
+              {/* ---------- Inbox / chat ---------- */}
+              <Route
+                path="/inbox"
+                element={
+                  <RequireAuth>
+                    <InboxPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/chat"
+                element={
+                  <RequireAuth>
+                    <ChatPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/chat/:uid"
+                element={
+                  <RequireAuth>
+                    <ChatPage />
+                  </RequireAuth>
+                }
+              />
+
+              {/* ---------- Guest features ---------- */}
+              <Route
+                path="/reserve/:id"
+                element={
+                  <RequireAuth>
+                    <ReservePage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/bookings"
+                element={
+                  <RequireAuth>
+                    <GuestBookings />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/favourites"
+                element={
+                  <RequireAuth>
+                    <Wishlist />
+                  </RequireAuth>
+                }
+              />
+
+              {/* ---------- Host / Partner tools ---------- */}
+              <Route
+                path="/host"
+                element={
+                  <RequireAuth>
+                    <RequireKycApproved>
+                      <RequireRole roles={["host", "admin"]}>
+                        <HostDashboard />
+                      </RequireRole>
+                    </RequireKycApproved>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/partner"
+                element={
+                  <RequireAuth>
+                    <RequireKycApproved>
+                      <RequireRole roles={["partner", "admin"]}>
+                        <PartnerDashboard />
+                      </RequireRole>
+                    </RequireKycApproved>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/host-reservations"
+                element={
+                  <RequireAuth>
+                    <HostReservationsPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/reservations"
+                element={
+                  <RequireAuth>
+                    <PartnerReservationsPage />
+                  </RequireAuth>
+                }
+              />
+
+              {/* ✅ Unified listings / portfolio for BOTH host & partner */}
+              <Route
+                path="/manage-listings"
+                element={
+                  <RequireAuth>
+                    <RequireKycApproved>
+                      <ManageMyListings />
+                    </RequireKycApproved>
+                  </RequireAuth>
+                }
+              />
+              {/* Backwards-compat: old URLs now redirect to the unified page */}
+              <Route
+                path="/host-listings"
+                element={<Navigate to="/manage-listings" replace />}
+              />
+              <Route
+                path="/partner-listings"
+                element={<Navigate to="/manage-listings" replace />}
+              />
+
+              {/* ---------- Admin (new consolidated) ---------- */}
+              <Route
+                path="/admin/*"
+                element={
+                  <RequireAdmin>
+                    <AdminRouter />
+                  </RequireAdmin>
+                }
+              />
+
+              {/* ---------- Admin (backward compat — /admin) ---------- */}
+              <Route
+                path="/admin"
+                element={
+                  <RequireAdmin>
+                    <AdminDashboard />
+                  </RequireAdmin>
+                }
+              />
+
+              {/* ---------- Backstop ---------- */}
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+            <Footer />
+          </ToastProvider>
+        </BrowserRouter>
+      </InboxProvider>
+    </AuthProvider>
+  );
+}

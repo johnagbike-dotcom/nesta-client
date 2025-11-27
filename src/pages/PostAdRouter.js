@@ -3,11 +3,20 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createListing } from "../lib/listings";
 import { useAuth } from "../auth/AuthContext";
+import useUserProfile from "../hooks/useUserProfile";
 
+function kycOk(s) {
+  const v = String(s || "").toLowerCase();
+  return v === "approved" || v === "verified" || v === "complete";
+}
 export default function PostAdRouter() {
   const { user } = useAuth(); // route should be protected, but we keep a guard
   const navigate = useNavigate();
-
+  const { profile } = useUserProfile(user?.uid);
+  const role = String(profile?.role || "").toLowerCase();
+  const isAdmin = profile?.isAdmin === true || role === "admin";
+  const isHost = role === "host" || role === "verified_host";
+  const isPartner = role === "partner" || role === "verified_partner";
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -25,7 +34,19 @@ export default function PostAdRouter() {
     const { name, type, value, checked } = e.target;
     setForm((s) => ({ ...s, [name]: type === "checkbox" ? checked : value }));
   };
-
+  // HARD GATE
+  if (!user) {
+    navigate("/signup?next=/post", { replace: true });
+    return null;
+  }
+  if (!kycOk(profile?.kycStatus)) {
+    navigate("/onboarding/kyc?next=/post", { replace: true });
+    return null;
+  }
+  if (!(isHost || isPartner || isAdmin)) {
+    navigate("/onboarding/host?next=/post", { replace: true });
+    return null;
+  }
   const onSubmit = async (e) => {
     e.preventDefault();
     if (!user) {

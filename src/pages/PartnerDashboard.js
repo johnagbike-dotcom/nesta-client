@@ -1,126 +1,537 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
+// src/pages/PartnerDashboard.js
+import React, { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
   collection,
+  getDocs,
   query,
   where,
-  orderBy,
-  getDocs,
-  deleteDoc,
-  doc,
 } from "firebase/firestore";
-import { auth, db } from "../firebase";
-import ListingCard from "../components/ListingCard";
+import { db } from "../firebase";
+import { useAuth } from "../auth/AuthContext";
+import useUserProfile from "../hooks/useUserProfile";
+import VerifiedRoleBadge from "../components/VerifiedRoleBadge";
+
+const nf = new Intl.NumberFormat("en-NG");
 
 export default function PartnerDashboard() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { profile } = useUserProfile(user?.uid);
+
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [loadingListings, setLoadingListings] = useState(true);
+  const [err, setErr] = useState("");
+
+  // raw listings and reservations
   const [listings, setListings] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [usingFallback, setUsingFallback] = useState(false);
-  const [error, setError] = useState("");
+  const [reservations, setReservations] = useState([]);
 
-  const fetchListings = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    setUsingFallback(false);
+  // filters
+  const [kw, setKw] = useState("");
+  const [minN, setMinN] = useState("");
+  const [maxN, setMaxN] = useState("");
+  const [status, setStatus] = useState("all");
 
-    try {
-      const uid = auth.currentUser?.uid;
-      if (!uid) {
-        setListings([]);
-        setLoading(false);
-        return;
-      }
+  // ---- KYC status for partner ----
+  const kycStatusRaw =
+    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
+  const kycStatus = String(kycStatusRaw).toLowerCase();
+  const isKycApproved =
+    kycStatus === "approved" ||
+    kycStatus === "verified" ||
+    kycStatus === "complete";
 
-      // Preferred (needs composite index): ownerId + updatedAt desc
-      const base = collection(db, "listings");
-      const q = query(
-        base,
-        where("ownerId", "==", uid),
-        orderBy("updatedAt", "desc")
-      );
-
-      let snap;
-      try {
-        snap = await getDocs(q);
-      } catch (e) {
-        // If index is missing, fall back to a safe order
-        setUsingFallback(true);
-        const q2 = query(base, where("ownerId", "==", uid), orderBy("__name__"));
-        snap = await getDocs(q2);
-      }
-
-      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setListings(rows);
-    } catch (e) {
-      setError(e?.message || "Failed to load your listings.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // ---------- LOAD LISTINGS ----------
   useEffect(() => {
-    fetchListings();
-  }, [fetchListings]);
+    let alive = true;
+    if (!user?.uid) return;
 
-  const onDelete = async (l) => {
-    // eslint-disable-next-line no-restricted-globals
-    const ok = confirm(`Delete “${l.title}”? This can’t be undone.`);
-    if (!ok) return;
-    try {
-      await deleteDoc(doc(db, "listings", l.id));
-      setListings((prev) => prev.filter((x) => x.id !== l.id));
-    } catch (e) {
-      alert(e?.message || "Delete failed.");
-    }
+    (async () => {
+      try {
+        setLoadingListings(true);
+        setErr("");
+
+        const qRef = query(
+          collection(db, "listings"),
+          where("partnerUid", "==", user.uid)
+        );
+        const snap = await getDocs(qRef);
+        const out = [];
+        snap.forEach((d) => out.push({ id: d.id, ...d.data() }));
+
+        if (alive) setListings(out);
+      } catch (e) {
+        console.error(e);
+        if (alive) {
+          setErr("Could not load your portfolio listings.");
+          setListings([]);
+        }
+      } finally {
+        if (alive) setLoadingListings(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [user?.uid]);
+
+  // ---------- LOAD RESERVATIONS / STATS ----------
+  useEffect(() => {
+    let alive = true;
+    if (!user?.uid) return;
+
+    (async () => {
+      try {
+        setLoadingStats(true);
+        setErr("");
+
+        const qRef = query(
+          collection(db, "reservations"),
+          where("partnerUid", "==", user.uid)
+        );
+        const snap = await getDocs(qRef);
+        const out = [];
+        snap.forEach((d) => out.push({ id: d.id, ...d.data() }));
+        if (alive) setReservations(out);
+      } catch (e) {
+        console.error(e);
+        if (alive) {
+          setErr("Could not load your partner stats.");
+          setReservations([]);
+        }
+      } finally {
+        if (alive) setLoadingStats(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [user?.uid]);
+
+  // ---------- COMPUTED STATS ----------
+  const stats = useMemo(() => {
+    const s = {
+      portfolioUnits: 0,
+      portfolioNightly: 0,
+      confirmedBookings: 0,
+      pendingBookings: 0,
+      cancelled: 0,
+      refunded: 0,
+      needsAttention: 0,
+      grossRevenue: 0,
+      partnerEarnings: 0,
+      nestaCommission: 0,
+    };
+
+    const activeListings = listings.filter(
+      (l) => (l.status || "active").toLowerCase() === "active"
+    );
+    s.portfolioUnits = activeListings.length;
+    s.portfolioNightly = activeListings.reduce(
+      (acc, l) => acc + Number(l.pricePerNight || l.price || 0),
+      0
+    );
+
+    reservations.forEach((r) => {
+      const status = String(r.status || "").toLowerCase();
+      const total = Number(r.totalAmount || r.total || 0);
+      const partnerTake =
+        Number(r.partnerPayout || r.partnerShare || r.partnerAmount || 0);
+      const nestaTake =
+        Number(r.nestaFee || r.platformFee || r.commissionNesta || 0);
+
+      if (status === "confirmed" || status === "completed" || status === "paid") {
+        s.confirmedBookings += 1;
+        s.grossRevenue += total;
+        s.partnerEarnings += partnerTake || total * 0.9;
+        s.nestaCommission += nestaTake || total * 0.1;
+      } else if (status === "pending" || status === "upcoming") {
+        s.pendingBookings += 1;
+      } else if (status === "cancelled" || status === "canceled") {
+        s.cancelled += 1;
+      } else if (status === "refunded") {
+        s.refunded += 1;
+      }
+
+      if (
+        status === "pending" ||
+        status === "cancelled" ||
+        status === "canceled" ||
+        status === "refunded"
+      ) {
+        s.needsAttention += 1;
+      }
+    });
+
+    return s;
+  }, [listings, reservations]);
+
+  // ---------- FILTERED LISTINGS ----------
+  const filteredListings = useMemo(() => {
+    const text = kw.trim().toLowerCase();
+    const min = minN ? Number(minN) : null;
+    const max = maxN ? Number(maxN) : null;
+
+    return listings.filter((l) => {
+      const price = Number(l.pricePerNight || l.price || 0);
+      const st = String(l.status || "active").toLowerCase();
+
+      const matchStatus = status === "all" || st === status;
+      const matchText =
+        !text ||
+        (l.title || "").toLowerCase().includes(text) ||
+        (l.city || "").toLowerCase().includes(text) ||
+        (l.area || "").toLowerCase().includes(text);
+      const okMin = min == null || price >= min;
+      const okMax = max == null || price <= max;
+
+      return matchStatus && matchText && okMin && okMax;
+    });
+  }, [listings, kw, minN, maxN, status]);
+
+  const resetFilters = () => {
+    setKw("");
+    setMinN("");
+    setMaxN("");
+    setStatus("all");
   };
 
+  const resultCount = filteredListings.length;
+
   return (
-    <div className="max-w-6xl mx-auto p-4 sm:p-6">
-      <div className="mb-4">
-        <h1 className="text-2xl sm:text-3xl font-bold">Partner Dashboard</h1>
-      </div>
+    <main className="min-h-screen bg-[#05070a] pt-20 pb-12 px-4 text-white">
+      <div className="max-w-6xl mx-auto space-y-6">
+        {/* Header / hero */}
+        <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+          <div>
+            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
+              Partner Dashboard
+            </h1>
+            <p className="text-white/70 max-w-2xl mt-2 text-sm md:text-base">
+              Manage bulk/portfolio listings, monitor reservations, and track{" "}
+              <span className="font-semibold">partner earnings</span> in one calm,
+              luxury view.
+            </p>
+          </div>
 
-      <div className="mb-4">
-        <Link
-          to="/create"
-          className="text-sm text-indigo-300 hover:text-indigo-200 underline"
-        >
-          + Create new listing
-        </Link>
-      </div>
+          {/* Right stack: verification + subscription */}
+          <div className="flex flex-col items-end gap-2">
+            <VerifiedRoleBadge role="Partner" verified={isKycApproved} />
 
-      {usingFallback && (
-        <p className="text-xs text-amber-300 mb-3">
-          Using fallback order until the Firestore index finishes building.
-        </p>
-      )}
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs md:text-sm">
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="font-semibold">Pro Active</span>
+              <span className="opacity-70">• Expires 18/10/2026</span>
+            </div>
+          </div>
+        </header>
 
-      {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
+        {/* Error notice (non-blocking) */}
+        {err && (
+          <div className="rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+            {err}
+          </div>
+        )}
 
-      {loading ? (
-        <p className="text-sm text-gray-300">Loading…</p>
-      ) : listings.length === 0 ? (
-        <p className="text-sm text-gray-300">
-          You don’t have any listings yet.{" "}
-          <Link to="/create" className="underline">
-            Create your first listing →
+        {/* Payout banner */}
+        <section className="rounded-3xl border border-white/5 bg-[#090b10] px-4 py-3 text-sm text-white/70">
+          No payouts yet.
+        </section>
+
+        {/* STATS GRID */}
+        <section className="grid gap-3 md:gap-4 md:grid-cols-3 lg:grid-cols-6">
+          <CardStat
+            label="Portfolio units"
+            value={stats.portfolioUnits}
+            helper="Active listings you manage"
+          />
+          <CardStat
+            label="Confirmed bookings"
+            value={stats.confirmedBookings}
+            helper="Completed / paid"
+          />
+          <CardStat
+            label="Pending bookings"
+            value={stats.pendingBookings}
+            helper="Awaiting payment or arrival"
+          />
+          <CardStat
+            label="Portfolio value (Nightly)"
+            currency
+            value={stats.portfolioNightly}
+            helper="Across active listings"
+          />
+          <CardStat
+            label="Gross revenue"
+            currency
+            value={stats.grossRevenue}
+            helper="Confirmed / paid bookings"
+          />
+          <CardStat
+            label="Partner earnings"
+            currency
+            value={stats.partnerEarnings}
+            helper="After Nesta 10% fee"
+          />
+        </section>
+
+        <section className="grid gap-3 md:gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <CardStat
+            label="Needs attention"
+            value={stats.needsAttention}
+            helper="Pending / cancelled / refunded"
+            tone="amber"
+          />
+          <CardStat label="Cancelled" value={stats.cancelled} />
+          <CardStat label="Refunded" value={stats.refunded} />
+          <CardStat
+            label="Commission (Nesta est.)"
+            currency
+            value={stats.nestaCommission}
+            helper="Estimated Nesta share from your bookings"
+          />
+        </section>
+
+        {/* ACTION BAR */}
+        <section className="flex flex-wrap items-center gap-3 mt-2">
+          <button
+            type="button"
+            onClick={() => navigate("/manage-listings")}
+            className="px-5 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+          >
+            Manage Inventory
+          </button>
+
+          <Link
+            to="/post/new"
+            className="px-4 py-2 rounded-2xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
+          >
+            + Add Inventory
           </Link>
-        </p>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {listings.map((l) => (
-            <ListingCard
-              key={l.id}
-              listing={l}
-              actions={[
-                { label: "View", to: `/listing/${l.id}` },
-                { label: "Edit", to: `/edit/${l.id}` },
-                { label: "Delete", onClick: () => onDelete(l), variant: "danger" },
-              ]}
+          <div className="ml-auto text-xs text-white/60">
+            {loadingListings
+              ? "Loading portfolio…"
+              : `${resultCount} listing${resultCount === 1 ? "" : "s"} in portfolio`}
+          </div>
+        </section>
+
+        {/* FILTERS */}
+        <section className="rounded-3xl bg-[#090c12] border border-white/5 p-4 md:p-5 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto] gap-3">
+            <input
+              value={kw}
+              onChange={(e) => setKw(e.target.value)}
+              placeholder="Search (title, city, area)…"
+              className="bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-amber-400/70"
             />
-          ))}
-        </div>
+            <input
+              type="number"
+              min={0}
+              value={minN}
+              onChange={(e) => setMinN(e.target.value)}
+              placeholder="Min ₦/night"
+              className="bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-amber-400/70"
+            />
+            <input
+              type="number"
+              min={0}
+              value={maxN}
+              onChange={(e) => setMaxN(e.target.value)}
+              placeholder="Max ₦/night"
+              className="bg-black/30 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-amber-400/70"
+            />
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded-xl px-3 py-2 text-sm outline-none focus:border-amber-400/70"
+            >
+              <option value="all">Any status</option>
+              <option value="active">active</option>
+              <option value="inactive">inactive</option>
+              <option value="review">under review</option>
+            </select>
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm hover:bg-white/10"
+            >
+              Reset
+            </button>
+          </div>
+        </section>
+
+        {/* LUXURY LISTING GRID */}
+        <section className="mt-4">
+          {loadingListings ? (
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <SkeletonCard key={i} />
+              ))}
+            </div>
+          ) : filteredListings.length === 0 ? (
+            <div className="rounded-2xl border border-amber-300/20 bg-amber-400/5 p-6 text-center">
+              <h2 className="text-lg font-semibold mb-1">No inventory yet</h2>
+              <p className="text-sm text-gray-200">
+                Add your first portfolio or bulk units to start earning.
+              </p>
+              <Link
+                to="/post/new"
+                className="inline-flex mt-4 px-5 py-2 rounded-xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
+              >
+                + Add inventory
+              </Link>
+            </div>
+          ) : (
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredListings.map((l) => {
+                const price = Number(l.pricePerNight || l.price || 0);
+                const st = String(l.status || "active").toLowerCase();
+                const tag =
+                  l.channelLabel || l.hostType || "Partner-managed";
+
+                return (
+                  <article
+                    key={l.id}
+                    className="rounded-2xl bg-[#0f1419] border border-white/5 overflow-hidden hover:border-amber-300/60 hover:-translate-y-1 transition-all duration-200 shadow-[0_14px_40px_rgba(0,0,0,0.45)]"
+                  >
+                    <div className="relative h-40 bg-black/40 overflow-hidden">
+                      {Array.isArray(l.imageUrls) && l.imageUrls[0] ? (
+                        <img
+                          src={l.imageUrls[0]}
+                          alt={l.title || "Listing"}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-[#202736] via-[#151924] to-black/90" />
+                      )}
+
+                      {/* status chip */}
+                      <div className="absolute top-2 left-2 flex flex-wrap gap-1">
+                        <span className="px-2 py-1 rounded-full text-[10px] font-semibold bg-black/70 border border-white/20 backdrop-blur">
+                          {tag}
+                        </span>
+                        <span
+                          className={`px-2 py-1 rounded-full text-[10px] border backdrop-blur ${
+                            st === "active"
+                              ? "bg-emerald-500/20 border-emerald-400/60 text-emerald-100"
+                              : st === "inactive"
+                              ? "bg-white/10 border-white/25 text-white/80"
+                              : "bg-amber-500/20 border-amber-300/70 text-amber-100"
+                          }`}
+                        >
+                          {st}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-4 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold truncate">
+                            {l.title || "Portfolio unit"}
+                          </h3>
+                          <p className="text-xs md:text-sm text-white/70 truncate">
+                            {(l.area || "—") + (l.city ? ` • ${l.city}` : "")}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2 text-[11px] text-white/65 mt-1">
+                        {l.propertyType && (
+                          <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">
+                            {l.propertyType}
+                          </span>
+                        )}
+                        {l.bedrooms && (
+                          <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">
+                            {l.bedrooms} bedroom
+                            {l.bedrooms > 1 ? "s" : ""}
+                          </span>
+                        )}
+                        {l.maxGuests && (
+                          <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">
+                            Sleeps {l.maxGuests}
+                          </span>
+                        )}
+                      </div>
+
+                      <p className="text-lg font-bold mt-1">
+                        ₦{nf.format(price)}
+                        <span className="text-xs text-gray-400 ml-1">
+                          / night
+                        </span>
+                      </p>
+
+                      <div className="flex gap-2 mt-3">
+                        <Link
+                          to={`/listing/${l.id}`}
+                          className="flex-1 text-center px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-sm hover:bg-white/15"
+                        >
+                          View
+                        </Link>
+                        <Link
+                          to={`/listing/${l.id}/edit`}
+                          className="flex-1 text-center px-3 py-1.5 rounded-xl bg-amber-500 text-black text-sm font-semibold hover:bg-amber-400"
+                        >
+                          Edit
+                        </Link>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+    </main>
+  );
+}
+
+/* ---------- Small reusable components ---------- */
+
+function CardStat({ label, value, helper, currency = false, tone }) {
+  const formatted = currency ? nf.format(Math.round(value || 0)) : value || 0;
+
+  const toneClasses =
+    tone === "amber"
+      ? "border-amber-400/40 bg-amber-500/10"
+      : "border-white/10 bg-white/5";
+
+  return (
+    <div
+      className={`rounded-2xl px-4 py-3 border ${toneClasses} flex flex-col justify-between min-h-[84px]`}
+    >
+      <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
+        {label}
+      </div>
+      <div className="mt-1 text-2xl font-semibold">
+        {currency ? `₦${formatted}` : formatted}
+      </div>
+      {helper && (
+        <div className="mt-1 text-[11px] text-white/55 truncate">{helper}</div>
       )}
+    </div>
+  );
+}
+
+function SkeletonCard() {
+  return (
+    <div className="rounded-2xl bg-[#0f1419] border border-white/5 overflow-hidden shadow-[0_14px_40px_rgba(0,0,0,0.25)] animate-pulse">
+      <div className="h-40 bg-white/5" />
+      <div className="p-4 space-y-2">
+        <div className="h-4 bg-white/10 rounded w-2/3" />
+        <div className="h-3 bg-white/5 rounded w-1/2" />
+        <div className="h-5 bg-white/10 rounded w-1/3 mt-2" />
+        <div className="flex gap-2 mt-3">
+          <div className="h-8 bg-white/5 rounded-xl flex-1" />
+          <div className="h-8 bg-white/5 rounded-xl flex-1" />
+        </div>
+      </div>
     </div>
   );
 }

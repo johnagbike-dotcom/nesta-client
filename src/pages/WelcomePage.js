@@ -1,3 +1,4 @@
+// src/pages/WelcomePage.js
 import React, { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import WelcomeCard from "../components/WelcomeCard";
@@ -12,24 +13,24 @@ import { auth } from "../firebase";
 
 export default function WelcomePage() {
   const navigate = useNavigate();
-  const { state } = useLocation(); // could contain { next: "/somewhere" }
+  const { state } = useLocation();
   const nextPath = state?.next || "/role-selection";
 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // If we arrive here after a redirect-based Google flow, just swallow any result errors
+  // Handle Google redirect result quietly
   getRedirectResult(auth).catch(() => {});
 
   function humanizeFirebaseError(err) {
     const c = err?.code || "";
     if (c === "auth/operation-not-allowed") {
-      return "Google sign-in isn’t enabled yet. In Firebase → Authentication → Sign-in method, enable Google and set a Support email.";
+      return "Google sign-in isn’t enabled yet. Enable Google in Firebase Authentication.";
     }
     if (c === "auth/popup-blocked") return "Popup was blocked. Please allow popups or try again.";
-    if (c === "auth/network-request-failed") return "Network error. Check your connection and try again.";
+    if (c === "auth/network-request-failed") return "Network error. Check your connection.";
     return err?.message || "Something went wrong. Please try again.";
-    }
+  }
 
   async function googleOneTap() {
     setError("");
@@ -56,17 +57,28 @@ export default function WelcomePage() {
   }
 
   return (
-    <main className="dash-bg">
-      <div className="container dash-wrap">
+    <main
+      className="dash-bg"
+      style={{
+        background: "linear-gradient(135deg, #0f0f0f, #1a1a1a)",
+        minHeight: "100vh",
+        fontFamily: "'Playfair Display', serif",
+      }}
+    >
+      <div className="container dash-wrap" style={{ paddingTop: 40 }}>
         {/* Top CTA row */}
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <button className="btn ghost" onClick={() => navigate("/browse")}>Explore listings</button>
-          <button className="btn ghost" onClick={() => navigate("/post-ad")}>Post ad</button>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+          <button className="btn ghost" onClick={() => navigate("/browse")}>
+            Explore Listings
+          </button>
+          <button className="btn ghost" onClick={() => navigate("/post-ad")}>
+            List a Property
+          </button>
         </div>
 
         <WelcomeCard
           title="Welcome to Nesta"
-          subtitle="Premium stays, trusted hosts and agents, and a safe in-app chat. Join to unlock more."
+          subtitle="Nigeria’s premier platform for luxury stays and exclusive verified partners."
         >
           {/* Error banner */}
           {error && (
@@ -84,7 +96,7 @@ export default function WelcomePage() {
             </div>
           )}
 
-          {/* 2-column layout: Left = CTAs, Right = perks */}
+          {/* 2-column layout */}
           <div
             style={{
               display: "grid",
@@ -92,29 +104,37 @@ export default function WelcomePage() {
               gap: 24,
             }}
           >
-            {/* LEFT: primary actions */}
+            {/* LEFT: actions */}
             <section
               style={{
-                borderRadius: 14,
-                padding: 16,
-                border: "1px solid rgba(255,255,255,0.10)",
+                borderRadius: 16,
+                padding: 18,
+                border: "1px solid rgba(212,175,55,0.25)", // subtle gold
                 background: "rgba(255,255,255,0.04)",
-                backdropFilter: "blur(6px)",
+                backdropFilter: "blur(8px)",
               }}
             >
-              <h3 style={{ marginTop: 0, marginBottom: 10 }}>Get started</h3>
+              <h3 style={{ marginTop: 0, marginBottom: 10, color: "#d4af37" }}>Get Started</h3>
 
               <button
                 type="button"
                 className="btn"
                 onClick={googleOneTap}
                 disabled={busy}
-                style={{ width: "100%" }}
+                style={{
+                  width: "100%",
+                  backgroundColor: "#d4af37",
+                  color: "#000",
+                  fontWeight: "600",
+                }}
               >
                 {busy ? "Connecting…" : "Continue with Google"}
               </button>
 
-              <div className="muted" style={{ textAlign: "center", margin: "12px 0" }}>
+              <div
+                className="muted"
+                style={{ textAlign: "center", margin: "12px 0", color: "#aaa" }}
+              >
                 OR
               </div>
 
@@ -147,22 +167,24 @@ export default function WelcomePage() {
               </div>
             </section>
 
-            {/* RIGHT: perks/benefits */}
+            {/* RIGHT: perks */}
             <section
               style={{
-                borderRadius: 14,
-                padding: 16,
-                border: "1px solid rgba(255,255,255,0.10)",
+                borderRadius: 16,
+                padding: 18,
+                border: "1px solid rgba(212,175,55,0.25)",
                 background: "rgba(255,255,255,0.04)",
-                backdropFilter: "blur(6px)",
+                backdropFilter: "blur(8px)",
               }}
             >
-              <h3 style={{ marginTop: 0, marginBottom: 10 }}>Why join Nesta?</h3>
-              <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
-                <li>Message hosts & agents safely in-app.</li>
-                <li>Verified listings with premium presentation.</li>
-                <li>Contact details unlocked after booking (hosts) or with subscription (agents).</li>
-                <li>Optional featured placement for extra visibility.</li>
+              <h3 style={{ marginTop: 0, marginBottom: 10, color: "#d4af37" }}>
+                Why Join Nesta?
+              </h3>
+              <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
+                <li>Access verified luxury listings across Nigeria.</li>
+                <li>Exclusive in-app chat with trusted hosts & partners.</li>
+                <li>Seamless booking experience with premium support.</li>
+                <li>Earn visibility with optional featured placements.</li>
               </ul>
 
               <div
@@ -172,6 +194,7 @@ export default function WelcomePage() {
                   fontSize: 13,
                   borderTop: "1px dashed rgba(255,255,255,0.15)",
                   paddingTop: 10,
+                  color: "#999",
                 }}
               >
                 By continuing, you agree to our{" "}

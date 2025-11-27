@@ -1,0 +1,42 @@
+/* Subtle, GPU-friendly animations (no layout thrash) */
+
+.motion-fade-in {
+  opacity: 0;
+  transform: translateY(4px);
+  animation: fadeInUp .28s ease-out forwards;
+}
+
+.motion-slide-up {
+  opacity: 0;
+  transform: translateY(8px);
+  animation: slideUp .32s cubic-bezier(.22,.61,.36,1) forwards;
+}
+
+.motion-pop {
+  opacity: 0;
+  transform: scale(.98);
+  animation: popIn .22s ease-out forwards;
+}
+
+@keyframes fadeInUp {
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideUp {
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes popIn {
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Stagger helper */
+.motion-stagger > * {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: fadeInUp .28s ease-out forwards;
+}
+.motion-stagger > *:nth-child(1) { animation-delay: .02s }
+.motion-stagger > *:nth-child(2) { animation-delay: .04s }
+.motion-stagger > *:nth-child(3) { animation-delay: .06s }
+.motion-stagger > *:nth-child(4) { animation-delay: .08s }
+.motion-stagger > *:nth-child(5) { animation-delay: .10s }
+.motion-stagger > *:nth-child(6) { animation-delay: .12s }

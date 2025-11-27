@@ -1,0 +1,112 @@
+/* Luxury payout polish — subtle motion + glass cards */
+
+.lux-card {
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 26px rgba(0,0,0,.35);
+}
+
+.lux-grid {
+  display: grid;
+  gap: 12px;
+}
+
+@media (min-width: 768px) {
+  .lux-grid-3 {
+    grid-template-columns: repeat(3, minmax(0,1fr));
+  }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0.35) 45%, rgba(255,255,255,0.15) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmerMove 2.2s linear infinite;
+  background-size: 200% 100%;
+}
+
+@keyframes shimmerMove {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.kpi {
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.25);
+  padding: 14px;
+}
+
+.kpi .label {
+  color: rgba(255,255,255,.65);
+  font-size: .85rem;
+}
+
+.kpi .value {
+  font-weight: 800;
+  font-size: 1.35rem;
+  line-height: 1.1;
+}
+
+.row {
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(17,24,39,0.50);
+  transition: transform .18s ease, background .18s ease, border-color .18s ease;
+}
+
+.row:hover {
+  transform: translateY(-2px);
+  background: rgba(17,24,39,0.65);
+  border-color: rgba(255,255,255,0.16);
+}
+
+.badge {
+  font-size: .72rem;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+}
+
+.badge.paid {
+  border-color: rgba(16,185,129,.45);
+  background: rgba(16,185,129,.14);
+  color: #b7f7dc;
+  box-shadow: 0 0 24px rgba(16,185,129,.18);
+}
+
+.badge.pending {
+  border-color: rgba(251,191,36,.45);
+  background: rgba(251,191,36,.14);
+  color: #fde68a;
+  box-shadow: 0 0 24px rgba(251,191,36,.18);
+}
+
+.badge.processing {
+  border-color: rgba(59,130,246,.45);
+  background: rgba(59,130,246,.14);
+  color: #bfdbfe;
+  box-shadow: 0 0 24px rgba(59,130,246,.18);
+}
+
+.badge.declined, .badge.failed {
+  border-color: rgba(239,68,68,.45);
+  background: rgba(239,68,68,.14);
+  color: #fecaca;
+  box-shadow: 0 0 24px rgba(239,68,68,.18);
+}
+
+.table-head {
+  color: rgba(255,255,255,.55);
+  font-size: .78rem;
+  letter-spacing: .02em;
+}
+
+.divider {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255,255,255,.06), rgba(255,255,255,.15), rgba(255,255,255,.06));
+} 

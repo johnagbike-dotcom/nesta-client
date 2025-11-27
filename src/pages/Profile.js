@@ -1,176 +1,204 @@
-// src/pages/Profile.js
-import React, { useEffect, useState } from "react";
-import toast from "react-hot-toast";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { updateProfile } from "firebase/auth";
-
-import { auth, db, storage, onAuth, ensureUserProfile } from "../firebase";
+import React, { useEffect, useMemo, useState } from "react";
+import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { db } from "../firebase";
+import { useAuth } from "../auth/AuthContext";
 
 export default function Profile() {
-  const [user, setUser] = useState(null);
+  const { user, profile, isAdmin, loading, logout, refreshProfile } = useAuth();
 
-  const [displayName, setDisplayName] = useState("");
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [avatarFile, setAvatarFile] = useState(null);
-
+  // Local editable form state (mirrors Firestore users/{uid})
+  const [form, setForm] = useState({
+    email: "",
+    displayName: "",
+    phone: "",
+    role: "guest",
+  });
   const [saving, setSaving] = useState(false);
-  const [savedToast, setSavedToast] = useState(false);
-  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
 
-  // Load current user + profile doc
+  // Seed the form once we have a profile
   useEffect(() => {
-    const unsub = onAuth(async (u) => {
-      setUser(u);
-      if (!u) return;
+    if (!profile) return;
+    setForm((f) => ({
+      ...f,
+      email: user?.email ?? profile.email ?? "",
+      displayName: profile.displayName ?? "",
+      phone: profile.phone ?? "",
+      role: (profile.role ?? "guest").toLowerCase(),
+    }));
+  }, [profile, user]);
 
-      // make sure a users/{uid} doc exists
-      await ensureUserProfile(u.uid);
+  // Permission rules:
+  // - Everyone can edit displayName/phone.
+  // - Guests can switch to "host".
+  // - Only admins can assign "admin".
+  const roleOptions = useMemo(() => {
+    const base = ["guest", "host"];
+    return isAdmin ? [...base, "admin"] : base;
+  }, [isAdmin]);
 
-      const snap = await getDoc(doc(db, "users", u.uid));
-      const data = snap.exists() ? snap.data() : {};
+  const canChangeRole = useMemo(() => {
+    if (!profile) return false;
+    if (isAdmin) return true;
+    // Non-admins can only toggle between guest/host
+    return ["guest", "host"].includes(profile.role?.toLowerCase() ?? "guest");
+  }, [profile, isAdmin]);
 
-      setDisplayName(data.displayName || u.displayName || "");
-      setPhoneNumber(data.phoneNumber || "");
-    });
+  const onChange = (e) => {
+    const { name, value } = e.target;
+    setForm((f) => ({ ...f, [name]: value }));
+  };
 
-    return () => unsub && unsub();
-  }, []);
-
-  const handleSave = async (e) => {
+  const onSave = async (e) => {
     e.preventDefault();
     if (!user) return;
 
-    setSaving(true);
-    setError("");
-    toast.success("Profile updated successfully!");
-
     try {
-      let photoURL = user.photoURL || null;
+      setSaving(true);
+      setMessage("");
 
-      // If a new avatar was chosen, upload and get URL
-      if (avatarFile) {
-        const fileRef = ref(storage, `avatars/${user.uid}`);
-        await uploadBytes(fileRef, avatarFile);
-        photoURL = await getDownloadURL(fileRef);
+      // Build the update payload respecting permissions
+      const payload = {
+        displayName: form.displayName,
+        phone: form.phone,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (canChangeRole) {
+        // If non-admin, clamp role to guest/host; admins can set any option in roleOptions
+        const requested = (form.role || "guest").toLowerCase();
+        payload.role = isAdmin
+          ? requested
+          : ["guest", "host"].includes(requested)
+          ? requested
+          : "guest";
       }
 
-      // Update Firestore profile
-      const uref = doc(db, "users", user.uid);
-      await setDoc(
-        uref,
-        {
-          displayName: displayName || null,
-          phoneNumber: phoneNumber || null,
-          photoURL: photoURL || null,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      // Update Firebase Auth profile so header/avatar refreshes immediately
-      await updateProfile(auth.currentUser, {
-        displayName: displayName || null,
-        photoURL: photoURL || null,
-      });
-
-      // Tiny success toast
-      setSavedToast(true);
-      setTimeout(() => setSavedToast(false), 2500);
-      setAvatarFile(null);
+      await updateDoc(doc(db, "users", user.uid), payload);
+      await refreshProfile();
+      setMessage("Profile updated.");
     } catch (err) {
       console.error(err);
-      setError(err.message || "Failed to save changes.");
+      setMessage(err?.message || "Could not update profile.");
     } finally {
       setSaving(false);
     }
   };
 
-  if (!user) {
+  if (loading) {
     return (
-      <div className="max-w-3xl mx-auto px-4 py-8">
-        <h1 className="text-3xl font-bold mb-2">Profile</h1>
-        <p>Please sign in to edit your profile.</p>
+      <div className="p-6 text-slate-200">
+        <div className="animate-pulse">Loading your profile…</div>
+      </div>
+    );
+  }
+
+  if (!user || !profile) {
+    return (
+      <div className="p-6 text-slate-200">
+        <p>You’re not signed in.</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6">Profile</h1>
+    <div className="p-6 max-w-2xl mx-auto text-slate-200">
+      <h1 className="text-2xl font-semibold mb-1">My Profile</h1>
+      <p className="text-sm text-slate-400 mb-6">
+        Update your account details, role, and settings.
+      </p>
 
-      <div className="bg-gray-900/40 border border-gray-700 rounded-xl p-6">
-        <div className="flex items-center gap-4 mb-6">
-          <div className="w-14 h-14 rounded-full bg-amber-500 text-gray-900 font-bold text-xl flex items-center justify-center overflow-hidden">
-            {user.photoURL ? (
-              <img
-                src={user.photoURL}
-                alt="avatar"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <span>{(displayName || user.email || "N").charAt(0).toUpperCase()}</span>
-            )}
-          </div>
-          <div className="text-gray-300">
-            <div className="font-semibold">
-              {displayName || "Unnamed"}
-            </div>
-            <div className="text-sm opacity-80">{user.email}</div>
-          </div>
+      {message && (
+        <div className="mb-4 rounded-md bg-slate-800/60 border border-slate-700 px-4 py-2 text-sm">
+          {message}
+        </div>
+      )}
+
+      <form onSubmit={onSave} className="space-y-5">
+        {/* Email (read-only) */}
+        <div>
+          <label className="block text-sm mb-1">Email</label>
+          <input
+            value={form.email}
+            readOnly
+            className="w-full rounded-md bg-slate-800/50 border border-slate-700 px-3 py-2 text-slate-200 cursor-not-allowed"
+          />
         </div>
 
-        <form onSubmit={handleSave} className="space-y-5">
-          <div>
-            <label className="block text-sm mb-1">Display name</label>
-            <input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              className="w-full rounded-md bg-gray-800 border border-gray-700 px-3 py-2 outline-none"
-              placeholder="Your name"
-            />
-          </div>
+        {/* Display Name */}
+        <div>
+          <label className="block text-sm mb-1">Display name</label>
+          <input
+            name="displayName"
+            value={form.displayName}
+            onChange={onChange}
+            placeholder="Jane Doe"
+            className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500"
+          />
+        </div>
 
-          <div>
-            <label className="block text-sm mb-1">Phone number</label>
-            <input
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-              className="w-full rounded-md bg-gray-800 border border-gray-700 px-3 py-2 outline-none"
-              placeholder="+234..."
-            />
-          </div>
+        {/* Phone */}
+        <div>
+          <label className="block text-sm mb-1">Phone</label>
+          <input
+            name="phone"
+            value={form.phone}
+            onChange={onChange}
+            placeholder="+234…"
+            className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500"
+          />
+        </div>
 
-          <div>
-            <label className="block text-sm mb-1">Profile photo</label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => setAvatarFile(e.target.files?.[0] || null)}
-              className="block w-full text-sm"
-            />
-          </div>
-
-          {error && (
-            <div className="text-sm text-red-400">{error}</div>
+        {/* Role */}
+        <div>
+          <label className="block text-sm mb-1">Role</label>
+          <select
+            name="role"
+            value={form.role}
+            onChange={onChange}
+            disabled={!canChangeRole}
+            className={`w-full rounded-md px-3 py-2 border ${
+              canChangeRole
+                ? "bg-slate-900/60 border-slate-700 focus:outline-none focus:ring-2 focus:ring-pink-500"
+                : "bg-slate-800/50 border-slate-700 cursor-not-allowed opacity-70"
+            }`}
+          >
+            {roleOptions.map((r) => (
+              <option key={r} value={r}>
+                {r.charAt(0).toUpperCase() + r.slice(1)}
+              </option>
+            ))}
+          </select>
+          {!canChangeRole && (
+            <p className="mt-1 text-xs text-slate-400">
+              Only administrators can change this role.
+            </p>
           )}
+        </div>
 
+        <div className="flex items-center gap-3">
           <button
             type="submit"
             disabled={saving}
-            className="px-4 py-2 rounded-md bg-amber-500 text-gray-900 font-semibold disabled:opacity-60"
+            className="rounded-md bg-pink-600 hover:bg-pink-500 px-4 py-2 text-sm font-medium disabled:opacity-60"
           >
-            {saving ? "Saving..." : "Save changes"}
+            {saving ? "Saving…" : "Save Changes"}
           </button>
-        </form>
-      </div>
 
-      {/* Tiny Saved toast */}
-      {savedToast && (
-        <div className="fixed bottom-4 right-4 bg-gray-900 border border-gray-700 text-gray-100 px-3 py-2 rounded-lg shadow-lg">
-          Saved
+          <button
+            type="button"
+            onClick={logout}
+            className="rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-2 text-sm"
+          >
+            Log out
+          </button>
+
+          <span className="ml-auto text-xs text-slate-400">
+            Current role: <strong>{profile?.role ?? "guest"}</strong>
+            {isAdmin && " (admin)"}
+          </span>
         </div>
-      )}
+      </form>
     </div>
   );
-}
+} 

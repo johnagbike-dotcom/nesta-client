@@ -1,172 +1,601 @@
 // src/pages/HomePage.js
-import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import {
-  collection,
-  getDocs,
-  limit as fbLimit,
-  query,
-} from "firebase/firestore";
-import { db } from "../firebase";
+import React, { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import FeaturedCarousel from "../components/FeaturedCarousel";
+import { useAuth } from "../auth/AuthContext";
+import useUserProfile from "../hooks/useUserProfile";
 
-// --- helpers ---
-const NGN = (n) =>
-  typeof n === "number" && !Number.isNaN(n) ? `₦${n.toLocaleString("en-NG")}` : "";
+/* ---------- page constants ---------- */
 
-function byUpdatedDesc(a, b) {
-  const ta = a?.updatedAt?.toMillis?.() ?? 0;
-  const tb = b?.updatedAt?.toMillis?.() ?? 0;
-  return tb - ta;
+// Use your own hero image from /public.
+// React will serve /hero.jpg from the public folder.
+const HERO_BG = "/hero.jpg";
+const HERO_BG_FALLBACK = "/hero.png"; // optional fallback if you ever swap files
+
+const quickSpots = [
+  "Ikoyi",
+  "Lekki",
+  "VI",
+  "Gwarinpa",
+  "Wuse 2",
+  "Asokoro",
+  "Makurdi",
+  "Enugu",
+  "Port Harcourt",
+];
+
+const trustBullets = [
+  { k: "Trust", title: "BVN/NIN verified hosts", sub: "Identity & quality checks." },
+  { k: "Payments", title: "Seamless checkout", sub: "Paystack • Flutterwave." },
+  { k: "Concierge", title: "On-call support", sub: "Assistance throughout your stay." },
+];
+
+const chip = {
+  base: {
+    display: "inline-flex",
+    alignItems: "center",
+    height: 40,
+    padding: "0 14px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,.20)",
+    color: "#e6ebf4",
+    background: "rgba(0,0,0,.40)",
+    fontWeight: 800,
+    letterSpacing: 0.2,
+    backdropFilter: "blur(6px)",
+    cursor: "pointer",
+  },
+};
+
+const section = (mt = 28) => ({
+  marginTop: mt,
+  padding: "28px 0",
+  borderTop: "1px solid rgba(255,255,255,.06)",
+});
+
+/* ---------- helpers ---------- */
+
+function normalizeRole(raw) {
+  const r = String(raw || "").toLowerCase();
+  if (r === "verified_host") return "host";
+  if (r === "verified_partner") return "partner";
+  if (!r) return "guest";
+  return r;
 }
 
-function Card({ l }) {
-  return (
-    <article className="bg-[#0b0f14]/70 border border-gray-700 rounded-2xl shadow hover:shadow-xl transition overflow-hidden flex flex-col">
-      {Array.isArray(l.photoUrls) && l.photoUrls.length > 0 ? (
-        <img
-          src={l.photoUrls[0]}
-          alt={l.title || "Listing image"}
-          className="h-48 w-full object-cover"
-        />
-      ) : (
-        <div className="h-48 w-full bg-black/40 grid place-items-center text-gray-500">
-          Photo coming soon
-        </div>
-      )}
-
-      <div className="p-4 flex-1 flex flex-col">
-        <h3 className="text-lg font-semibold mb-1">{l.title || "Untitled"}</h3>
-        <p className="text-indigo-400 font-medium mb-1">
-          {NGN(Number(l.pricePerNight || 0))}/night
-        </p>
-        <p className="text-gray-400 text-sm">
-          {l.city || "—"} {l.area ? `• ${l.area}` : ""} {l.type ? `• ${l.type}` : ""}
-        </p>
-
-        <div className="mt-3 text-xs text-gray-400 flex items-center gap-2">
-          {l.liveInHost ? <span>Live-in host</span> : <span>Live-out</span>}
-          <span>•</span>
-          {l.billsIncluded ? <span>Bills included</span> : <span>Bills not included</span>}
-        </div>
-
-        <div className="mt-auto pt-4">
-          <Link
-            to={`/listing/${l.id}`}
-            className="inline-block px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 transition text-sm font-medium"
-          >
-            View →
-          </Link>
-        </div>
-      </div>
-    </article>
-  );
-}
-
+/* ---------- component ---------- */
 export default function HomePage() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
+  const nav = useNavigate();
+  const [loc, setLoc] = useState("");
+  const [minN, setMinN] = useState("");
+  const [maxN, setMaxN] = useState("");
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      setErr("");
-      try {
-        // Pull a small batch and sort/filter on client to avoid composite indexes.
-        const qRef = query(collection(db, "listings"), fbLimit(30));
-        const snap = await getDocs(qRef);
-        if (!alive) return;
-        setRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      } catch (e) {
-        console.error(e);
-        setErr(e?.message || "Failed to load featured listings.");
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const { user } = useAuth();
+  const { profile } = useUserProfile(user?.uid);
 
-  const featured = useMemo(() => {
-    const feats = rows.filter((r) => r.isFeatured);
-    if (feats.length > 0) return feats.sort(byUpdatedDesc).slice(0, 8);
-    // fallback: latest
-    return [...rows].sort(byUpdatedDesc).slice(0, 8);
-  }, [rows]);
+  const role = normalizeRole(profile?.role || profile?.type);
+  const isAdmin = profile?.isAdmin === true || role === "admin";
+  const isHost = role === "host";
+  const isPartner = role === "partner";
+  const isGuest = !user || role === "guest";
 
-  // Optional hero image (you can swap this URL or make it come from config)
-  const hero =
-    featured.find((f) => Array.isArray(f.photoUrls) && f.photoUrls.length)?.photoUrls?.[0] ??
-    "https://images.unsplash.com/photo-1501183638710-841dd1904471?q=80&w=1200&auto=format&fit=crop";
+  const heroBg = HERO_BG || HERO_BG_FALLBACK;
+
+  function handleSearch(e) {
+    e?.preventDefault?.();
+    const qs = new URLSearchParams();
+    if (loc.trim()) qs.set("loc", loc.trim());
+    if (minN.trim()) qs.set("min", minN.trim());
+    if (maxN.trim()) qs.set("max", maxN.trim());
+    nav(`/explore${qs.toString() ? `?${qs.toString()}` : ""}`);
+  }
 
   return (
-    <div className="max-w-7xl mx-auto">
-      {/* HERO */}
-      <section className="relative overflow-hidden rounded-b-2xl border-b border-gray-800">
-        <img
-          src={hero}
-          alt="Nesta hero"
-          className="w-full h-[220px] sm:h-[260px] md:h-[300px] object-cover opacity-70"
+    <>
+      {/* inline styles for this page */}
+      <style>{`
+        .page-wrap {
+          position: relative;
+          min-height: 100vh;
+        }
+        .page-bg {
+          position: fixed;
+          inset: 0;
+          background-position: center;
+          background-size: cover;
+          background-repeat: no-repeat;
+          z-index: -2;
+        }
+        .page-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.65); /* overall darkness / transparency */
+          backdrop-filter: blur(2px);
+          z-index: -1;
+        }
+
+        .container {
+          max-width: 1180px;
+          margin: 0 auto;
+          padding: 0 18px;
+        }
+
+        .hero-wrap {
+          position:relative;
+          overflow:hidden;
+          border-radius:24px;
+          min-height: 420px;
+          /* lighter transparent card so the estate photo is visible */
+          background:rgba(0,0,0,0.25);
+          border:1px solid rgba(255,255,255,0.06);
+        }
+
+        .hero-bg {
+          position:absolute;
+          inset:0;
+          background-position:center;
+          background-size:cover;
+          background-repeat:no-repeat;
+          transform:scale(1.03);
+          filter: saturate(1.1) brightness(1.02);
+        }
+        .hero-scrim{
+          position:absolute;
+          inset:0;
+          background:
+            radial-gradient(1100px 500px at 15% 15%, rgba(15,18,28,.55), rgba(5,7,12,.80)),
+            linear-gradient(135deg, rgba(3,5,10,.85) 0%, rgba(3,5,10,.94) 60%, rgba(3,5,10,.98) 100%);
+        }
+
+        .hero-body{
+          position:relative;
+          z-index:2;
+          padding:56px 28px 30px;
+          display:grid;
+          gap:22px;
+        }
+        .hero-title{
+          font-weight:900;
+          line-height:1.06;
+          letter-spacing:.2px;
+          margin:0;
+          font-size:38px;
+        }
+        .hero-sub{
+          margin:6px 0 10px;
+          color:#cbd3e3;
+          max-width:920px;
+          font-size:18px;
+          line-height:1.6;
+        }
+        .search-row{
+          display:grid;
+          grid-template-columns:1.2fr .6fr .6fr auto;
+          gap:12px;
+          align-items:center;
+          width:100%;
+        }
+        .pill{
+          height:50px;
+          border-radius:14px;
+          padding:0 14px;
+          border:1px solid rgba(255,255,255,.18);
+          background:rgba(0,0,0,.50);
+          color:#eef2ff;
+          outline:none;
+        }
+        .pill::placeholder{ color:#96a0b4; }
+        .btn-gold{
+          display:inline-flex;
+          align-items:center;
+          justify-content:center;
+          height:50px;
+          padding:0 18px;
+          border-radius:14px;
+          font-weight:900;
+          color:#211a07;
+          border:1px solid rgba(255,210,64,.7);
+          background:linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c);
+          box-shadow:
+            inset 0 0 0 1px rgba(255,255,255,.06),
+            0 14px 40px rgba(0,0,0,.65);
+          transition: filter .15s ease, transform .04s ease;
+        }
+        .btn-gold:active{ transform: translateY(1px); }
+        .cta-row{
+          display:flex;
+          gap:10px;
+          flex-wrap:wrap;
+        }
+        .trust-band{
+          display:grid;
+          grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+          gap:12px;
+        }
+        .trust-card{
+          border:1px solid rgba(255,255,255,.12);
+          background:rgba(0,0,0,.45);
+          border-radius:18px;
+          padding:16px 16px 14px;
+        }
+        .trust-k{
+          display:inline-flex;
+          align-items:center;
+          height:28px;
+          padding:0 10px;
+          border-radius:999px;
+          font-weight:800;
+          background:rgba(255,210,64,.14);
+          color:#ffd84a;
+          border:1px solid rgba(255,210,64,.35);
+        }
+        .quote-grid{
+          display:grid;
+          grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+          gap:12px;
+        }
+        .quote{
+          border:1px solid rgba(255,255,255,.12);
+          background:rgba(0,0,0,.5);
+          border-radius:16px;
+          padding:18px;
+          color:#dfe5f3;
+        }
+        .host-cta{
+          display:grid;
+          grid-template-columns:1.1fr .9fr;
+          gap:16px;
+          align-items:center;
+          border:1px solid rgba(255,255,255,.12);
+          background:linear-gradient(180deg,rgba(0,0,0,.55),rgba(0,0,0,.45));
+          border-radius:22px;
+          padding:22px;
+          overflow:hidden;
+        }
+        .host-img{
+          width:100%;
+          height:300px;
+          object-fit:cover;
+          border-radius:16px;
+        }
+        @media (max-width: 900px){
+          .hero-body{
+            padding:42px 16px 20px;
+          }
+          .hero-title{
+            font-size:30px;
+          }
+          .search-row{
+            grid-template-columns:1fr;
+          }
+          .host-cta{
+            grid-template-columns:1fr;
+          }
+          .host-img{
+            height:220px;
+          }
+        }
+      `}</style>
+
+      <div className="page-wrap">
+        {/* Full-page background image + transparent overlay */}
+        <div
+          className="page-bg"
+          style={{ backgroundImage: `url(${heroBg})` }}
         />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/40 to-transparent" />
-        <div className="absolute inset-0 p-6 sm:p-8 flex flex-col justify-center">
-          <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight">
-            Premium stays. Trusted homes. Across Nigeria
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm sm:text-base text-gray-300">
-            Discover premium short stays, long lets, and trusted homes—verified and easy to book.
-          </p>
-          <div className="mt-4 flex gap-3">
-            <Link
-              to="/browse"
-              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 transition text-sm font-medium"
-            >
-              Browse listings
-            </Link>
-            <Link
-              to="/dashboard"
-              className="px-4 py-2 rounded-lg border border-gray-600 hover:border-gray-500 transition text-sm font-medium"
-            >
-              Partner dashboard
-            </Link>
+        <div className="page-overlay" />
+
+        {/* ───────── Hero ───────── */}
+        <section className="container" style={{ marginTop: 16 }}>
+          <div className="hero-wrap">
+            <div
+              className="hero-bg"
+              style={{ backgroundImage: `url(${heroBg})` }}
+            />
+            <div className="hero-scrim" />
+            <div className="hero-body">
+              <div
+                style={{
+                  opacity: 0.9,
+                  fontWeight: 900,
+                  letterSpacing: 2,
+                  color: "#c9d4ea",
+                }}
+              >
+                NESTA • SIGNATURE STAYS
+              </div>
+
+              <h1 className="hero-title text-center">
+                Premium stays. Trusted homes.
+                <br /> Across Nigeria.
+              </h1>
+
+              <p className="hero-sub text-center">
+                Discover luxury short stays, long lets, and verified homes.
+                Curated listings, exceptional comfort, and concierge-level care —
+                the home experience you deserve.
+              </p>
+
+              {/* Role-aware CTA row */}
+              <div className="cta-row">
+                {/* Everyone can explore listings */}
+                <Link to="/explore" className="btn-gold">
+                  Explore listings
+                </Link>
+
+                {isGuest && (
+                  <>
+                    <Link
+                      to="/onboarding/kyc/apply"
+                      className="btn-gold"
+                      style={{
+                        background: "rgba(255,255,255,.06)",
+                        color: "#e7ecf7",
+                        borderColor: "rgba(255,255,255,.18)",
+                      }}
+                    >
+                      Become a host
+                    </Link>
+                    <Link
+                      to="/onboarding/kyc/apply?role=partner"
+                      className="btn-gold"
+                      style={{
+                        background: "rgba(255,255,255,.06)",
+                        color: "#e7ecf7",
+                        borderColor: "rgba(255,255,255,.18)",
+                      }}
+                    >
+                      Verified partner
+                    </Link>
+                  </>
+                )}
+
+                {isHost && (
+                  <>
+                    <Link
+                      to="/host"
+                      className="btn-gold"
+                      style={{
+                        background: "rgba(255,255,255,.06)",
+                        color: "#e7ecf7",
+                        borderColor: "rgba(255,255,255,.18)",
+                      }}
+                    >
+                      Host dashboard
+                    </Link>
+                    <Link
+                      to="/manage-listings"
+                      className="btn-gold"
+                      style={{
+                        background: "rgba(255,255,255,.06)",
+                        color: "#e7ecf7",
+                        borderColor: "rgba(255,255,255,.18)",
+                      }}
+                    >
+                      Manage listings
+                    </Link>
+                  </>
+                )}
+
+                {isPartner && (
+                  <>
+                    <Link
+                      to="/partner"
+                      className="btn-gold"
+                      style={{
+                        background: "rgba(255,255,255,.06)",
+                        color: "#e7ecf7",
+                        borderColor: "rgba(255,255,255,.18)",
+                      }}
+                    >
+                      Partner dashboard
+                    </Link>
+                    <Link
+                      to="/manage-listings"
+                      className="btn-gold"
+                      style={{
+                        background: "rgba(255,255,255,.06)",
+                        color: "#e7ecf7",
+                        borderColor: "rgba(255,255,255,.18)",
+                      }}
+                    >
+                      My portfolio
+                    </Link>
+                  </>
+                )}
+
+                {isAdmin && (
+                  <Link
+                    to="/admin"
+                    className="btn-gold"
+                    style={{
+                      background: "rgba(255,255,255,.06)",
+                      color: "#e7ecf7",
+                      borderColor: "rgba(255,255,255,.18)",
+                    }}
+                  >
+                    Admin
+                  </Link>
+                )}
+              </div>
+
+              {/* Search */}
+              <form className="search-row" onSubmit={handleSearch}>
+                <input
+                  className="pill"
+                  placeholder="Area, city or landmark (e.g., Lekki, Ikoyi)"
+                  value={loc}
+                  onChange={(e) => setLoc(e.target.value)}
+                />
+                <input
+                  className="pill"
+                  placeholder="Min ₦/night"
+                  inputMode="numeric"
+                  value={minN}
+                  onChange={(e) => setMinN(e.target.value)}
+                />
+                <input
+                  className="pill"
+                  placeholder="Max ₦/night"
+                  inputMode="numeric"
+                  value={maxN}
+                  onChange={(e) => setMaxN(e.target.value)}
+                />
+                <button type="submit" className="btn-gold">
+                  Search
+                </button>
+              </form>
+
+              {/* Quick chips */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                {quickSpots.map((c) => (
+                  <button
+                    key={c}
+                    style={chip.base}
+                    onClick={() => {
+                      setLoc(c);
+                      setTimeout(handleSearch, 0);
+                    }}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* FEATURED */}
-      <section className="p-6 sm:p-8">
-        <div className="flex items-end justify-between mb-4">
-          <h2 className="text-2xl sm:text-3xl font-bold">Featured listings</h2>
-          <Link to="/browse" className="text-sm underline">
-            Browse all
-          </Link>
-        </div>
-
-        {loading ? (
-          <p className="text-gray-400">Loading featured…</p>
-        ) : err ? (
-          <p className="text-red-400">{err}</p>
-        ) : featured.length === 0 ? (
-          <p className="text-gray-400">No listings yet. Check back soon.</p>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {featured.map((l) => (
-              <Card key={l.id} l={l} />
+        {/* Trust band */}
+        <section className="container" style={section(24)}>
+          <div className="trust-band">
+            {trustBullets.map((b) => (
+              <div className="trust-card" key={b.k}>
+                <div className="trust-k">{b.k}</div>
+                <h3
+                  style={{
+                    margin: "10px 0 6px",
+                    fontSize: 20,
+                    fontWeight: 900,
+                  }}
+                >
+                  {b.title}
+                </h3>
+                <div style={{ color: "#bfc7d8" }}>{b.sub}</div>
+              </div>
             ))}
           </div>
-        )}
-      </section>
+        </section>
 
-      {/* FOOTER */}
-      <footer className="px-6 sm:px-8 pb-6 text-xs text-gray-400">
-        © {new Date().getFullYear()} Nesta. All rights reserved.{" "}
-        <Link to="/terms" className="underline">Terms</Link>{" "}
-        <Link to="/privacy" className="underline">Privacy</Link>{" "}
-        <Link to="/help" className="underline">Help</Link>
-      </footer>
-    </div>
+        {/* Sponsored */}
+        <section className="container" style={section(12)}>
+          <div
+            style={{
+              color: "#aab3c4",
+              marginBottom: 10,
+              fontWeight: 800,
+              letterSpacing: 1,
+            }}
+          >
+            Sponsored
+          </div>
+          <FeaturedCarousel />
+        </section>
+
+        {/* Testimonials */}
+        <section className="container" style={section(18)}>
+          <div className="quote-grid">
+            {[
+              {
+                t: "“Flawless experience. The home looked exactly like the photos.”",
+                a: "Chidera • Lagos",
+              },
+              {
+                t: "“Concierge handled dinner plans last-minute. That’s luxury.”",
+                a: "Kene • Abuja",
+              },
+              {
+                t: "“Quiet, spotless, secure. Will book again.”",
+                a: "Tola • London",
+              },
+            ].map((q) => (
+              <div key={q.a} className="quote">
+                <div style={{ fontSize: 18, marginBottom: 8 }}>{q.t}</div>
+                <div style={{ opacity: 0.7 }}>{q.a}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Host CTA */}
+        <section className="container" style={section(18)}>
+          <div className="host-cta">
+            <div>
+              <h3 style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>
+                Start your hosting journey
+              </h3>
+              <p style={{ color: "#c9d2e3", marginTop: 8 }}>
+                Earn more with verified guests, premium positioning, and dedicated
+                host support.
+              </p>
+              {isHost ? (
+                <Link to="/host" className="btn-gold" style={{ marginTop: 8 }}>
+                  Go to host dashboard
+                </Link>
+              ) : (
+                <Link
+                  to="/onboarding/kyc/apply"
+                  className="btn-gold"
+                  style={{ marginTop: 8 }}
+                >
+                  Start host application
+                </Link>
+              )}
+            </div>
+            <img
+              className="host-img"
+              alt="Elegant bedroom interior"
+              src="https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?q=80&w=1400&auto=format&fit=crop"
+            />
+          </div>
+        </section>
+
+        {/* Partner CTA */}
+        <section className="container" style={section(12)}>
+          <div className="host-cta">
+            <div>
+              <h3 style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>
+                Scale as a Verified Partner
+              </h3>
+              <p style={{ color: "#c9d2e3", marginTop: 8 }}>
+                Manage premium portfolios with commission tracking, payouts, and
+                analytics.
+              </p>
+              {isPartner ? (
+                <Link
+                  to="/partner"
+                  className="btn-gold"
+                  style={{ marginTop: 8 }}
+                >
+                  Go to partner dashboard
+                </Link>
+              ) : (
+                <Link
+                  to="/onboarding/kyc/apply?role=partner"
+                  className="btn-gold"
+                  style={{ marginTop: 8 }}
+                >
+                  Start partner application
+                </Link>
+              )}
+            </div>
+            <img
+              className="host-img"
+              alt="Contemporary villa exterior"
+              src="https://images.unsplash.com/photo-1501183638710-841dd1904471?q=80&w=1400&auto=format&fit=crop"
+            />
+          </div>
+        </section>
+      </div>
+    </>
   );
 }

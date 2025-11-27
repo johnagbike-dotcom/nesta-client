@@ -4,362 +4,534 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   collection,
   getDocs,
+  orderBy,
   query,
   where,
-  orderBy,
+  doc,
+  getDoc,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
+import useUserProfile from "../hooks/useUserProfile";
+import VerifiedRoleBadge from "../components/VerifiedRoleBadge";
 
-/** Fallback demo data (shown if Firestore is empty or not wired yet) */
-const sampleListings = [
-  {
-    id: "host-vi-loft",
-    title: "Elegant Loft in Victoria Island",
-    city: "Lagos",
-    area: "Victoria Island",
-    pricePerNight: 45000,
-    status: "active",
-    createdAt: { seconds: Date.now() / 1000 - 86400 * 2 },
-  },
-  {
-    id: "host-woji-suite",
-    title: "Quiet Suite in Woji",
-    city: "Port Harcourt",
-    area: "Woji",
-    pricePerNight: 28000,
-    status: "inactive",
-    createdAt: { seconds: Date.now() / 1000 - 86400 * 5 },
-  },
-];
+const ngn = (n) => `₦${Number(n || 0).toLocaleString()}`;
 
-/** Optional fallback bookings—if Firestore bookings are not present */
-const sampleBookings = [
-  {
-    id: "b1",
-    listingId: "host-vi-loft",
-    nights: 3,
-    totalAmount: 135000,
-    createdAt: { seconds: Date.now() / 1000 - 86400 * 1 },
-  },
-  {
-    id: "b2",
-    listingId: "host-vi-loft",
-    nights: 2,
-    totalAmount: 90000,
-    createdAt: { seconds: Date.now() / 1000 - 86400 * 6 },
-  },
-];
+function Stat({ label, value, hint, onClick }) {
+  const Cmp = onClick ? "button" : "div";
+  return (
+    <Cmp
+      onClick={onClick}
+      className={`rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-center ${
+        onClick
+          ? "cursor-pointer hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-amber-400"
+          : ""
+      }`}
+      title={onClick ? `View ${label.toLowerCase()}` : undefined}
+    >
+      <div className="text-[11px] tracking-wide text-white/60">{label}</div>
+      <div className="font-extrabold text-white text-xl mt-1">{value}</div>
+      {hint ? (
+        <div className="text-[11px] text-white/50 mt-0.5">{hint}</div>
+      ) : null}
+    </Cmp>
+  );
+}
+
+function Field({ children }) {
+  return (
+    <div className="rounded-2xl bg-white/5 border border-white/10 px-3 py-2 text-white/90 focus-within:border-yellow-400 transition-colors">
+      {children}
+    </div>
+  );
+}
+
+const Input = (props) => (
+  <input
+    {...props}
+    className="w-full bg-transparent outline-none placeholder-white/30"
+  />
+);
+
+const Select = (props) => (
+  <select
+    {...props}
+    className="w-full bg-transparent outline-none placeholder-white/30"
+  />
+);
+
+function EmptyState() {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-10 text-center">
+      <h3 className="text-xl font-bold text-white mb-2">
+        No listings yet for this host
+      </h3>
+      <p className="text-white/70">
+        Add your first Nesta stay to start earning.
+      </p>
+      <Link
+        to="/post/new"
+        className="inline-block mt-4 px-5 py-3 rounded-xl bg-yellow-400 text-black font-semibold hover:bg-yellow-500"
+      >
+        + New listing
+      </Link>
+    </div>
+  );
+}
 
 export default function HostDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { profile } = useUserProfile(user?.uid);
 
-  // Data
-  const [listings, setListings] = useState([]);
-  const [bookings, setBookings] = useState([]);
+  // --- KYC status ---
+  const kycStatusRaw =
+    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
+  const kycStatus = kycStatusRaw.toLowerCase();
+  const isKycApproved =
+    kycStatus === "approved" ||
+    kycStatus === "verified" ||
+    kycStatus === "complete";
 
-  // UI state
+  const [rows, setRows] = useState([]); // host listings
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  // Filters
+  // filters
   const [q, setQ] = useState("");
   const [min, setMin] = useState("");
   const [max, setMax] = useState("");
   const [status, setStatus] = useState("all");
 
-  useEffect(() => {
-    let mounted = true;
+  // subscription (Host Pro)
+  const [subInfo, setSubInfo] = useState({
+    active: false,
+    expiresAt: null,
+    loading: true,
+  });
 
-    const load = async () => {
+  // revenue stats
+  const [rev, setRev] = useState({
+    gross: 0,
+    net: 0,
+    bookingsConfirmed: 0,
+    bookingsPending: 0,
+    cancelled: 0,
+    refunded: 0,
+    needsAttention: 0,
+  });
+
+  const now = Date.now();
+  const isSubscribed =
+    subInfo.active &&
+    (!subInfo.expiresAt || new Date(subInfo.expiresAt).getTime() > now);
+
+  // --- Load host listings (owner / host) ---
+  useEffect(() => {
+    let alive = true;
+
+    async function loadListings() {
       try {
         setLoading(true);
         setErr("");
+        if (!user?.uid) return;
 
-        if (!user) {
-          setListings([]);
-          setBookings([]);
-          return;
-        }
+        const colRef = collection(db, "listings");
+        const qref = query(
+          colRef,
+          where("ownerId", "==", user.uid),
+          orderBy("createdAt", "desc")
+        );
 
-        // --- Listings by this host ---
-        let results = [];
-        try {
-          const q1 = query(
-            collection(db, "listings"),
-            where("createdBy", "==", user.uid),
-            orderBy("createdAt", "desc")
-          );
-          const s1 = await getDocs(q1);
-          s1.forEach((d) => results.push({ id: d.id, ...d.data() }));
-        } catch {
-          // ignore — index may be missing or schema differs
-        }
-
-        // If no results from Firestore, use sample
-        if (results.length === 0) results = sampleListings;
-
-        // --- Bookings for this host (optional) ---
-        // If you store hostId on bookings:
-        let bookingRows = [];
-        try {
-          const qb = query(
-            collection(db, "bookings"),
-            where("hostId", "==", user.uid),
-            orderBy("createdAt", "desc")
-          );
-          const sb = await getDocs(qb);
-          sb.forEach((d) => bookingRows.push({ id: d.id, ...d.data() }));
-        } catch {
-          // ignore
-        }
-        if (bookingRows.length === 0) bookingRows = sampleBookings;
-
-        if (mounted) {
-          setListings(results);
-          setBookings(bookingRows);
-        }
+        const snap = await getDocs(qref);
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        if (alive) setRows(list);
       } catch (e) {
-        console.error(e);
-        if (mounted) {
-          setErr("Could not load your host data right now.");
-          setListings(sampleListings);
-          setBookings(sampleBookings);
+        console.error("Error loading host listings:", e);
+        if (alive) {
+          setErr("Couldn’t load your listings right now.");
+          setRows([]);
         }
       } finally {
-        if (mounted) setLoading(false);
+        if (alive) setLoading(false);
       }
-    };
+    }
 
-    load();
+    loadListings();
     return () => {
-      mounted = false;
+      alive = false;
     };
-  }, [user]);
+  }, [user?.uid]);
 
-  // Filter listings
+  // --- Subscription info (Host Pro) ---
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!user?.uid) {
+        if (alive) setSubInfo((p) => ({ ...p, loading: false }));
+        return;
+      }
+      try {
+        const snap = await getDoc(doc(db, "users", user.uid));
+        if (!alive || !snap.exists()) {
+          if (alive) setSubInfo((p) => ({ ...p, loading: false }));
+          return;
+        }
+        const d = snap.data() || {};
+        setSubInfo({
+          active: !!d.activeSubscription,
+          expiresAt: d.subscriptionExpiresAt || null,
+          loading: false,
+        });
+      } catch (e) {
+        console.error("Error loading subscription:", e);
+        if (alive) setSubInfo((p) => ({ ...p, loading: false }));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [user?.uid]);
+
+  // --- Revenue for this host ---
+  useEffect(() => {
+    let alive = true;
+
+    async function loadRevenue() {
+      if (!user?.uid) return;
+      try {
+        const qref = query(
+          collection(db, "bookings"),
+          where("hostId", "==", user.uid)
+        );
+        const snap = await getDocs(qref);
+
+        let gross = 0;
+        let net = 0;
+        let bookingsConfirmed = 0;
+        let bookingsPending = 0;
+        let cancelled = 0;
+        let refunded = 0;
+
+        snap.forEach((docu) => {
+          const d = docu.data();
+          const amt = Number(d.amountN || d.total || 0);
+          const s = String(d.status || "").toLowerCase();
+
+          const nestaFee = amt * 0.1;
+          const hostTake = amt - nestaFee;
+
+          if (["confirmed", "completed", "paid"].includes(s)) {
+            gross += amt;
+            net += hostTake;
+            bookingsConfirmed++;
+          } else if (
+            s === "pending" ||
+            s === "awaiting" ||
+            s === "hold" ||
+            s === "reserved_unpaid"
+          ) {
+            bookingsPending++;
+          } else if (s === "cancelled") {
+            cancelled++;
+          } else if (s === "refunded") {
+            refunded++;
+          }
+        });
+
+        const needsAttention = bookingsPending + cancelled + refunded;
+
+        if (alive) {
+          setRev({
+            gross,
+            net,
+            bookingsConfirmed,
+            bookingsPending,
+            cancelled,
+            refunded,
+            needsAttention,
+          });
+        }
+      } catch (e) {
+        console.error("Error loading host revenue:", e);
+      }
+    }
+
+    loadRevenue();
+    return () => {
+      alive = false;
+    };
+  }, [user?.uid]);
+
+  // --- Filters / derived stats ---
   const filtered = useMemo(() => {
-    return listings.filter((l) => {
-      const kw = q.trim().toLowerCase();
+    const kw = q.trim().toLowerCase();
+    return rows.filter((r) => {
       const matchQ =
         !kw ||
-        (l.title || "").toLowerCase().includes(kw) ||
-        (l.city || "").toLowerCase().includes(kw) ||
-        (l.area || "").toLowerCase().includes(kw);
+        (r.title || "").toLowerCase().includes(kw) ||
+        (r.city || "").toLowerCase().includes(kw) ||
+        (r.area || "").toLowerCase().includes(kw);
 
-      const price = Number(l.pricePerNight || 0);
+      const price = Number(r.pricePerNight || 0);
       const passMin = !min || price >= Number(min);
       const passMax = !max || price <= Number(max);
-      const passStatus = status === "all" || (l.status || "active") === status;
-
+      const s = (r.status || "active").toLowerCase();
+      const passStatus = status === "all" || s === status;
       return matchQ && passMin && passMax && passStatus;
     });
-  }, [listings, q, min, max, status]);
+  }, [rows, q, min, max, status]);
 
-  // Quick booking metrics
-  const bookingsByListing = useMemo(() => {
-    const map = new Map();
-    bookings.forEach((b) => {
-      const arr = map.get(b.listingId) || [];
-      arr.push(b);
-      map.set(b.listingId, arr);
-    });
-    return map;
-  }, [bookings]);
+  const nightlyPortfolio = useMemo(() => {
+    return filtered
+      .filter(
+        (l) => String(l.status || "active").toLowerCase() === "active"
+      )
+      .reduce((sum, l) => sum + Number(l.pricePerNight || 0), 0);
+  }, [filtered]);
 
-  const totals = useMemo(() => {
-    const count = filtered.length;
-    const activeCount = filtered.filter((l) => (l.status || "active") === "active").length;
+  const kpis = useMemo(() => {
+    const active = filtered.filter(
+      (r) => (r.status || "active").toLowerCase() === "active"
+    ).length;
+    return { active };
+  }, [filtered]);
 
-    // Revenue projection (simple): sum of historic bookings (fallbacks used if no Firestore)
-    const revenue = bookings.reduce((sum, b) => sum + Number(b.totalAmount || 0), 0);
-
-    // Occupancy hint (rough): bookings count for active listings
-    const bookingCount = bookings.length;
-
-    return {
-      listings: count,
-      activeListings: activeCount,
-      bookingCount,
-      revenue,
-    };
-  }, [filtered, bookings]);
+  const goManageListings = () => navigate("/manage-listings");
+  const goReservations = () => navigate("/bookings");
 
   return (
-    <main className="dash-bg">
-      <div className="container dash-wrap">
-        <button className="btn ghost" onClick={() => navigate(-1)}>← Back</button>
+    <main className="container mx-auto px-4 py-6 text-white">
+      <button
+        className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
+        onClick={() => navigate(-1)}
+      >
+        ← Back
+      </button>
 
-        <h1 style={{ margin: "16px 0 12px" }}>Host Dashboard</h1>
-        <p className="muted" style={{ marginTop: 0 }}>
-          Manage your listings, view booking activity, and keep tabs on revenue.
-        </p>
+      {/* HEADER */}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <h1 className="text-2xl md:text-3xl font-extrabold text-yellow-400">
+          Host Dashboard
+        </h1>
 
-        {err && <div className="alert-error" style={{ marginTop: 12 }}>{err}</div>}
+        {/* KYC badge */}
+        <VerifiedRoleBadge role="Host" verified={isKycApproved} />
 
-        {/* Filters */}
-        <div className="form-card" style={{ marginTop: 16 }}>
-          <div
-            className="filter-grid"
-            style={{ gridTemplateColumns: "1.4fr 1fr 1fr 1fr auto" }}
-          >
-            <input
-              type="text"
-              placeholder="Search (title, city, area)"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <input
-              type="number"
-              placeholder="Min ₦/night"
-              value={min}
-              onChange={(e) => setMin(e.target.value)}
-              min={0}
-            />
-            <input
-              type="number"
-              placeholder="Max ₦/night"
-              value={max}
-              onChange={(e) => setMax(e.target.value)}
-              min={0}
-            />
-            <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="all">Any status</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-            <button
-              className="btn"
-              type="button"
-              onClick={() => {
-                setQ("");
-                setMin("");
-                setMax("");
-                setStatus("all");
-              }}
-            >
-              Reset
-            </button>
-          </div>
+        {/* Host Pro pill (unchanged) */}
+        {!subInfo.loading && isSubscribed && (
+          <span className="text-xs font-semibold px-3 py-1 rounded-full border border-amber-400/50 bg-amber-400/10 text-amber-300">
+            Host Pro
+            {subInfo.expiresAt
+              ? ` • until ${new Date(
+                  subInfo.expiresAt
+                ).toLocaleDateString()}`
+              : ""}
+          </span>
+        )}
+      </div>
+
+      <p className="text-white/70 mt-2 max-w-2xl">
+        Manage your Nesta stay, see your bookings, and track what you’ve earned —
+        all in one calm, luxury view.
+      </p>
+
+      {err && (
+        <div className="mt-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-red-200">
+          {err}
         </div>
+      )}
 
-        {/* Totals */}
-        <div
-          className="card"
-          style={{
-            marginTop: 8,
-            display: "grid",
-            gap: 12,
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-          }}
+      {/* TOP KPI ROW */}
+      <div className="mt-6 grid gap-3 grid-cols-1 md:grid-cols-4">
+        <Stat
+          label="Active listing(s)"
+          value={kpis.active.toLocaleString()}
+          hint="Your live stay on Nesta"
+          onClick={goManageListings}
+        />
+        <Stat
+          label="Confirmed bookings"
+          value={rev.bookingsConfirmed.toLocaleString()}
+          hint="Completed & paid"
+          onClick={goReservations}
+        />
+        <Stat
+          label="Pending / upcoming"
+          value={rev.bookingsPending.toLocaleString()}
+          hint="Awaiting payment or arrival"
+          onClick={goReservations}
+        />
+        <Stat
+          label="Total earnings (net)"
+          value={ngn(rev.net)}
+          hint="After Nesta fee"
+          onClick={goReservations}
+        />
+      </div>
+
+      {/* SECOND ROW */}
+      <div className="mt-4 grid gap-3 grid-cols-1 md:grid-cols-4">
+        <Stat
+          label="Needs attention"
+          value={rev.needsAttention.toLocaleString()}
+          hint="Pending / cancelled / refunded"
+          onClick={goReservations}
+        />
+        <Stat
+          label="Confirmed"
+          value={rev.bookingsConfirmed.toLocaleString()}
+          onClick={goReservations}
+        />
+        <Stat
+          label="Cancelled"
+          value={rev.cancelled.toLocaleString()}
+          onClick={goReservations}
+        />
+        <Stat
+          label="Refunded"
+          value={rev.refunded.toLocaleString()}
+          onClick={goReservations}
+        />
+      </div>
+
+      {/* THIRD ROW */}
+      <div className="mt-4 grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-2">
+        <Stat
+          label="Nightly portfolio"
+          value={ngn(nightlyPortfolio)}
+          hint="Across active listings"
+          onClick={goManageListings}
+        />
+        <Stat
+          label="Gross Revenue"
+          value={ngn(rev.gross)}
+          hint="Before Nesta fees"
+          onClick={goReservations}
+        />
+      </div>
+
+      {/* Actions + KYC label */}
+      <div className="mt-6 flex flex-wrap gap-3 items-center">
+        <button
+          type="button"
+          onClick={goManageListings}
+          className="px-4 py-2 rounded-xl bg-white/10 border border-white/10 text-white hover:bg-white/15"
         >
-          <Stat label="Your listings" value={totals.listings.toLocaleString()} />
-          <Stat label="Active listings" value={totals.activeListings.toLocaleString()} />
-          <Stat label="Total bookings" value={totals.bookingCount.toLocaleString()} />
-          <Stat label="Revenue (historic)" value={`₦${totals.revenue.toLocaleString()}`} />
+          Manage your listing
+        </button>
+        <Link
+          to="/post/new"
+          className="px-4 py-2 rounded-xl bg-yellow-400 text-black font-semibold hover:bg-yellow-500"
+        >
+          + New listing
+        </Link>
+        <div className="ml-auto text-white/60 text-sm">
+          KYC: <strong>{kycStatusRaw || "approved"}</strong>
         </div>
+      </div>
 
-        {/* Listings */}
+      {/* Listing filters */}
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto] gap-3">
+        <Field>
+          <Input
+            placeholder="Search (title, city, area)…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+        </Field>
+        <Field>
+          <Input
+            type="number"
+            min={0}
+            placeholder="Min ₦/night"
+            value={min}
+            onChange={(e) => setMin(e.target.value)}
+          />
+        </Field>
+        <Field>
+          <Input
+            type="number"
+            min={0}
+            placeholder="Max ₦/night"
+            value={max}
+            onChange={(e) => setMax(e.target.value)}
+          />
+        </Field>
+        <Field>
+          <Select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+          >
+            <option value="all">Any status</option>
+            <option value="active">active</option>
+            <option value="inactive">inactive</option>
+            <option value="review">under review</option>
+          </Select>
+        </Field>
+        <button
+          type="button"
+          onClick={() => {
+            setQ("");
+            setMin("");
+            setMax("");
+            setStatus("all");
+          }}
+          className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-white hover:bg-white/10"
+        >
+          Reset
+        </button>
+      </div>
+
+      {/* Portfolio cards */}
+      <div className="mt-6">
         {loading ? (
-          <p className="muted" style={{ marginTop: 18 }}>Loading your listings…</p>
+          <p className="text-white/70">Loading…</p>
         ) : filtered.length === 0 ? (
           <EmptyState />
         ) : (
-          <div
-            className="results-grid"
-            style={{ marginTop: 18, gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}
-          >
-            {filtered.map((l) => {
-              const b = bookingsByListing.get(l.id) || [];
-              const bookingCount = b.length;
-              const revenue = b.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
-
-              return (
-                <article key={l.id} className="listing-card">
-                  <div
-                    style={{
-                      borderRadius: 12,
-                      height: 140,
-                      background: "rgba(255,255,255,0.06)",
-                      marginBottom: 10,
-                    }}
-                  />
-                  <h3>{l.title || "Untitled listing"}</h3>
-                  <div className="muted" style={{ marginBottom: 10 }}>
-                    ₦{Number(l.pricePerNight || 0).toLocaleString()}/night • {l.area || "—"}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {filtered.map((l) => (
+              <article
+                key={l.id}
+                className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden"
+              >
+                <div className="h-36 bg-white/5 border-b border-white/10" />
+                <div className="p-4">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-white text-lg flex-1 truncate">
+                      {l.title || "Untitled"}
+                    </h3>
+                    <span className="text-[11px] px-2 py-0.5 rounded-md border border-white/15 text-white/70 capitalize">
+                      {l.status || "active"}
+                    </span>
+                  </div>
+                  <div className="text-white/70 mt-1">
+                    ₦{Number(l.pricePerNight || 0).toLocaleString()}/night •{" "}
+                    {l.area || "—"}
                     <br />
-                    {l.city || "—"} • {(l.status || "active")}
+                    {l.city || "—"}
                   </div>
-
-                  {/* tiny stats row */}
-                  <div
-                    className="fact-chip"
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(2, 1fr)",
-                      gap: 10,
-                      marginBottom: 10,
-                    }}
-                  >
-                    <div style={{ textAlign: "center" }}>
-                      <div className="muted" style={{ fontSize: 12 }}>Bookings</div>
-                      <div style={{ fontWeight: 700 }}>{bookingCount}</div>
-                    </div>
-                    <div style={{ textAlign: "center" }}>
-                      <div className="muted" style={{ fontSize: 12 }}>Revenue</div>
-                      <div style={{ fontWeight: 700 }}>₦{revenue.toLocaleString()}</div>
-                    </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <Link
+                      to={`/listing/${l.id}`}
+                      className="px-4 py-2 rounded-xl bg-white/10 border border-white/10 text-center hover:bg-white/15"
+                    >
+                      View
+                    </Link>
+                    <Link
+                      to={`/listing/${l.id}/edit`}
+                      className="px-4 py-2 rounded-xl bg-yellow-400 text-black font-semibold text-center hover:bg-yellow-500"
+                    >
+                      Edit
+                    </Link>
                   </div>
-
-                  <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-                    <Link className="btn view-btn" to={`/listing/${l.id}`}>View</Link>
-                    <Link className="btn ghost" to={`/listing/${l.id}/edit`}>Edit</Link>
-                  </div>
-                </article>
-              );
-            })}
+                </div>
+              </article>
+            ))}
           </div>
         )}
-
-        {/* CTA */}
-        <div style={{ textAlign: "center", marginTop: 22 }}>
-          <Link to="/post/new" className="btn">
-            + Post a New Listing
-          </Link>
-        </div>
       </div>
     </main>
-  );
-}
-
-function Stat({ label, value }) {
-  return (
-    <div
-      className="fact-chip"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        textAlign: "center",
-      }}
-    >
-      <div className="muted" style={{ fontSize: 12 }}>{label}</div>
-      <div style={{ fontWeight: 800, fontSize: 18 }}>{value}</div>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="card" style={{ marginTop: 18, textAlign: "center", padding: 26 }}>
-      <h2 style={{ marginTop: 0 }}>No listings yet</h2>
-      <p className="muted">
-        Create your first listing to start welcoming guests and earning on Nesta.
-      </p>
-      <Link to="/post/new" className="btn" style={{ marginTop: 10 }}>
-        + Post a Listing
-      </Link>
-    </div>
   );
 }

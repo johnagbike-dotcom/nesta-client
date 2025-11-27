@@ -1,80 +1,162 @@
+// src/components/ListingCards.js
 import React from "react";
 import { Link } from "react-router-dom";
-import { formatNaira, firstPhoto } from "../utils/format";
+import CheckoutButtons from "./CheckoutButtons";
+import { useAuth } from "../auth/AuthContext";
+import useUserProfile from "../hooks/useUserProfile";
 
-export default function ListingCard({
-  listing,
-  actions = [], // e.g. [{label:'View', to:'/listing/123'}, {label:'Edit', to:'/edit/123'}, {label:'Delete', onClick: fn}]
-  badge,         // e.g. "Featured"
-}) {
-  const { id, title, city, area, type, pricePerNight, photoUrls } = listing;
-  const cover = firstPhoto(photoUrls);
+const Naira = new Intl.NumberFormat("en-NG");
+
+export default function ListingCard({ listing }) {
+  const {
+    id,
+    title,
+    area,
+    city,
+    priceN,
+    image,
+    description,
+    bedrooms,
+    bathrooms,
+    ownerId,
+    hostId,
+    partnerId,
+    userId,
+  } = listing;
+
+  const { user } = useAuth();
+  const { profile, loading } = useUserProfile(user?.uid);
+
+  /* -----------------------------
+     Normalize role safely
+  ------------------------------ */
+  const roleRaw =
+    profile?.role ||
+    profile?.accountType ||
+    profile?.userType ||
+    profile?.kind ||
+    "";
+
+  const role = String(roleRaw).toLowerCase();
+
+  /* Ensure safe default:
+     - While loading: treat as host/partner (so we DO NOT show reserve)
+  */
+  const isHostOrPartner =
+    loading || role === "host" || role === "partner" || role === "admin";
+
+  /* Detect if current user owns this listing */
+  const uid = user?.uid;
+  const isOwner =
+    !!uid &&
+    [ownerId, hostId, partnerId, userId]
+      .filter(Boolean)
+      .map(String)
+      .includes(String(uid));
 
   return (
-    <div className="w-full overflow-hidden rounded-xl border border-gray-800 bg-[#0b0f14] shadow-md hover:shadow-lg transition-shadow">
-      {/* media */}
-      {cover ? (
-        <Link to={`/listing/${id}`}>
-          {/* eslint-disable-next-line jsx-a11y/alt-text */}
-          <img src={cover} className="w-full h-40 sm:h-48 object-cover" />
-        </Link>
-      ) : (
-        <div className="w-full h-40 sm:h-48 bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center">
-          <div className="text-center">
-            <div className="text-sm uppercase tracking-wider text-gray-400">Photo</div>
-            <div className="text-lg font-semibold text-gray-300">coming soon</div>
-          </div>
-        </div>
-      )}
+    <div
+      className="listing-card"
+      style={{
+        background: "#18181b",
+        border: "1px solid #2a2a2e",
+        borderRadius: 14,
+        overflow: "hidden",
+        boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
+      }}
+    >
+      <div style={{ aspectRatio: "16/9", overflow: "hidden" }}>
+        <img
+          src={image}
+          alt={title}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          loading="lazy"
+        />
+      </div>
 
-      {/* body */}
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-2">
-          <h3 className="text-base sm:text-lg font-semibold leading-snug">
-            <Link to={`/listing/${id}`} className="hover:underline">{title}</Link>
-          </h3>
-          {badge && (
-            <span className="shrink-0 text-[10px] uppercase tracking-wider px-2 py-1 rounded
-                              bg-indigo-600/20 border border-indigo-600/40 text-indigo-300">
-              {badge}
-            </span>
-          )}
+      <div style={{ padding: 16 }}>
+        <h3 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>{title}</h3>
+        <div style={{ opacity: 0.85, marginTop: 4 }}>
+          {area}, {city}
         </div>
 
-        <div className="mt-1 text-sm text-gray-300">
-          {formatNaira(pricePerNight)}/night • {city}{area ? ` • ${area}` : ""}
+        <div style={{ display: "flex", gap: 10, marginTop: 8, opacity: 0.9 }}>
+          <span>🛏 {bedrooms}</span>
+          <span>🛁 {bathrooms}</span>
         </div>
-        <div className="mt-0.5 text-xs text-gray-400">{type}</div>
 
-        {/* actions */}
-        {actions?.length ? (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {actions.map((a, i) =>
-              a.to ? (
-                <Link
-                  key={i}
-                  to={a.to}
-                  className="px-3 py-1.5 text-sm rounded border border-gray-700 hover:border-gray-600"
-                >
-                  {a.label}
-                </Link>
-              ) : (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={a.onClick}
-                  className={`px-3 py-1.5 text-sm rounded border ${
-                    a.variant === "danger"
-                      ? "border-red-700 text-red-300 hover:border-red-600"
-                      : "border-gray-700 hover:border-gray-600"
-                  }`}
-                >
-                  {a.label}
-                </button>
-              )
+        <div
+          style={{
+            marginTop: 10,
+            fontSize: 28,
+            fontWeight: 800,
+            letterSpacing: 0.3,
+          }}
+        >
+          ₦{Naira.format(priceN)}{" "}
+          <span style={{ fontSize: 14 }}>/ night</span>
+        </div>
+
+        <p style={{ marginTop: 8, opacity: 0.9, lineHeight: 1.5 }}>
+          {description}
+        </p>
+
+        {/* ----------------------------------------------------------
+           HOSTS / PARTNERS: Always show View + Edit ONLY
+           ---------------------------------------------------------- */}
+        {isHostOrPartner ? (
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              marginTop: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <Link
+              to={`/listing/${id}`}
+              style={{
+                padding: "10px 18px",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,.16)",
+                background: "rgba(255,255,255,.04)",
+                color: "#f9fafb",
+                fontWeight: 700,
+                textDecoration: "none",
+              }}
+            >
+              View
+            </Link>
+
+            {isOwner && (
+              <Link
+                to={`/listing/${id}/edit`}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(250,204,21,.6)",
+                  background:
+                    "linear-gradient(180deg,#fde68a,#facc15 60%,#eab308)",
+                  color: "#1b1505",
+                  fontWeight: 800,
+                  textDecoration: "none",
+                }}
+              >
+                Edit listing
+              </Link>
             )}
           </div>
-        ) : null}
+        ) : (
+          /* ----------------------------------------------------------
+             GUESTS ONLY: Reserve + Chat
+             ---------------------------------------------------------- */
+          <CheckoutButtons
+            amountN={priceN}
+            title={title}
+            email={user?.email || "buyer@example.com"}
+            nights={1}
+          />
+        )}
       </div>
     </div>
   );
