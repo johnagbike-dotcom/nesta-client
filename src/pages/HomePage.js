@@ -26,7 +26,7 @@ const quickSpots = [
 
 const trustBullets = [
   { k: "Trust", title: "BVN/NIN verified hosts", sub: "Identity & quality checks." },
-  { k: "Payments", title: "Seamless checkout", sub: "Paystack • Flutterwave." },
+  { k: "Payments", title: "Seamless checkout", sub: "Paystack" },
   { k: "Concierge", title: "On-call support", sub: "Assistance throughout your stay." },
 ];
 

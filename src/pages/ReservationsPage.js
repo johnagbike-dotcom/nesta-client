@@ -20,7 +20,7 @@ import { useToast } from "../context/ToastContext";
 
 // ----------- constants & helpers -----------
 const PAGE = 30;
-const PROVIDERS = ["any", "paystack", "flutterwave", "manual"];
+const PROVIDERS = ["any", "paystack", "manual"];
 const CONFIRMABLE = new Set(["pending", "hold", "reserved_unpaid", "awaiting_payment"]);
 const ATTENTION = new Set(["cancel_request", "refund_requested"]);
 const ngn = (n) => `₦${Number(n || 0).toLocaleString()}`;

@@ -59,7 +59,7 @@ export function exportCsvUrl(queryStr = "") {
   return `${API_BASE}/api/bookings/export.csv${q}`;
 }
 
-/** Real booking via backend API (paystack/flutterwave) */
+/** Real booking via backend API (paystack) */
 export async function createBooking(body) {
   const payload = {
     email: body.email,

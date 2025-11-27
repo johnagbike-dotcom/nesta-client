@@ -108,7 +108,7 @@ export default function CheckoutPage() {
 
   const onProceed = () => {
     if (!canPay) return;
-    // TODO: plug your gateway here (Stripe/Paystack/Flutterwave).
+    // TODO: plug your gateway here (Stripe/Paystack).
     // You have the full payload below:
     const payload = {
       listingId: listing.id,

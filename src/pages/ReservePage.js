@@ -297,55 +297,6 @@ export default function ReservePage() {
     if (handler?.openIframe) handler.openIframe();
   }
 
-  // Flutterwave gateway
-  async function onFlutterwave() {
-    const bookingId = await ensureHold();
-    if (!bookingId) return;
-    setBusy(true);
-    try {
-      const fw = window.FlutterwaveCheckout;
-      if (!fw) {
-        await markBookingFailedFS(bookingId, "gateway_unavailable");
-        setBusy(false);
-        toast(
-          "Flutterwave script not found. Check your test key/script include.",
-          "error"
-        );
-        return;
-      }
-      fw({
-        public_key: process.env.REACT_APP_FLUTTERWAVE_PUBLIC_KEY,
-        tx_ref: `NESTA_${bookingId}_${Date.now()}`,
-        amount: Number(total),
-        currency: "NGN",
-        payment_options: "card,ussd,banktransfer",
-        customer: { email: user?.email || "guest@example.com" },
-        callback: async (data) => {
-          await markBookingConfirmedFS(bookingId, {
-            provider: "flutterwave",
-            reference: data?.tx_ref || "",
-          });
-          setBusy(false);
-          toast("Payment complete! 🎉", "success");
-          nav("/reserve/success", {
-            replace: true,
-            state: { bookingId, listing },
-          });
-        },
-        onclose: async () => {
-          await markBookingFailedFS(bookingId, "cancelled");
-          setBusy(false);
-          toast("Payment closed.", "info");
-        },
-      });
-    } catch (e) {
-      console.error(e);
-      await markBookingFailedFS(bookingId, "gateway_error");
-      setBusy(false);
-      toast("Could not start Flutterwave payment.", "error");
-    }
-  }
-
   return (
     <main className="min-h-screen bg-[#05070b] text-white">
       <div className="max-w-5xl mx-auto px-4 py-8">
@@ -540,19 +491,7 @@ export default function ReservePage() {
                     } ${busy ? "animate-pulse" : ""}`}
                   >
                     {busy ? "Processing…" : "Confirm & Pay (Paystack)"}
-                  </button>
-
-                <button
-                  onClick={onFlutterwave}
-                  disabled={!canPay || busy}
-                  className={`px-4 py-2 rounded-xl text-sm font-semibold ${
-                    canPay
-                      ? "bg-amber-500 hover:bg-amber-600 text-black"
-                      : "bg-gray-700 text-gray-400 cursor-not-allowed"
-                  } ${busy ? "animate-pulse" : ""}`}
-                >
-                  {busy ? "Processing…" : "Confirm & Pay (Flutterwave)"}
-                </button>
+                  </button>                               
                 </div>
 
                 {holdInfo?.expiresAt && (

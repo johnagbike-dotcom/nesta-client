@@ -122,58 +122,7 @@ export default function CheckoutButtons({ listing, nights = 1, email }) {
     }
   }, [amountN, qty, saveBooking, safeEmail, listing?.title]);
 
-  /** ---------------- FLUTTERWAVE ---------------- */
-  const onFlutterwave = useCallback(async () => {
-    try {
-      if (!amountN || amountN <= 0) {
-        alert("Invalid amount — cannot start Flutterwave checkout.");
-        return;
-      }
-      setBusy(true);
-
-      const pendingRef = `FLW_${Date.now()}`;
-      await saveBooking("flutterwave", pendingRef);
-
-      if (!FLW_KEY || SANDBOX) {
-        console.info("[Flutterwave] SANDBOX success for", pendingRef);
-        alert("Flutterwave success — booking recorded.");
-        setBusy(false);
-        return;
-      }
-      if (!window.FlutterwaveCheckout) {
-        alert("Flutterwave library not loaded.");
-        setBusy(false);
-        return;
-      }
-
-      window.FlutterwaveCheckout({
-        public_key: FLW_KEY,
-        tx_ref: pendingRef,
-        amount: amountN, // naira
-        currency: "NGN",
-        customer: { email: safeEmail },
-        meta: { nights: qty, title: listing?.title || "Unknown stay" },
-        callback: function (data) {
-          console.log("[Flutterwave] success:", data);
-          alert("Flutterwave success — booking recorded.");
-          setBusy(false);
-        },
-        onclose: function () {
-          console.log("[Flutterwave] popup closed");
-          setBusy(false);
-        },
-        customizations: {
-          title: "Nesta Booking",
-          description: listing?.title || "Stay",
-        },
-      });
-    } catch (err) {
-      console.error("[Flutterwave] error:", err);
-      alert("Flutterwave error. Please try again.");
-      setBusy(false);
-    }
-  }, [amountN, qty, saveBooking, safeEmail, listing?.title]);
-
+ 
   return (
     <div style={{ display: "flex", gap: 12 }}>
       <button
@@ -182,14 +131,6 @@ export default function CheckoutButtons({ listing, nights = 1, email }) {
         className="px-4 py-2 rounded bg-[#2563eb] disabled:opacity-60"
       >
         {busy ? "Please wait…" : "Pay with Paystack"}
-      </button>
-
-      <button
-        onClick={onFlutterwave}
-        disabled={busy}
-        className="px-4 py-2 rounded bg-[#10b981] disabled:opacity-60"
-      >
-        {busy ? "Please wait…" : "Pay with Flutterwave"}
       </button>
     </div>
   );
