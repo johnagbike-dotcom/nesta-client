@@ -113,11 +113,19 @@ export default function EditListing() {
       try {
         const snap = await getDoc(doc(db, "listings", id));
         if (!snap.exists()) {
-          setErr("Listing not found.");
+          if (alive) setErr("Listing not found.");
           return;
         }
         const d = snap.data();
         if (!alive) return;
+
+        // Prefer `images`, fallback to `imageUrls` if needed
+        const imgs =
+          Array.isArray(d.images) && d.images.length
+            ? d.images
+            : Array.isArray(d.imageUrls)
+            ? d.imageUrls
+            : [];
 
         setForm({
           title: d.title || "",
@@ -132,7 +140,7 @@ export default function EditListing() {
           size: d.size ?? "",
           amenities: Array.isArray(d.amenities) ? d.amenities : [],
           houseRules: d.houseRules || "",
-          images: Array.isArray(d.images) ? d.images : d.imageUrls || [],
+          images: imgs,
           sponsored: !!d.sponsored,
           featured: !!d.featured,
           partnerUid: d.partnerUid || null,
@@ -140,7 +148,7 @@ export default function EditListing() {
         });
       } catch (e) {
         console.error(e);
-        setErr("Could not load listing.");
+        if (alive) setErr("Could not load listing.");
       } finally {
         if (alive) setLoading(false);
       }
@@ -158,11 +166,16 @@ export default function EditListing() {
     setBusy(true);
     setErr("");
     try {
-      await updateDoc(doc(db, "listings", id), {
+      const payload = {
         ...form,
         pricePerNight: Number(form.pricePerNight || 0),
+        // keep Firestore in sync: both `images` and `imageUrls`
+        images: form.images || [],
+        imageUrls: form.images || [],
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      await updateDoc(doc(db, "listings", id), payload);
       alert("✅ Changes saved.");
       nav(`/listing/${id}`);
     } catch (e) {

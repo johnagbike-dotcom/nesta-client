@@ -187,7 +187,7 @@ export default function CreateListing() {
       .toLowerCase();
     const k = new Set();
     bag
-      .split(/[\s,./-]+/)
+      .split(/[\s,./-]+/g)
       .filter(Boolean)
       .forEach((w) => k.add(w));
     return Array.from(k);
@@ -225,7 +225,9 @@ export default function CreateListing() {
         bedrooms: form.bedrooms ? Number(form.bedrooms) : null,
         bathrooms: form.bathrooms ? Number(form.bathrooms) : null,
         size: form.size ? String(form.size) : "",
+        // 🔐 store photos in *both* fields for compatibility
         images,
+        imageUrls: images,
         amenities,
         houseRules: houseRules?.trim() || "",
         slug: nowSlug,
@@ -244,7 +246,6 @@ export default function CreateListing() {
 
       const docRef = await addDoc(collection(db, "listings"), payload);
 
-      // create a "featureRequests" record if they asked for it
       if (requestFeatured) {
         try {
           await addDoc(collection(db, "featureRequests"), {
@@ -256,7 +257,6 @@ export default function CreateListing() {
             createdAt: serverTimestamp(),
           });
         } catch (e) {
-          // Non-fatal
           console.warn("feature request failed", e);
         }
       }

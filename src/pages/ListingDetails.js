@@ -46,6 +46,18 @@ export default function ListingDetails() {
     };
   }, [id]);
 
+  // 🔍 unify photos from `images` or `imageUrls`
+  const images = useMemo(() => {
+    if (!listing) return [];
+    if (Array.isArray(listing.images) && listing.images.length) {
+      return listing.images;
+    }
+    if (Array.isArray(listing.imageUrls) && listing.imageUrls.length) {
+      return listing.imageUrls;
+    }
+    return [];
+  }, [listing]);
+
   // who to chat with
   const chatUid = useMemo(() => {
     if (!listing) return null;
@@ -165,8 +177,8 @@ export default function ListingDetails() {
   }
 
   const price = listing.pricePerNight || listing.price || 0;
-  const images = Array.isArray(listing.imageUrls) ? listing.imageUrls : [];
-  const hero = images[0] || listing.coverImage || listing.image || null;
+  const hero =
+    images[0] || listing.coverImage || listing.image || null;
 
   return (
     <main className="min-h-screen bg-[#0b0f14] text-white pt-20 pb-16">

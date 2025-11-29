@@ -7,7 +7,6 @@ import { useAuth } from "../auth/AuthContext";
 import FeaturedCarousel from "../components/FeaturedCarousel";
 // Payments
 import PaystackPop from "@paystack/inline-js";
-import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
 
 /* ---------------- Pricing (edit as you like) ---------------- */
 const PLAN_PRICES_NGN = {
@@ -106,30 +105,7 @@ export default function SubscribePage() {
     if (planFromUrl) setPlan(planFromUrl);
   }, [planFromUrl]);
 
-  // Flutterwave config + hook
-  const flwPublicKey = process.env.REACT_APP_FLW_PUBLIC_KEY || "";
-  const flwConfig = useMemo(
-    () => ({
-      public_key: flwPublicKey,
-      tx_ref: `nesta_sub_${Date.now()}`,
-      amount: amountNGN,
-      currency: "NGN",
-      payment_options: "card, banktransfer, ussd",
-      customer: {
-        email: user?.email || "guest@example.com",
-        name: user?.displayName || "Nesta User",
-      },
-      customizations: {
-        title: "Nesta Subscription",
-        description: `Plan: ${plan}`,
-        logo: "/logo192.png",
-      },
-    }),
-    [flwPublicKey, amountNGN, plan, user?.email, user?.displayName]
-  );
-  const initializeFlw = useFlutterwave(flwConfig);
-
-  // Pay handlers
+    // Pay handlers
   const payWithPaystack = () => {
     if (!user) {
       alert("Please log in to subscribe.");
@@ -169,40 +145,7 @@ export default function SubscribePage() {
     });
   };
 
-  const payWithFlutterwave = () => {
-    if (!user) {
-      alert("Please log in to subscribe.");
-      nav("/login");
-      return;
-    }
-    if (!flwPublicKey) {
-      alert("Missing REACT_APP_FLW_PUBLIC_KEY in .env.local");
-      return;
-    }
-    initializeFlw({
-      callback: async (data) => {
-        try {
-          if (data?.status === "successful") {
-            await activateSubscription(user.uid, plan);
-            alert("✅ Subscription activated");
-            closePaymentModal();
-            nav(-1);
-          } else {
-            alert("❌ Payment failed");
-            closePaymentModal();
-          }
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error(e);
-          alert("Payment succeeded, but activating subscription failed.");
-          closePaymentModal();
-        }
-      },
-      onClose: () => {},
-    });
-  };
-
-  // Early return for guests (we still show a taste of luxury with the carousel)
+    // Early return for guests (we still show a taste of luxury with the carousel)
   if (!user) {
     return (
       <main className="container section-pad">
@@ -286,10 +229,7 @@ export default function SubscribePage() {
           <button className="btn btn-gold" onClick={payWithPaystack}>
             Pay with Paystack (₦{amountNGN.toLocaleString()})
           </button>
-          <button className="btn" onClick={payWithFlutterwave}>
-            Pay with Flutterwave (₦{amountNGN.toLocaleString()})
-          </button>
-        </div>
+          </div>
 
         <p className="muted" style={{ marginTop: 18, fontSize: "0.85rem", color: "#cbd5e1" }}>
           Your subscription helps us keep Nesta safe, secure, and growing. You can upgrade or extend at any time.

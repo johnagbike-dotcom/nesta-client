@@ -548,7 +548,7 @@ export default function ReservePage() {
 
             <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
               <p>
-                Your payment is processed securely via Paystack or Flutterwave.
+                Your payment is processed securely via Paystack.
                 Nesta does not store your full card details.
               </p>
               <p>

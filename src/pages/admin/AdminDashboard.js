@@ -1,115 +1,165 @@
 // src/pages/admin/AdminDashboard.js
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import axios from "axios";
+import {
+  collection,
+  getDocs,
+  orderBy,
+  limit,
+  query,
+} from "firebase/firestore";
+import { db } from "../../firebase"; // adjust path if needed
 
-const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
-  withCredentials: false,
-  timeout: 12000,
-});
+// ---------- helpers ----------
 
-// simple fallback data
-const EMPTY = {
-  totalBookings: 0,
-  revenue: 0,
-  attention: 0,
-  users: 0,
-  latest: [],
+const money = (n) => {
+  const num = Number(n || 0);
+  return num.toLocaleString("en-NG", {
+    style: "currency",
+    currency: "NGN",
+    maximumFractionDigits: 0,
+  });
 };
 
-const softNum = (n) => (typeof n === "number" ? n.toLocaleString("en-NG") : "0");
-const money = (n) =>
-  typeof n === "number"
-    ? n.toLocaleString("en-NG", { style: "currency", currency: "NGN" })
-    : "₦0";
+const softNum = (n) =>
+  typeof n === "number" ? n.toLocaleString("en-NG") : "0";
+
+const isAttentionStatus = (statusRaw) => {
+  const s = String(statusRaw || "").toLowerCase();
+  return ["pending", "hold", "hold-pending", "change-request", "date-change", "cancel-request"].includes(
+    s
+  );
+};
+
+// Normalise a booking document into a single shape we can render
+const normaliseBooking = (doc) => {
+  const data = doc.data ? doc.data() : doc;
+  const createdAt =
+    data.createdAt?.toDate?.() || data.createdAt || null;
+
+  return {
+    id: doc.id || data.id,
+    listingTitle:
+      data.listingTitle || data.listing || data.title || "—",
+    guestEmail: data.email || data.guestEmail || data.guest || "—",
+    status: data.status || "confirmed",
+    amount:
+      Number(data.amountN ?? data.amount ?? data.total ?? 0) || 0,
+    nights: Number(data.nights ?? 0) || 0,
+    createdAt,
+    reference: data.reference || data.ref || "",
+  };
+};
+
+// ---------- component ----------
 
 export default function AdminDashboard() {
   const nav = useNavigate();
-  const [data, setData] = useState(EMPTY);
+  const [bookings, setBookings] = useState([]);
+  const [usersCount, setUsersCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      // try a couple of endpoints so we don't 500 if one doesn't exist
-      let overview = null;
-      const candidates = ["/admin/overview", "/admin/stats", "/admin/bookings/summary"];
-      for (const ep of candidates) {
+  // Load bookings + users directly from Firestore
+  useEffect(() => {
+    let alive = true;
+
+    async function load() {
+      setLoading(true);
+      setError("");
+
+      try {
+        // 1) Bookings
+        const bookingsRef = collection(db, "bookings");
+        const qBookings = query(
+          bookingsRef,
+          orderBy("createdAt", "desc"),
+          limit(200)
+        );
+
+        const snap = await getDocs(qBookings);
+        if (!alive) return;
+
+        const loaded = snap.docs.map((d) => normaliseBooking(d));
+        setBookings(loaded);
+
+        // 2) Users / hosts count
+        // For now we simply count docs in "users" collection.
+        // (Fine for admin-only usage – called rarely.)
         try {
-          const res = await api.get(ep);
-          if (res?.data) {
-            overview = res.data;
-            break;
-          }
+          const usersSnap = await getDocs(collection(db, "users"));
+          if (!alive) return;
+          setUsersCount(usersSnap.size || 0);
         } catch (e) {
-          // try next
+          // If users collection is missing or restricted, just fall back silently.
+          console.warn("[Admin] Could not load users count:", e);
         }
-      }
-
-      // try to get latest bookings for the left list
-      let latest = [];
-      const bookingEndpoints = ["/admin/bookings", "/bookings", "/transactions"];
-      for (const ep of bookingEndpoints) {
-        try {
-          const res = await api.get(ep);
-          const arr = Array.isArray(res.data)
-            ? res.data
-            : Array.isArray(res.data?.data)
-            ? res.data.data
-            : Array.isArray(res.data?.bookings)
-            ? res.data.bookings
-            : [];
-          latest = arr.slice(0, 8);
-          break;
-        } catch {
-          // ignore
+      } catch (e) {
+        console.error("[Admin] Dashboard load failed:", e);
+        if (alive) {
+          setError("We couldn’t load admin stats right now.");
+          setBookings([]);
+          setUsersCount(0);
         }
+      } finally {
+        if (alive) setLoading(false);
       }
-
-      const out = {
-        totalBookings:
-          overview?.bookings?.total ??
-          overview?.bookingsTotal ??
-          overview?.totalBookings ??
-          latest.length ??
-          0,
-        revenue:
-          overview?.revenue?.raw ??
-          overview?.revenue ??
-          overview?.totalRevenue ??
-          0,
-        attention:
-          overview?.bookings?.needingAttention ??
-          overview?.needingAttention ??
-          0,
-        users:
-          overview?.users?.total ??
-          overview?.usersTotal ??
-          overview?.totalUsers ??
-          0,
-        latest,
-      };
-      setData(out);
-    } catch (e) {
-      console.warn("admin dashboard load failed", e);
-      setData(EMPTY);
-    } finally {
-      setLoading(false);
     }
+
+    load();
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Derived metrics
+  const stats = useMemo(() => {
+    if (!Array.isArray(bookings) || bookings.length === 0) {
+      return {
+        totalBookings: 0,
+        totalRevenue: 0,
+        needsAttention: 0,
+        avgValue: 0,
+        avgNights: 0,
+        totalNights: 0,
+        latest: [],
+      };
+    }
+
+    let totalRevenue = 0;
+    let totalNights = 0;
+    let needsAttention = 0;
+
+    bookings.forEach((b) => {
+      totalRevenue += b.amount || 0;
+      totalNights += b.nights || 0;
+      if (isAttentionStatus(b.status)) needsAttention += 1;
+    });
+
+    const totalBookings = bookings.length;
+    const avgValue =
+      totalBookings > 0 ? totalRevenue / totalBookings : 0;
+    const avgNights =
+      totalBookings > 0 ? totalNights / totalBookings : 0;
+
+    return {
+      totalBookings,
+      totalRevenue,
+      needsAttention,
+      avgValue,
+      avgNights,
+      totalNights,
+      latest: bookings.slice(0, 8),
+    };
+  }, [bookings]);
 
   return (
-    <div className="min-h-screen bg-[#0b0d11] pb-16">
-      {/* top bar */}
+    <div className="min-h-screen bg-[#0b0d11] pb-16 text-white">
+      {/* Top bar */}
       <div className="flex items-center justify-between px-6 pt-6">
         <button
           onClick={() => nav(-1)}
-          className="rounded-xl bg-white/5 border border-white/10 px-4 py-2 text-white text-sm font-semibold hover:bg-white/10"
+          className="rounded-xl bg-white/5 border border-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/10"
         >
           ← Back
         </button>
@@ -122,16 +172,16 @@ export default function AdminDashboard() {
           </button>
           <button
             onClick={() => nav("/inbox")}
-            className="rounded-2xl bg-white/5 border border-white/10 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
+            className="rounded-2xl bg-white/5 border border-white/10 px-5 py-2 text-sm font-semibold hover:bg-white/10"
           >
             Open inbox
           </button>
         </div>
       </div>
 
-      {/* heading */}
+      {/* Heading */}
       <div className="px-6 mt-4 mb-3">
-        <h1 className="text-3xl font-black text-white tracking-tight">
+        <h1 className="text-3xl font-black tracking-tight">
           Admin control centre
         </h1>
         <p className="text-white/50 text-sm mt-1">
@@ -141,48 +191,52 @@ export default function AdminDashboard() {
 
       {/* KPI row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6">
+        {/* Total bookings */}
         <div className="rounded-3xl bg-gradient-to-br from-[#f5b800] to-[#ff7b1b] px-5 py-5 shadow-lg">
           <p className="uppercase tracking-[0.25em] text-xs text-black/70 font-bold">
             TOTAL BOOKINGS
           </p>
           <p className="text-5xl font-black text-black mt-2 leading-none">
-            {softNum(data.totalBookings)}
+            {softNum(stats.totalBookings)}
           </p>
           <p className="text-black/60 text-sm mt-3">
             All-time across the platform
           </p>
         </div>
 
+        {/* Revenue */}
         <div className="rounded-3xl bg-gradient-to-br from-[#00735f] to-[#008c86] px-5 py-5 shadow-lg">
           <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
             REVENUE (RAW)
           </p>
-          <p className="text-5xl font-black text-white mt-2 leading-none">
-            {money(data.revenue)}
+          <p className="text-5xl font-black mt-2 leading-none">
+            {money(stats.totalRevenue)}
           </p>
           <p className="text-white/60 text-sm mt-3">
             From booking payloads (not settled)
           </p>
         </div>
 
+        {/* Needs attention */}
         <div className="rounded-3xl bg-gradient-to-br from-[#b5131d] to-[#a10b38] px-5 py-5 shadow-lg">
           <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
             ITEMS NEEDING ATTENTION
           </p>
-          <p className="text-5xl font-black text-white mt-2 leading-none">
-            {softNum(data.attention)}
+          <p className="text-5xl font-black mt-2 leading-none">
+            {softNum(stats.needsAttention)}
           </p>
           <p className="text-white/70 text-sm mt-3">
             Pending / cancel / date-change
           </p>
         </div>
 
+        {/* Users */}
         <div className="rounded-3xl bg-gradient-to-br from-[#0b65c7] to-[#002e6f] px-5 py-5 shadow-lg">
           <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
             USERS / HOSTS (APPROX.)
           </p>
-          <p className="text-5xl font-black text-white mt-2 leading-none">
-            {softNum(data.users)}
+          <p className="text-5xl font-black mt-2 leading-none">
+            {softNum(usersCount)}
           </p>
           <p className="text-white/60 text-sm mt-3">
             From Firestore: users collection
@@ -190,12 +244,42 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* middle section */}
+      {/* Secondary metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 px-6 mt-5">
+        <div className="rounded-3xl bg-[#101318] border border-white/5 px-5 py-4">
+          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">
+            Avg booking value
+          </div>
+          <div className="text-3xl font-bold mt-2">
+            {money(stats.avgValue)}
+          </div>
+        </div>
+        <div className="rounded-3xl bg-[#101318] border border-white/5 px-5 py-4">
+          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">
+            Avg nights / booking
+          </div>
+          <div className="text-3xl font-bold mt-2">
+            {stats.avgNights.toFixed(1)}
+          </div>
+        </div>
+        <div className="rounded-3xl bg-[#101318] border border-white/5 px-5 py-4">
+          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">
+            Total nights (sample)
+          </div>
+          <div className="text-3xl font-bold mt-2">
+            {softNum(stats.totalNights)}
+          </div>
+        </div>
+      </div>
+
+      {/* Middle section */}
       <div className="grid lg:grid-cols-[1.3fr_.7fr] gap-6 px-6 mt-6">
-        {/* latest bookings box */}
+        {/* Latest bookings */}
         <div className="rounded-3xl bg-[#101318] border border-white/5 shadow-inner overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4">
-            <h2 className="text-white font-semibold text-lg">Latest bookings</h2>
+            <h2 className="text-white font-semibold text-lg">
+              Latest bookings
+            </h2>
             <button
               onClick={() => nav("/admin/bookings-admin")}
               className="text-sm text-white/50 hover:text-white"
@@ -203,26 +287,30 @@ export default function AdminDashboard() {
               View all →
             </button>
           </div>
+
           <div className="divide-y divide-white/5">
-            {data.latest.length === 0 ? (
+            {stats.latest.length === 0 ? (
               <div className="px-5 py-6 text-sm text-white/40">
                 No bookings yet.
               </div>
             ) : (
-              data.latest.map((b) => (
-                <div key={b.id || b._id} className="px-5 py-3 flex items-center justify-between">
+              stats.latest.map((b) => (
+                <div
+                  key={b.id}
+                  className="px-5 py-3 flex items-center justify-between"
+                >
                   <div>
                     <p className="text-white font-semibold">
-                      {b.listingTitle || b.listing || b.title || "—"}
+                      {b.listingTitle}
                     </p>
                     <p className="text-xs text-white/35 mt-0.5">
-                      guest: {b.guestEmail || b.guest || "—"} • ref:{" "}
-                      {(b.reference || b.ref || "—").toString().slice(0, 20)}
+                      guest: {b.guestEmail} • ref:{" "}
+                      {String(b.reference || b.id || "—").slice(0, 22)}
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
                     <p className="text-white font-bold">
-                      {money(Number(b.amount || b.total || 0))}
+                      {money(b.amount)}
                     </p>
                     <span
                       className={`px-3 py-1 rounded-full text-xs font-semibold ${
@@ -242,62 +330,75 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* system activity */}
+        {/* System activity */}
         <div className="rounded-3xl bg-[#101318] border border-white/5 shadow-inner px-5 py-4 flex flex-col gap-3">
-          <h2 className="text-white font-semibold text-lg">System activity</h2>
+          <h2 className="text-white font-semibold text-lg">
+            System activity
+          </h2>
           <p className="text-xs text-white/40 mb-1">
             What admins / hosts may need to see.
           </p>
 
           <button
             onClick={() => nav("/admin/bookings-admin")}
-            className="rounded-2xl bg-gradient-to-r from-[#2f83ff] to-[#36c2ff] px-5 py-3 text-left text-white font-semibold hover:brightness-110"
+            className="rounded-2xl bg-gradient-to-r from-[#2f83ff] to-[#36c2ff] px-5 py-3 text-left font-semibold hover:brightness-110"
           >
             Review booking approvals
-            <div className="text-xs text-white/70">Waiting for action</div>
+            <div className="text-xs text-white/70">
+              Waiting for action
+            </div>
           </button>
 
           <button
             onClick={() => nav("/admin/payouts")}
-            className="rounded-2xl bg-gradient-to-r from-[#00a77e] to-[#00bf8f] px-5 py-3 text-left text-white font-semibold hover:brightness-110"
+            className="rounded-2xl bg-gradient-to-r from-[#00a77e] to-[#00bf8f] px-5 py-3 text-left font-semibold hover:brightness-110"
           >
             Payouts &amp; settlements
-            <div className="text-xs text-white/70">Track partner/host payouts</div>
+            <div className="text-xs text-white/70">
+              Track partner/host payouts
+            </div>
           </button>
 
           <button
             onClick={() => nav("/admin/transactions")}
-            className="rounded-2xl bg-gradient-to-r from-[#705cff] to-[#8849f6] px-5 py-3 text-left text-white font-semibold hover:brightness-110"
+            className="rounded-2xl bg-gradient-to-r from-[#705cff] to-[#8849f6] px-5 py-3 text-left font-semibold hover:brightness-110"
           >
             Transactions
-            <div className="text-xs text-white/70">Full ledger, refunds, corrections</div>
+            <div className="text-xs text-white/70">
+              Full ledger, refunds, corrections
+            </div>
           </button>
 
           <button
             onClick={() => nav("/admin/feature-requests")}
-            className="rounded-2xl bg-gradient-to-r from-[#ff8a44] to-[#ff546a] px-5 py-3 text-left text-white font-semibold hover:brightness-110"
+            className="rounded-2xl bg-gradient-to-r from-[#ff8a44] to-[#ff546a] px-5 py-3 text-left font-semibold hover:brightness-110"
           >
             Feature / issue requests
-            <div className="text-xs text-white/70">View feedback coming from users</div>
+            <div className="text-xs text-white/70">
+              View feedback coming from users
+            </div>
           </button>
 
           <button
             onClick={() => nav("/admin/listings")}
-            className="rounded-2xl bg-gradient-to-r from-[#5657ff] to-[#8836ff] px-5 py-3 text-left text-white font-semibold hover:brightness-110"
+            className="rounded-2xl bg-gradient-to-r from-[#5657ff] to-[#8836ff] px-5 py-3 text-left font-semibold hover:brightness-110"
           >
             Manage listings
-            <div className="text-xs text-white/70">Approve, disable, toggle featured</div>
+            <div className="text-xs text-white/70">
+              Approve, disable, toggle featured
+            </div>
           </button>
 
           <button
             onClick={() => nav("/admin/onboarding-queue")}
-            className="rounded-2xl bg-[#161a1f] px-5 py-3 text-left text-white font-semibold hover:bg-white/5"
+            className="rounded-2xl bg-[#161a1f] px-5 py-3 text-left font-semibold hover:bg-white/5"
           >
             Onboarding queue
-            <div className="text-xs text-white/60">Host &amp; partner KYC / roles</div>
+            <div className="text-xs text-white/60">
+              Host &amp; partner KYC / roles
+            </div>
           </button>
 
-          {/* bottom pills */}
           <div className="flex flex-wrap gap-3 pt-2">
             <button
               onClick={() => nav("/admin/data-tools")}
@@ -327,11 +428,17 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {loading ? (
+      {loading && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-black/70 text-white/70 rounded-xl px-4 py-2 text-sm">
           Refreshing admin data…
         </div>
-      ) : null}
+      )}
+
+      {error && !loading && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-rose-700/90 text-white rounded-xl px-4 py-2 text-sm max-w-md text-center">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
