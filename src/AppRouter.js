@@ -8,6 +8,11 @@ import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { ToastProvider } from "./components/Toast";
 import { InboxProvider } from "./context/InboxContext";
 import ReserveSuccessPage from "./pages/ReserveSuccessPage";
+// Legal / info pages
+import Terms from "./pages/Terms";
+import Privacy from "./pages/Privacy";
+import CancellationPolicyPage from "./pages/CancellationPolicyPage";
+import ComplaintsPage from "./pages/ComplaintsPage";
 
 // Onboarding / KYC
 import KycPage from "./pages/onboarding/KycPage";
@@ -37,6 +42,14 @@ import PressPage from "./pages/PressPage";
 import CareersPage from "./pages/CareersPage";
 import HelpPage from "./pages/HelpPage";
 import GuestExplorePage from "./pages/GuestExplorePage";
+import TrustSafetyPage from "./pages/TrustSafetyPage";
+import SecurityPage from "./pages/SecurityPage";
+
+// Booking detail / receipt / check-in
+import BookingDetailsPage from "./pages/BookingDetailsPage";
+import BookingCompletePage from "./pages/BookingCompletePage";
+import BookingReceiptPage from "./pages/BookingReceiptPage";
+import CheckinGuidePage from "./pages/CheckinGuidePage";
 
 // Host / Partner dashboards & tools
 import HostDashboard from "./pages/HostDashboard";
@@ -103,6 +116,12 @@ export default function AppRouter() {
               <Route path="/press" element={<PressPage />} />
               <Route path="/careers" element={<CareersPage />} />
               <Route path="/help" element={<HelpPage />} />
+              <Route path="/terms" element={<Terms />} />
+              <Route path="/privacy" element={<Privacy />} />
+              <Route path="/cancellation-policy" element={<CancellationPolicyPage />} />
+              <Route path="/complaints" element={<ComplaintsPage />} />
+              <Route path="/trust-and-safety" element={<TrustSafetyPage />} />
+              <Route path="/security" element={<SecurityPage />} />
 
               {/* ---------- Auth (public) ---------- */}
               <Route path="/login" element={<LoginPage />} />
@@ -128,6 +147,39 @@ export default function AppRouter() {
                 element={
                   <RequireAuth>
                     <ReserveSuccessPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/booking-complete"
+                element={
+                  <RequireAuth>
+                    <BookingCompletePage />
+                  </RequireAuth>
+                }
+              />
+              {/* ---------- Booking details / receipt / check-in ---------- */}
+              <Route
+                path="/booking/:id"
+                element={
+                  <RequireAuth>
+                    <BookingDetailsPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/receipt/:id"
+                element={
+                  <RequireAuth>
+                    <BookingReceiptPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/checkin/:id"
+                element={
+                  <RequireAuth>
+                    <CheckinGuidePage />
                   </RequireAuth>
                 }
               />
@@ -161,7 +213,6 @@ export default function AppRouter() {
               />
 
               {/* ---------- KYC / Onboarding flows ---------- */}
-              {/* Old entry – generic KYC page */}
               <Route
                 path="/onboarding/kyc"
                 element={
@@ -170,14 +221,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
-              {/* New luxury flow:
-                  1) KycGate decides where to send user
-                  2) KycStart = “let’s verify you” + CTA
-                  3) KycApplicationPage = form
-                  4) KycPending = after submit
-                  5) KycRetry = if rejected
-              */}
               <Route
                 path="/onboarding/kyc/gate"
                 element={
@@ -249,6 +292,8 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
+
+              {/* Legacy / simple chat (if you ever deep-link by user id) */}
               <Route
                 path="/chat"
                 element={
@@ -259,6 +304,16 @@ export default function AppRouter() {
               />
               <Route
                 path="/chat/:uid"
+                element={
+                  <RequireAuth>
+                    <ChatPage />
+                  </RequireAuth>
+                }
+              />
+
+              {/* Luxury booking-based chat: host/partner ↔ guest scoped to a booking */}
+              <Route
+                path="/booking/:bookingId/chat"
                 element={
                   <RequireAuth>
                     <ChatPage />

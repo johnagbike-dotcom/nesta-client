@@ -6,12 +6,12 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import AdminHeader from "../../components/AdminHeader";
 import { useToast } from "../../context/ToastContext";
 
-// Firestore helpers
+// Firestore helpers (for resolving chat UIDs)
 import { db } from "../../firebase";
 import {
   collection,
   getDocs,
-  query,
+  query as fsQuery,
   where,
   limit as fsLimit,
 } from "firebase/firestore";
@@ -27,16 +27,6 @@ const api = axios.create({
 });
 
 /* helpers ----------------------------------------------------------- */
-function arr(x) {
-  if (!x) return [];
-  if (Array.isArray(x)) return x;
-  if (Array.isArray(x.data)) return x.data;
-  if (Array.isArray(x.items)) return x.items;
-  if (Array.isArray(x.bookings)) return x.bookings;
-  if (Array.isArray(x.transactions)) return x.transactions;
-  return [];
-}
-
 const money = (n) =>
   typeof n === "number"
     ? n.toLocaleString("en-NG", { style: "currency", currency: "NGN" })
@@ -114,7 +104,9 @@ const ActionBtn = ({ kind = "ghost", children, onClick, disabled }) => {
       }}
       onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
       onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
-      onMouseEnter={(e) => !disabled && (e.currentTarget.style.filter = "brightness(1.05)")}
+      onMouseEnter={(e) =>
+        !disabled && (e.currentTarget.style.filter = "brightness(1.05)")
+      }
       onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
     >
       {children}
@@ -125,7 +117,7 @@ const ActionBtn = ({ kind = "ghost", children, onClick, disabled }) => {
 export default function BookingsAdmin() {
   const nav = useNavigate();
   const { showToast: toast } = useToast();
-  const [searchParams] = useSearchParams(); // 👈 NEW
+  const [searchParams] = useSearchParams();
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -143,7 +135,6 @@ export default function BookingsAdmin() {
     if (f) {
       setTab(f);
       setPage(1);
-      // smooth admin UX
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   }, [searchParams]);
@@ -153,23 +144,24 @@ export default function BookingsAdmin() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [tab]);
 
-  /* load ------------------------------------------------------------ */
+  /* load from ADMIN ledger only ------------------------------------- */
   const load = async () => {
     setLoading(true);
     try {
-      const endpoints = ["/admin/bookings", "/bookings", "/transactions"];
-      let out = [];
-      for (const ep of endpoints) {
-        try {
-          const res = await api.get(ep);
-          out = arr(res.data);
-          if (out.length) break;
-        } catch {
-          // try next
-        }
-      }
+      // Ask the server for up to 500 latest bookings in the admin ledger
+      const { data } = await api.get("/admin/bookings", {
+        params: { status: "all", q: "", page: 1, limit: 500 },
+      });
 
-      const norm = out.map((b) => {
+      const list = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data)
+        ? data
+        : [];
+
+      const norm = list.map((b) => {
         const id = b.id || b._id || b.bookingId || b.reference || b.ref;
         const status = String(b.status || "pending").toLowerCase();
         const hasCancelReq =
@@ -241,7 +233,8 @@ export default function BookingsAdmin() {
     let list = rows;
 
     if (tab === "cancel_req") list = list.filter((r) => r.cancellationRequested);
-    else if (tab === "date_change") list = list.filter((r) => r.dateChangeRequested);
+    else if (tab === "date_change")
+      list = list.filter((r) => r.dateChangeRequested);
     else if (tab !== "all") list = list.filter((r) => r.status === tab);
 
     const q = query.trim().toLowerCase();
@@ -264,14 +257,28 @@ export default function BookingsAdmin() {
     return filtered.slice(start, start + perPage);
   }, [filtered, page, perPage]);
 
-  /* patch status ---------------------------------------------------- */
+  /* backend helpers ------------------------------------------------- */
+
+  // Dedicated refund endpoint – this is what writes a NEGATIVE payout row
+  const refundBooking = async (id) => {
+    try {
+      await api.post(`/bookings/${encodeURIComponent(id)}/refund`, {
+        note: "admin_refund",
+      });
+      return true;
+    } catch (e) {
+      console.error("Refund API failed:", e);
+      return false;
+    }
+  };
+
+  // Generic status update (confirm / cancel etc.)
   const patchStatus = async (id, status) => {
     const fns = [
       (x) => `/admin/bookings/${x}/status`,
       (x) => `/bookings/${x}/status`,
       (x, s) => `/admin/bookings/${x}/${s}`,
       (x, s) => `/bookings/${x}/${s}`,
-      (x, s) => `/transactions/${x}/${s}`,
     ];
     for (const fn of fns) {
       try {
@@ -294,6 +301,8 @@ export default function BookingsAdmin() {
     setBusyId(row.id);
 
     const prev = rows.slice();
+
+    // Optimistic UI update
     setRows(
       rows.map((r) =>
         r.id === row.id
@@ -307,7 +316,13 @@ export default function BookingsAdmin() {
       )
     );
 
-    const ok = await patchStatus(row.id, toStatus);
+    let ok = false;
+    if (toStatus === "refunded") {
+      ok = await refundBooking(row.id);
+    } else {
+      ok = await patchStatus(row.id, toStatus);
+    }
+
     setBusyId(null);
 
     if (!ok) {
@@ -323,7 +338,7 @@ export default function BookingsAdmin() {
     if (!email) return null;
     try {
       const qSnap = await getDocs(
-        query(collection(db, "users"), where("email", "==", email), fsLimit(1))
+        fsQuery(collection(db, "users"), where("email", "==", email), fsLimit(1))
       );
       if (!qSnap.empty) {
         const doc = qSnap.docs[0];
@@ -383,7 +398,8 @@ export default function BookingsAdmin() {
         note: `Wanted to message ${target} for booking ${row.id} (${row.listing}) but UID was missing.`,
       },
     });
-    toast && toast("Couldn’t find that user in Firestore. Opened inbox instead.", "info");
+    toast &&
+      toast("Couldn’t find that user in Firestore. Opened inbox instead.", "info");
   };
 
   /* CSV ------------------------------------------------------------- */
@@ -576,7 +592,8 @@ export default function BookingsAdmin() {
         style={{
           borderRadius: 18,
           border: "1px solid rgba(255,255,255,.03)",
-          background: "radial-gradient(circle at top, rgba(15,23,42,.65), rgba(2,6,23,1))",
+          background:
+            "radial-gradient(circle at top, rgba(15,23,42,.65), rgba(2,6,23,1))",
           overflow: "hidden",
         }}
       >
@@ -628,7 +645,11 @@ export default function BookingsAdmin() {
                 <div>
                   <div style={{ fontWeight: 700, color: "#fff" }}>{r.listing}</div>
                   <div
-                    style={{ fontSize: 12, color: "rgba(226,232,240,.6)", marginTop: 2 }}
+                    style={{
+                      fontSize: 12,
+                      color: "rgba(226,232,240,.6)",
+                      marginTop: 2,
+                    }}
                   >
                     id: {r.id}
                     <br />
@@ -659,7 +680,11 @@ export default function BookingsAdmin() {
                 <div style={{ fontWeight: 700, color: "#fff" }}>
                   {money(r.amount)}
                   <div
-                    style={{ fontSize: 11, color: "rgba(226,232,240,.5)", marginTop: 2 }}
+                    style={{
+                      fontSize: 11,
+                      color: "rgba(226,232,240,.5)",
+                      marginTop: 2,
+                    }}
                   >
                     {r.gateway} • {String(r.ref || "-").slice(0, 14)}
                   </div>
@@ -674,21 +699,30 @@ export default function BookingsAdmin() {
 
                 {/* actions */}
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  {r.status !== "confirmed" ? (
+                  {r.status === "confirmed" ? (
+                    <>
+                      <ActionBtn
+                        kind="cancel"
+                        disabled={busyId === r.id}
+                        onClick={() => doAction(r, "cancelled")}
+                      >
+                        Mark cancelled
+                      </ActionBtn>
+                      <ActionBtn
+                        kind="cancel"
+                        disabled={busyId === r.id}
+                        onClick={() => doAction(r, "refunded")}
+                      >
+                        Refund
+                      </ActionBtn>
+                    </>
+                  ) : (
                     <ActionBtn
                       kind="confirm"
                       disabled={busyId === r.id}
                       onClick={() => doAction(r, "confirmed")}
                     >
                       Mark confirmed
-                    </ActionBtn>
-                  ) : (
-                    <ActionBtn
-                      kind="cancel"
-                      disabled={busyId === r.id}
-                      onClick={() => doAction(r, "cancelled")}
-                    >
-                      Mark cancelled
                     </ActionBtn>
                   )}
                   <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "guest")}>
@@ -716,8 +750,8 @@ export default function BookingsAdmin() {
         }}
       >
         <div style={{ color: "#94a3b8", fontSize: 13 }}>
-          Showing {(page - 1) * perPage + 1} – {Math.min(page * perPage, total)} of{" "}
-          {total} results
+          Showing {(page - 1) * perPage + 1} –{" "}
+          {Math.min(page * perPage, total)} of {total} results
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <button

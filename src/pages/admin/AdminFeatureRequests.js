@@ -1,31 +1,46 @@
 // src/pages/admin/AdminFeatureRequests.js
 import React, { useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import { useNavigate } from "react-router-dom";
 import dayjs from "dayjs";
+import relativeTime from "dayjs/plugin/relativeTime";
+import {
+  collection,
+  getDocs,
+  query,
+  orderBy,
+  updateDoc,
+  doc,
+  serverTimestamp,
+  Timestamp,
+} from "firebase/firestore";
+import { db } from "../../firebase";
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
 import { useToast } from "../../components/Toast";
 
-/* ───────────────────────── axios base ───────────────────────── */
-const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
-  withCredentials: false,
-  timeout: 15000,
-});
+dayjs.extend(relativeTime);
 
-/* ───────────────────────── UI helpers ───────────────────────── */
+/* Spotlight plans – mirror of EditListing */
+const SPOTLIGHT_PLANS = [
+  { id: "spotlight", label: "Spotlight • 24 hours", price: 20000, durationDays: 1 },
+  { id: "premium", label: "Premium • 7 days", price: 70000, durationDays: 7 },
+  { id: "signature", label: "Signature • 30 days", price: 250000, durationDays: 30 },
+];
+
 const fx = {
-  chip: (c) => {
+  chip: (status) => {
+    const s = String(status || "").toLowerCase();
     const tone =
-      c === "shipped"
+      s === "active"
         ? { bg: "rgba(16,185,129,.22)", text: "#a7f3d0", ring: "rgba(16,185,129,.35)" }
-        : c === "planned"
-        ? { bg: "rgba(59,130,246,.20)", text: "#bfdbfe", ring: "rgba(59,130,246,.35)" }
-        : c === "rejected"
+        : s === "awaiting-payment"
+        ? { bg: "rgba(245,158,11,.22)", text: "#fde68a", ring: "rgba(245,158,11,.35)" }
+        : s === "rejected"
         ? { bg: "rgba(239,68,68,.20)", text: "#fecaca", ring: "rgba(239,68,68,.35)" }
-        : c === "archived"
+        : s === "archived"
         ? { bg: "rgba(148,163,184,.20)", text: "#e2e8f0", ring: "rgba(148,163,184,.35)" }
-        : { bg: "rgba(245,158,11,.22)", text: "#fde68a", ring: "rgba(245,158,11,.35)" }; // pending
+        : { bg: "rgba(59,130,246,.20)", text: "#bfdbfe", ring: "rgba(59,130,246,.35)" }; // pending
+
     return {
       padding: "6px 10px",
       borderRadius: 999,
@@ -42,94 +57,52 @@ const fx = {
   },
 };
 
-function Modal({ open, title, children, onClose }) {
-  if (!open) return null;
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,.6)",
-        display: "grid",
-        placeItems: "center",
-        zIndex: 60,
-        padding: 16,
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: "min(640px, 92vw)",
-          borderRadius: 16,
-          padding: 16,
-          background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(0,0,0,.35))",
-          border: "1px solid rgba(255,255,255,.14)",
-          boxShadow: "0 24px 48px rgba(0,0,0,.45)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
-          <h3 style={{ margin: 0, fontWeight: 800, fontSize: 18, color: "#f8fafc" }}>{title}</h3>
-          <div style={{ marginLeft: "auto" }}>
-            <LuxeBtn small onClick={onClose}>Close</LuxeBtn>
-          </div>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/* ───────────────────────── Page ─────────────────────────────── */
 export default function AdminFeatureRequests() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const [tab, setTab] = useState("all");       // all | pending | planned | shipped | rejected | archived
+  const [tab, setTab] = useState("all");
   const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useState(10);
 
   const toast = useToast();
   const notify = (kind, msg) =>
     toast && typeof toast[kind] === "function" ? toast[kind](msg) : window.alert(msg);
 
-  // note modal
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [noteText, setNoteText] = useState("");
-  const [noteTarget, setNoteTarget] = useState(null);
+  const navigate = useNavigate();
 
-  // history modal
-  const [histOpen, setHistOpen] = useState(false);
-  const [histRow, setHistRow] = useState(null);
-
-  const LIST_ENDPOINT = "/admin/feature-requests";
+  /* ───────────────────────── load ───────────────────────── */
 
   const load = async () => {
     setLoading(true);
     try {
-      // Let backend filter by status if it supports ?status= — still client-filter below for safety
-      const res = await api.get(LIST_ENDPOINT, { params: { status: tab === "all" ? undefined : tab, q } });
-      const data = Array.isArray(res.data?.data) ? res.data.data : [];
-      setRows(
-        data.map((r) => ({
-          id:
-            r.id ||
-            r._id ||
-            r.slug ||
-            `${r.title || ""}`.toLowerCase().replace(/\s+/g, "-"),
-          title: r.title || "-",
-          description: r.description || "",
-          by: r.by || r.email || "-",
-          priority: (r.priority || "medium").toLowerCase(),
-          status: String(r.status || "pending").toLowerCase(),
-          note: r.note || "",
+      const ref = collection(db, "featureRequests");
+      const snap = await getDocs(query(ref, orderBy("createdAt", "desc")));
+      const data = snap.docs.map((d) => {
+        const r = d.data() || {};
+        const price = r.planPrice ?? r.price ?? null;
+        return {
+          id: d.id,
+          listingId: r.listingId || "",
+          listingTitle: r.listingTitle || r.title || "-",
+          title: r.listingTitle || r.title || "-",
+          hostEmail: r.hostEmail || r.by || "",
+          hostUid: r.hostUid || "",
+          planId: r.planId || r.planKey || "custom",
+          planKey: r.planKey || "custom",
+          planLabel: r.planLabel || "Custom plan",
+          price,
+          planPrice: price,
+          durationDays: r.durationDays || null,
+          status: (r.status || "pending").toLowerCase(),
           archived: !!r.archived,
-          history: Array.isArray(r.history) ? r.history : [],
-          updatedAt: r.updatedAt || r.createdAt || null,
+          primaryImageUrl: r.primaryImageUrl || null,
+          description: r.description || "",
+          type: r.type || "",
           createdAt: r.createdAt || null,
-        }))
-      );
+          updatedAt: r.updatedAt || null,
+        };
+      });
+      setRows(data);
     } catch (e) {
       console.error(e);
       notify("error", "Failed to load feature requests.");
@@ -141,131 +114,170 @@ export default function AdminFeatureRequests() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, []);
+
+  /* ───────────────────────── derived ───────────────────────── */
 
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
-    let list = rows;
+    let list = rows.slice();
 
-    // Ensure tab still filters even if backend ignores it
     if (tab !== "all") {
       list = list.filter((r) =>
-        tab === "archived" ? r.archived : !r.archived && r.status === tab
+        tab === "archived" ? r.archived : String(r.status || "pending") === tab
       );
     }
 
     if (kw) {
       list = list.filter((r) =>
-        `${r.title} ${r.by} ${r.description}`.toLowerCase().includes(kw)
+        `${r.listingTitle || r.title || ""} ${r.hostEmail || ""} ${r.planLabel || ""}`
+          .toLowerCase()
+          .includes(kw)
       );
     }
+
     return list;
   }, [rows, q, tab]);
 
   const counts = useMemo(() => {
-    const c = { all: rows.length, pending: 0, planned: 0, shipped: 0, rejected: 0, archived: 0 };
+    const c = {
+      all: rows.length,
+      pending: 0,
+      "awaiting-payment": 0,
+      active: 0,
+      rejected: 0,
+      archived: 0,
+    };
     rows.forEach((r) => {
       if (r.archived) c.archived += 1;
-      else c[r.status] = (c[r.status] || 0) + 1;
+      else {
+        const s = String(r.status || "pending");
+        if (c[s] != null) c[s] += 1;
+      }
     });
     return c;
   }, [rows]);
 
-  const total = filtered.length;
-  const lastPage = Math.max(1, Math.ceil(total / perPage));
-  const pageItems = useMemo(() => {
-    const s = (page - 1) * perPage;
-    return filtered.slice(s, s + perPage);
-  }, [filtered, page, perPage]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [q, perPage, tab]);
-
   /* ───────────────────────── actions ───────────────────────── */
-  async function actPatch(rowId, payload, successMsg) {
-    const prev = rows.slice();
-    const idx = rows.findIndex((r) => r.id === rowId);
-    if (idx === -1) return;
 
-    const next = prev.slice();
-    next[idx] = { ...next[idx], ...payload };
-    if (payload.appendHistory) {
-      next[idx].history = [...(next[idx].history || []), payload.appendHistory];
-    }
-    setRows(next);
-
+  const updateRequest = async (rowId, patch, successMsg) => {
     try {
-      await api.patch(`/admin/feature-requests/${encodeURIComponent(rowId)}`, payload);
+      await updateDoc(doc(db, "featureRequests", rowId), {
+        ...patch,
+        updatedAt: serverTimestamp(),
+      });
       if (successMsg) notify("success", successMsg);
+      await load();
     } catch (e) {
       console.error(e);
-      setRows(prev);
       notify("error", "Failed to update request.");
     }
-  }
-
-  const openNote = (row, nextStatus) => {
-    setNoteTarget({ row, nextStatus });
-    setNoteText("");
-    setNoteOpen(true);
   };
 
-  const saveNoteAndStatus = async () => {
-    if (!noteTarget) return;
-    const { row, nextStatus } = noteTarget;
-    const note = noteText.trim();
-    setNoteOpen(false);
-
-    await actPatch(
+  const setStatus = async (row, status) => {
+    const s = String(status || "").toLowerCase();
+    await updateRequest(
       row.id,
-      {
-        status: nextStatus,
-        archived: nextStatus === "archived" ? true : row.archived,
-        note,
-        appendHistory: { status: nextStatus, note, at: new Date().toISOString() },
-      },
-      `Set to ${nextStatus}.`
+      { status: s, archived: s === "archived" ? true : row.archived || false },
+      `Status set to ${s}.`
     );
   };
 
   const toggleArchive = async (row) => {
-    const makeArchived = !row.archived;
-    await actPatch(
+    const newVal = !row.archived;
+    await updateRequest(
       row.id,
-      {
-        archived: makeArchived,
-        appendHistory: {
-          status: makeArchived ? "archived" : "unarchived",
-          note: "",
-          at: new Date().toISOString(),
-        },
-      },
-      makeArchived ? "Archived." : "Unarchived."
+      { archived: newVal },
+      newVal ? "Archived." : "Unarchived."
     );
   };
 
-  const changePriority = async (row, val) => {
-    await actPatch(row.id, { priority: val }, "Priority updated.");
-  };
+  const activateSpotlight = async (row) => {
+    if (!row.listingId) {
+      notify("error", "This request does not have a listingId.");
+      return;
+    }
 
-  const openHistory = (row) => {
-    setHistRow(row);
-    setHistOpen(true);
+    const plan =
+      SPOTLIGHT_PLANS.find((p) => p.id === row.planId) || SPOTLIGHT_PLANS[0];
+    const durationDays = row.durationDays || plan.durationDays || 1;
+
+    if (
+      !window.confirm(
+        `Activate spotlight for "${row.listingTitle || row.title}"?\n\nPlan: ${
+          plan.label
+        }\nAmount: ₦${(row.price || plan.price).toLocaleString()}\nDuration: ${
+          durationDays
+        } day${durationDays > 1 ? "s" : ""}`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const now = new Date();
+      const until = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+      // Update listing (note: also set legacy `featured: true`)
+      await updateDoc(doc(db, "listings", row.listingId), {
+        sponsored: true,
+        featured: true, // legacy flag so older admin tools & filters see it
+        sponsoredPlanId: row.planId || plan.id,
+        sponsoredPlanLabel: row.planLabel || plan.label,
+        sponsoredPrice: row.price || plan.price,
+        sponsoredSince: serverTimestamp(),
+        sponsoredUntil: Timestamp.fromDate(until),
+        updatedAt: serverTimestamp(),
+        status: "active",
+      });
+
+      // Update request
+      await updateDoc(doc(db, "featureRequests", row.id), {
+        status: "active",
+        paid: true,
+        sponsoredUntil: Timestamp.fromDate(until),
+        updatedAt: serverTimestamp(),
+      });
+
+      notify("success", "Spotlight activated and listing updated.");
+      await load();
+    } catch (e) {
+      console.error(e);
+      notify("error", "Failed to activate spotlight.");
+    }
   };
 
   const exportCsv = () => {
-    const header = ["title", "by", "priority", "status", "archived", "updatedAt", "createdAt"];
+    const header = [
+      "listingTitle",
+      "listingId",
+      "hostEmail",
+      "status",
+      "plan",
+      "price",
+      "durationDays",
+      "archived",
+      "createdAt",
+      "updatedAt",
+    ];
     const lines = [header.join(",")];
+
     filtered.forEach((r) => {
       const line = [
-        r.title,
-        r.by,
-        r.priority,
-        r.status,
+        r.listingTitle || r.title || "",
+        r.listingId || "",
+        r.hostEmail || "",
+        r.status || "",
+        r.planLabel || r.planId || "",
+        r.price || "",
+        r.durationDays || "",
         r.archived ? "yes" : "no",
-        r.updatedAt ? dayjs(r.updatedAt).format("YYYY-MM-DD HH:mm") : "",
-        r.createdAt ? dayjs(r.createdAt).format("YYYY-MM-DD HH:mm") : "",
+        r.createdAt
+          ? dayjs(r.createdAt.toDate?.() || r.createdAt).format("YYYY-MM-DD HH:mm")
+          : "",
+        r.updatedAt
+          ? dayjs(r.updatedAt.toDate?.() || r.updatedAt).format("YYYY-MM-DD HH:mm")
+          : "",
       ]
         .map((v) => {
           const s = v == null ? "" : String(v);
@@ -275,7 +287,9 @@ export default function AdminFeatureRequests() {
       lines.push(line);
     });
 
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob([lines.join("\n")], {
+      type: "text/csv;charset=utf-8;",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -288,25 +302,28 @@ export default function AdminFeatureRequests() {
   };
 
   /* ───────────────────────── render ───────────────────────── */
+
+  const total = filtered.length;
+
   return (
     <div style={{ padding: 16 }}>
       <AdminHeader
         back
         title="Feature Requests"
-        subtitle="Track and prioritize product ideas"
+        subtitle="Track and manage spotlight / featured-carousel requests"
         rightActions={
           <div style={{ display: "flex", gap: 8 }}>
-            <LuxeBtn kind="gold" small onClick={exportCsv} title="Export as CSV">
+            <LuxeBtn kind="gold" small onClick={exportCsv}>
               Export CSV
             </LuxeBtn>
-            <LuxeBtn small onClick={load} title="Refresh data">
+            <LuxeBtn small onClick={load}>
               {loading ? "Loading…" : "Refresh"}
             </LuxeBtn>
           </div>
         }
       />
 
-      {/* Filters */}
+      {/* filters */}
       <div
         style={{
           display: "grid",
@@ -319,8 +336,11 @@ export default function AdminFeatureRequests() {
         {[
           { k: "all", label: `All ${counts.all}` },
           { k: "pending", label: `Pending ${counts.pending}` },
-          { k: "planned", label: `Planned ${counts.planned}` },
-          { k: "shipped", label: `Shipped ${counts.shipped}` },
+          {
+            k: "awaiting-payment",
+            label: `Awaiting payment ${counts["awaiting-payment"]}`,
+          },
+          { k: "active", label: `Active ${counts.active}` },
           { k: "rejected", label: `Rejected ${counts.rejected}` },
           { k: "archived", label: `Archived ${counts.archived}` },
         ].map((x) => (
@@ -351,7 +371,7 @@ export default function AdminFeatureRequests() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search title or user…"
+          placeholder="Search listing, host or plan…"
           style={{
             height: 44,
             borderRadius: 12,
@@ -362,11 +382,10 @@ export default function AdminFeatureRequests() {
             minWidth: 260,
           }}
         />
-        {/* extra right space kept for layout balance */}
         <div />
       </div>
 
-      {/* Table */}
+      {/* table container */}
       <div
         style={{
           borderRadius: 16,
@@ -404,11 +423,16 @@ export default function AdminFeatureRequests() {
                   textAlign: "left",
                 }}
               >
-                {["Title", "By", "Priority", "Status", "Actions"].map((h) => (
-                  <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
-                    {h}
-                  </th>
-                ))}
+                {["Title / Listing", "Host", "Plan", "Status", "Actions"].map(
+                  (h) => (
+                    <th
+                      key={h}
+                      style={{ padding: "14px 16px", whiteSpace: "nowrap" }}
+                    >
+                      {h}
+                    </th>
+                  )
+                )}
               </tr>
             </thead>
             <tbody>
@@ -420,7 +444,7 @@ export default function AdminFeatureRequests() {
                 </tr>
               )}
 
-              {!loading && pageItems.length === 0 && (
+              {!loading && filtered.length === 0 && (
                 <tr>
                   <td colSpan={5} style={{ padding: 20, color: "#aeb6c2" }}>
                     No requests yet.
@@ -429,101 +453,210 @@ export default function AdminFeatureRequests() {
               )}
 
               {!loading &&
-                pageItems.map((r) => (
-                  <tr key={r.id}>
-                    <td style={{ padding: "12px 16px" }}>
-                      <div style={{ fontWeight: 800, color: "#f3f4f6" }}>{r.title}</div>
-                      <div style={{ opacity: 0.8, fontSize: 12, color: "#cbd5e1" }}>
-                        {r.description}
-                      </div>
-                      {!!r.note && (
+                filtered.map((r) => {
+                  const plan =
+                    SPOTLIGHT_PLANS.find((p) => p.id === r.planId) || null;
+                  const price = r.price || plan?.price || null;
+                  const dur = r.durationDays || plan?.durationDays || null;
+
+                  return (
+                    <tr key={r.id}>
+                      <td style={{ padding: "12px 16px" }}>
                         <div
-                          title={r.note}
                           style={{
-                            marginTop: 6,
-                            fontSize: 12,
-                            color: "#eab308",
-                            opacity: 0.9,
+                            display: "flex",
+                            gap: 12,
+                            alignItems: "center",
                           }}
                         >
-                          Last note: {r.note.length > 64 ? r.note.slice(0, 63) + "…" : r.note}
+                          {r.primaryImageUrl ? (
+                            <div
+                              style={{
+                                width: 72,
+                                height: 54,
+                                borderRadius: 10,
+                                overflow: "hidden",
+                                border: "1px solid rgba(255,255,255,.15)",
+                                flexShrink: 0,
+                              }}
+                            >
+                              <img
+                                src={r.primaryImageUrl}
+                                alt={r.title}
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                  objectFit: "cover",
+                                }}
+                              />
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                width: 72,
+                                height: 54,
+                                borderRadius: 10,
+                                background:
+                                  "radial-gradient(circle at top left, rgba(250,204,21,.25), rgba(15,23,42,1))",
+                                border: "1px solid rgba(255,255,255,.08)",
+                                flexShrink: 0,
+                              }}
+                            />
+                          )}
+
+                          <div>
+                            <div
+                              style={{
+                                fontWeight: 800,
+                                color: "#f3f4f6",
+                              }}
+                            >
+                              {r.title}
+                            </div>
+                            <div
+                              style={{
+                                opacity: 0.8,
+                                fontSize: 12,
+                                color: "#cbd5e1",
+                              }}
+                            >
+                              Listing: {r.listingId || "—"} · Plan:{" "}
+                              {r.planLabel}
+                            </div>
+                            {r.description && (
+                              <div
+                                style={{
+                                  marginTop: 2,
+                                  fontSize: 11,
+                                  color: "#94a3b8",
+                                }}
+                              >
+                                {r.description}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      )}
-                      {r.updatedAt && (
-                        <div style={{ marginTop: 4, fontSize: 11, color: "#94a3b8" }}>
-                          Updated {dayjs(r.updatedAt).fromNow?.() || r.updatedAt}
+                      </td>
+
+                      <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                        <div style={{ color: "#e5e7eb" }}>
+                          {r.hostEmail || "—"}
                         </div>
-                      )}
-                    </td>
+                        {r.hostUid && (
+                          <div
+                            style={{
+                              color: "#94a3b8",
+                              fontFamily: "monospace",
+                              fontSize: 11,
+                            }}
+                          >
+                            {r.hostUid}
+                          </div>
+                        )}
+                      </td>
 
-                    <td style={{ padding: "12px 16px" }}>{r.by}</td>
+                      <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                        <div style={{ color: "#e5e7eb" }}>
+                          {r.planLabel || plan?.label || "Custom plan"}
+                        </div>
+                        {price && (
+                          <div
+                            style={{
+                              color: "#fbbf24",
+                              fontSize: 12,
+                              marginTop: 2,
+                            }}
+                          >
+                            ₦{Number(price).toLocaleString()}
+                          </div>
+                        )}
+                        {dur && (
+                          <div
+                            style={{
+                              color: "#94a3b8",
+                              fontSize: 11,
+                              marginTop: 2,
+                            }}
+                          >
+                            {dur} day{dur > 1 ? "s" : ""}
+                          </div>
+                        )}
+                      </td>
 
-                    <td style={{ padding: "12px 16px" }}>
-                      <select
-                        value={r.priority}
-                        onChange={(e) => changePriority(r, e.target.value)}
-                        style={{
-                          background: "rgba(255,255,255,.06)",
-                          color: "#e6e9ef",
-                          border: "1px solid rgba(255,255,255,.12)",
-                          borderRadius: 8,
-                          padding: "6px 8px",
-                        }}
-                      >
-                        {["low", "medium", "high", "urgent"].map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
+                      <td style={{ padding: "12px 16px" }}>
+                        <span
+                          style={fx.chip(
+                            r.archived ? "archived" : r.status
+                          )}
+                        >
+                          {r.archived ? "archived" : r.status || "pending"}
+                        </span>
+                      </td>
 
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={fx.chip(r.archived ? "archived" : r.status)}>
-                        {r.archived ? "archived" : r.status}
-                        <button
-                          onClick={() => openHistory(r)}
-                          title="View history"
+                      <td style={{ padding: "12px 16px" }}>
+                        <div
                           style={{
-                            marginLeft: 6,
-                            border: "none",
-                            background: "transparent",
-                            color: "inherit",
-                            cursor: "pointer",
-                            fontSize: 12,
+                            display: "flex",
+                            gap: 8,
+                            flexWrap: "wrap",
                           }}
                         >
-                          🕑
-                        </button>
-                      </span>
-                    </td>
+                          {r.listingId && (
+                            <LuxeBtn
+                              small
+                              kind="slate"
+                              onClick={() =>
+                                navigate(`/listing/${r.listingId}`)
+                              }
+                            >
+                              View listing
+                            </LuxeBtn>
+                          )}
 
-                    <td style={{ padding: "12px 16px" }}>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <LuxeBtn kind="gold" small onClick={() => openNote(r, "planned")}>
-                          Planned
-                        </LuxeBtn>
-                        <LuxeBtn kind="emerald" small onClick={() => openNote(r, "shipped")}>
-                          Shipped
-                        </LuxeBtn>
-                        <LuxeBtn kind="ruby" small onClick={() => openNote(r, "rejected")}>
-                          Reject
-                        </LuxeBtn>
-                        <LuxeBtn kind="sky" small onClick={() => openNote(r, "pending")}>
-                          Set Pending
-                        </LuxeBtn>
-                        <LuxeBtn kind="slate" small onClick={() => toggleArchive(r)}>
-                          {r.archived ? "Unarchive" : "Archive"}
-                        </LuxeBtn>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          <LuxeBtn
+                            small
+                            kind="gold"
+                            onClick={() => setStatus(r, "awaiting-payment")}
+                          >
+                            Awaiting payment
+                          </LuxeBtn>
+                          <LuxeBtn
+                            small
+                            kind="emerald"
+                            onClick={() => activateSpotlight(r)}
+                          >
+                            Activate & mark paid
+                          </LuxeBtn>
+                          <LuxeBtn
+                            small
+                            kind="ruby"
+                            onClick={() => setStatus(r, "rejected")}
+                          >
+                            Reject
+                          </LuxeBtn>
+                          <LuxeBtn
+                            small
+                            kind="sky"
+                            onClick={() => setStatus(r, "pending")}
+                          >
+                            Set pending
+                          </LuxeBtn>
+                          <LuxeBtn
+                            small
+                            kind="slate"
+                            onClick={() => toggleArchive(r)}
+                          >
+                            {r.archived ? "Unarchive" : "Archive"}
+                          </LuxeBtn>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
 
-        {/* Footer / pagination */}
         <div
           style={{
             display: "flex",
@@ -535,138 +668,10 @@ export default function AdminFeatureRequests() {
           }}
         >
           <div style={{ color: "#aeb6c2", fontSize: 13 }}>
-            Showing {total === 0 ? 0 : (page - 1) * perPage + 1}–
-            {Math.min(page * perPage, total)} of {total}
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <select
-              value={perPage}
-              onChange={(e) => {
-                setPerPage(Number(e.target.value));
-                setPage(1);
-              }}
-              style={{
-                height: 36,
-                borderRadius: 8,
-                background: "rgba(255,255,255,.06)",
-                color: "#e6e9ef",
-                border: "1px solid rgba(255,255,255,.12)",
-              }}
-            >
-              {[10, 20, 50].map((n) => (
-                <option key={n} value={n}>
-                  {n} / page
-                </option>
-              ))}
-            </select>
-
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              style={{
-                height: 36,
-                padding: "0 12px",
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,.12)",
-                background: "rgba(255,255,255,.06)",
-                color: "#cfd3da",
-                cursor: page <= 1 ? "not-allowed" : "pointer",
-              }}
-            >
-              Prev
-            </button>
-            <div style={{ width: 80, textAlign: "center", color: "#cfd3da" }}>
-              Page {page} of {lastPage}
-            </div>
-            <button
-              onClick={() => setPage((p) => Math.min(lastPage, p + 1))}
-              disabled={page >= lastPage}
-              style={{
-                height: 36,
-                padding: "0 12px",
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,.12)",
-                background: "rgba(255,255,255,.06)",
-                color: "#cfd3da",
-                cursor: page >= lastPage ? "not-allowed" : "pointer",
-              }}
-            >
-              Next
-            </button>
+            Showing {total === 0 ? 0 : 1}–{total} of {total}
           </div>
         </div>
       </div>
-
-      {/* Notes modal */}
-      <Modal
-        open={noteOpen}
-        title={
-          noteTarget
-            ? `Add admin note • set "${noteTarget.row.title}" → ${noteTarget.nextStatus}`
-            : "Add admin note"
-        }
-        onClose={() => setNoteOpen(false)}
-      >
-        <textarea
-          value={noteText}
-          onChange={(e) => setNoteText(e.target.value)}
-          placeholder="Why are you changing this status? (optional but recommended)"
-          rows={5}
-          style={{
-            width: "100%",
-            borderRadius: 12,
-            border: "1px solid rgba(255,255,255,.14)",
-            background: "rgba(255,255,255,.06)",
-            color: "#e5e7eb",
-            padding: 12,
-          }}
-        />
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 10 }}>
-          <LuxeBtn small onClick={() => setNoteOpen(false)}>
-            Cancel
-          </LuxeBtn>
-          <LuxeBtn kind="gold" small onClick={saveNoteAndStatus}>
-            Save & Update
-          </LuxeBtn>
-        </div>
-      </Modal>
-
-      {/* History modal */}
-      <Modal open={histOpen} onClose={() => setHistOpen(false)} title="Status history">
-        {!histRow || (Array.isArray(histRow.history) && histRow.history.length === 0) ? (
-          <div style={{ color: "#aeb6c2" }}>No history yet.</div>
-        ) : (
-          <div style={{ display: "grid", gap: 10 }}>
-            {(histRow.history || [])
-              .slice()
-              .reverse()
-              .map((h, i) => (
-                <div
-                  key={i}
-                  style={{
-                    padding: 10,
-                    borderRadius: 12,
-                    border: "1px solid rgba(255,255,255,.12)",
-                    background: "rgba(255,255,255,.04)",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={fx.chip(h.status)}>{h.status}</span>
-                    <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                      {h.at ? dayjs(h.at).format("YYYY-MM-DD HH:mm") : ""}
-                    </div>
-                  </div>
-                  {h.note && (
-                    <div style={{ marginTop: 6, color: "#e5e7eb" }}>
-                      <em>“{h.note}”</em>
-                    </div>
-                  )}
-                </div>
-              ))}
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }

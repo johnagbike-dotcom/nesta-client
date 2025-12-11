@@ -1,9 +1,30 @@
-// src/pages/Explore.js
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
+
+const FALLBACK =
+  "https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=1200&q=60";
+
+function getListingCover(listing) {
+  if (!listing) return null;
+
+  // Preferred Firestore field
+  if (Array.isArray(listing.images) && listing.images[0]) return listing.images[0];
+
+  // Legacy / alternative arrays
+  if (Array.isArray(listing.imageUrls) && listing.imageUrls[0]) return listing.imageUrls[0];
+  if (Array.isArray(listing.media) && listing.media[0]?.url) return listing.media[0].url;
+
+  // Single URL fields
+  if (listing.imageUrl) return listing.imageUrl;
+  if (listing.coverImage) return listing.coverImage;
+  if (listing.heroImage) return listing.heroImage;
+  if (listing.photo) return listing.photo;
+
+  return null;
+}
 
 export default function Explore() {
   const { user } = useAuth();
@@ -213,6 +234,7 @@ export default function Explore() {
             const hasChatTarget =
               l.partnerUid || l.hostUid || l.ownerId || l.ownerID;
             const mine = isListingMine(l, user?.uid);
+            const cover = getListingCover(l);
 
             return (
               <article key={l.id} className="listing-card">
@@ -225,18 +247,29 @@ export default function Explore() {
                     overflow: "hidden",
                   }}
                 >
-                  {/* optional first image */}
-                  {Array.isArray(l.imageUrls) && l.imageUrls[0] ? (
+                  {cover ? (
                     <img
-                      src={l.imageUrls[0]}
+                      src={cover}
                       alt={l.title || "Listing"}
                       style={{
                         width: "100%",
                         height: "100%",
                         objectFit: "cover",
                       }}
+                      loading="lazy"
                     />
-                  ) : null}
+                  ) : (
+                    <img
+                      src={FALLBACK}
+                      alt="Nesta luxury stay"
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "cover",
+                      }}
+                      loading="lazy"
+                    />
+                  )}
                 </div>
                 <h3
                   style={{
@@ -275,7 +308,6 @@ export default function Explore() {
                     flexWrap: "wrap",
                   }}
                 >
-                  {/* If this is *my* listing (host/partner/owner), show View + Edit only */}
                   {mine ? (
                     <>
                       <Link className="btn view-btn" to={`/listing/${l.id}`}>

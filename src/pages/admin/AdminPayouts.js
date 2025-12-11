@@ -1,5 +1,5 @@
 // src/pages/admin/AdminPayouts.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import dayjs from "dayjs";
 import axios from "axios";
 import AdminHeader from "../../components/AdminHeader";
@@ -8,17 +8,36 @@ import { useToast } from "../../components/Toast";
 
 /* ------------------------------ axios base ------------------------------ */
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
+    /\/$/,
+    ""
+  ),
   withCredentials: false,
   timeout: 15000,
 });
 
 /* --------------------------------- UI ---------------------------------- */
 const statusTone = {
-  pending:    { bg: "rgba(148,163,184,.20)", text: "#e2e8f0", ring: "rgba(148,163,184,.35)" },
-  processing: { bg: "rgba(59,130,246,.20)",  text: "#dbeafe", ring: "rgba(59,130,246,.35)" },
-  paid:       { bg: "rgba(16,185,129,.22)",  text: "#a7f3d0", ring: "rgba(16,185,129,.35)" },
-  failed:     { bg: "rgba(239,68,68,.20)",   text: "#fecaca", ring: "rgba(239,68,68,.35)" },
+  pending: {
+    bg: "rgba(148,163,184,.20)",
+    text: "#e2e8f0",
+    ring: "rgba(148,163,184,.35)",
+  },
+  processing: {
+    bg: "rgba(59,130,246,.20)",
+    text: "#dbeafe",
+    ring: "rgba(59,130,246,.35)",
+  },
+  paid: {
+    bg: "rgba(16,185,129,.22)",
+    text: "#a7f3d0",
+    ring: "rgba(16,185,129,.35)",
+  },
+  failed: {
+    bg: "rgba(239,68,68,.20)",
+    text: "#fecaca",
+    ring: "rgba(239,68,68,.35)",
+  },
 };
 
 const Chip = ({ label, tone = "pending" }) => {
@@ -68,15 +87,96 @@ export default function AdminPayouts() {
   const [perPage, setPerPage] = useState(10);
   const [total, setTotal] = useState(0);
 
+  /* ------------------------------- LOAD DATA ------------------------------ */
   const load = async () => {
     setLoading(true);
     try {
+      // 1) Try the payouts ledger first
       const { data } = await api.get("/admin/payouts", {
         params: { tab, q: query, page, limit: perPage },
       });
-      setRows(Array.isArray(data.items) ? data.items : []);
-      setTotal(data.total || 0);
-    } catch {
+
+      let list = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data)
+        ? data
+        : [];
+
+      let totalCount = data?.total || list.length || 0;
+
+      // 2) Fallback: if ledger is empty on "All" tab, derive from refunded bookings
+      if ((!list || list.length === 0) && tab === "all") {
+        try {
+          const { data: bRes } = await api.get("/admin/bookings", {
+            params: {
+              status: "refunded", // only refunded bookings
+              q: query,
+              page,
+              limit: perPage,
+            },
+          });
+
+          const bList = Array.isArray(bRes?.data)
+            ? bRes.data
+            : Array.isArray(bRes?.items)
+            ? bRes.items
+            : Array.isArray(bRes)
+            ? bRes
+            : [];
+
+          // Map each refunded booking into a "virtual" payout row
+          list = bList.map((b) => {
+            const bookingId = b.id || b.bookingId || b.reference || b.ref;
+            const date =
+              b.updatedAt ||
+              b.createdAt ||
+              b.date ||
+              b.created ||
+              b.timestamp ||
+              null;
+
+            const hostEmail =
+              b.hostEmail ||
+              b.ownerEmail ||
+              b.providerEmail ||
+              b.payeeEmail ||
+              b.listingOwner ||
+              "-";
+
+            const gross =
+              Number(
+                b.total ||
+                  b.totalAmount ||
+                  b.amountN ||
+                  b.amount ||
+                  0
+              ) || 0;
+
+            return {
+              id: bookingId,
+              date,
+              payeeEmail: hostEmail,
+              payeeType: "host",
+              amount: gross, // show full booking amount; ledger split is a backend concern
+              status: "pending", // as a payout waiting to be processed
+              ref: `bo_${bookingId}`,
+              _source: "bookings", // mark as derived from bookings (no ledger row yet)
+            };
+          });
+
+          totalCount = bRes?.total || list.length || 0;
+        } catch (err) {
+          console.error("Fallback from /admin/bookings failed:", err);
+          // If fallback fails, we just keep the (empty) payouts list
+        }
+      }
+
+      setRows(list);
+      setTotal(totalCount);
+    } catch (e) {
+      console.error("Failed to load payouts", e);
       tErr("Failed to load payouts.");
     } finally {
       setLoading(false);
@@ -88,17 +188,30 @@ export default function AdminPayouts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, query, page, perPage]);
 
-  // server returns already-filtered data; keep filtered alias for symmetry
+  // server returns already-filtered data (or we derived it), keep "filtered" alias
   const filtered = rows;
   const lastPage = Math.max(1, Math.ceil(total / perPage));
 
+  /* -------------------------- update payout status ------------------------- */
   const setStatus = async (row, status, note = "") => {
     const id = row.id || row._id;
     if (!id) return;
 
+    // Virtual rows derived from bookings don't have a ledger entry yet
+    if (row._source === "bookings") {
+      tErr(
+        "This row is derived from bookings only. A payouts ledger entry does not exist yet."
+      );
+      return;
+    }
+
     setBusyId(id);
     const prev = rows.slice();
-    setRows(rows.map((r) => ((r.id || r._id) === id ? { ...r, status } : r)));
+    setRows(
+      rows.map((r) =>
+        (r.id || r._id) === id ? { ...r, status } : r
+      )
+    );
 
     try {
       await api.patch(`/admin/payouts/${id}/status`, { status, note });
@@ -111,15 +224,27 @@ export default function AdminPayouts() {
     }
   };
 
-  const exportCsv = () => {
-    // server-wide export (preferred so it includes full dataset, not just current page)
-    const url = `${api.defaults.baseURL}/admin/reports/payouts.csv`;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "payouts.csv";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  /* ------------------------------- EXPORT CSV ------------------------------ */
+  const exportCsv = async () => {
+    try {
+      const res = await api.get("/admin/payouts/export.csv", {
+        params: { tab, q: query },
+        responseType: "blob",
+      });
+
+      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `payouts-${tab || "all"}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Failed to export payouts CSV", e);
+      tErr("Failed to export CSV.");
+    }
   };
 
   /* ------------------------------ render ------------------------------- */
@@ -244,11 +369,13 @@ export default function AdminPayouts() {
                   textAlign: "left",
                 }}
               >
-                {["Date", "Payee", "Type", "Amount", "Status", "Ref", "Actions"].map((h) => (
-                  <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
-                    {h}
-                  </th>
-                ))}
+                {["Date", "Payee", "Type", "Amount", "Status", "Ref", "Actions"].map(
+                  (h) => (
+                    <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
+                      {h}
+                    </th>
+                  )
+                )}
               </tr>
             </thead>
 
@@ -272,12 +399,18 @@ export default function AdminPayouts() {
               {!loading &&
                 filtered.map((p) => {
                   const id = p.id || p._id;
-                  const date = p.createdAt || p.date || p.created || p.timestamp || p.created_at;
+                  const date =
+                    p.date ||
+                    p.createdAt ||
+                    p.created ||
+                    p.timestamp ||
+                    p.created_at;
                   const payee = p.payeeEmail || p.payee || "-";
                   const type = p.payeeType || p.type || "-";
                   const amount = Number(p.amount || 0);
                   const status = String(p.status || "pending").toLowerCase();
                   const ref = p.ref || p.reference || "-";
+                  const derived = p._source === "bookings";
 
                   return (
                     <tr key={id || Math.random()}>
@@ -285,8 +418,21 @@ export default function AdminPayouts() {
                         {date ? dayjs(date).format("YYYY-MM-DD, HH:mm") : "-"}
                       </td>
                       <td style={{ padding: "12px 16px" }}>{payee}</td>
-                      <td style={{ padding: "12px 16px", textTransform: "capitalize" }}>{type}</td>
-                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap", fontWeight: 800 }}>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {type}
+                      </td>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          whiteSpace: "nowrap",
+                          fontWeight: 800,
+                        }}
+                      >
                         {money(amount)}
                       </td>
                       <td style={{ padding: "12px 16px" }}>
@@ -308,30 +454,42 @@ export default function AdminPayouts() {
                           <LuxeBtn
                             kind="sky"
                             small
-                            disabled={busyId === id}
+                            disabled={busyId === id || derived}
                             onClick={() => setStatus(p, "processing")}
-                            title="Move to processing"
+                            title={
+                              derived
+                                ? "No payouts ledger entry yet"
+                                : "Move to processing"
+                            }
                           >
                             Process
                           </LuxeBtn>
                           <LuxeBtn
                             kind="emerald"
                             small
-                            disabled={busyId === id}
+                            disabled={busyId === id || derived}
                             onClick={() => setStatus(p, "paid")}
-                            title="Mark as paid"
+                            title={
+                              derived
+                                ? "No payouts ledger entry yet"
+                                : "Mark as paid"
+                            }
                           >
                             Mark paid
                           </LuxeBtn>
                           <LuxeBtn
                             kind="ruby"
                             small
-                            disabled={busyId === id}
+                            disabled={busyId === id || derived}
                             onClick={() => {
                               const note = window.prompt("Reason (optional)");
                               setStatus(p, "failed", note || "");
                             }}
-                            title="Mark as failed"
+                            title={
+                              derived
+                                ? "No payouts ledger entry yet"
+                                : "Mark as failed"
+                            }
                           >
                             Fail
                           </LuxeBtn>

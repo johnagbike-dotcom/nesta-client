@@ -2,12 +2,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:4000/api";
-const PAGE_SIZE = 10;
-
-/* ---------- Firestore mirror for attention ---------- */
 import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
+
+const API_BASE =
+  process.env.REACT_APP_API_BASE || "http://localhost:4000/api";
+const PAGE_SIZE = 10;
 
 /* ---------- helpers ---------- */
 const ngn = (n) => `₦${Number(n || 0).toLocaleString()}`;
@@ -43,11 +43,51 @@ const fmtDate = (v, withTime = false) => {
 const isPast = (checkOut) => {
   try {
     const d =
-      typeof checkOut?.toDate === "function" ? checkOut.toDate() : new Date(checkOut);
+      typeof checkOut?.toDate === "function"
+        ? checkOut.toDate()
+        : new Date(checkOut);
     const today = new Date();
     d.setHours(0, 0, 0, 0);
     today.setHours(0, 0, 0, 0);
     return d < today;
+  } catch {
+    return false;
+  }
+};
+
+// Refund eligibility (to protect revenue)
+// Rule: booking is confirmed, created ≤ 24h ago, check-in ≥ 7 days away,
+// and canRequestRefund is not explicitly false.
+const isRefundEligible = (b) => {
+  try {
+    const now = new Date();
+
+    // createdAt
+    const created =
+      b.createdAt && typeof b.createdAt.toDate === "function"
+        ? b.createdAt.toDate()
+        : b.createdAt
+        ? new Date(b.createdAt)
+        : now;
+
+    // checkIn
+    const checkIn =
+      b.checkIn && typeof b.checkIn.toDate === "function"
+        ? b.checkIn.toDate()
+        : b.checkIn
+        ? new Date(b.checkIn)
+        : null;
+
+    const hoursSinceCreated = (now - created) / 36e5; // 1000*60*60
+    const daysUntilCheckIn = checkIn ? (checkIn - now) / 864e5 : Infinity;
+
+    if (b.canRequestRefund === false) return false; // manual lock (future use)
+
+    // You can tune these numbers later (24h & 7 days)
+    return (
+      hoursSinceCreated <= 24 && // within 24 hours of booking
+      daysUntilCheckIn >= 7 // at least 7 days before check-in
+    );
   } catch {
     return false;
   }
@@ -85,6 +125,7 @@ export default function BookingsPage() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!alive) return;
+
         // Normalize any timestamp-like fields into objects we can render safely
         const norm = (b) => ({
           ...b,
@@ -93,6 +134,7 @@ export default function BookingsPage() {
           checkOut: b.checkOut ?? b.checkout ?? b.endDate ?? b.to,
           createdAt: b.createdAt ?? b.created ?? b.created_on,
         });
+
         setItems(Array.isArray(data) ? data.map(norm) : []);
       } catch (e) {
         if (!alive) return;
@@ -129,16 +171,27 @@ export default function BookingsPage() {
     if (!id) return;
 
     const s = String(b.status || "").toLowerCase();
-    if (isPast(b.checkOut) || ["cancelled", "cancel_request", "refund_requested"].includes(s)) {
+    if (
+      isPast(b.checkOut) ||
+      ["cancelled", "cancel_request", "refund_requested"].includes(s)
+    ) {
       alert("This booking can’t be cancelled.");
       return;
     }
-    if (!window.confirm(`Request cancellation for “${b.listingTitle || "Listing"}”?`)) return;
+
+    if (
+      !window.confirm(
+        `Request cancellation for “${b.listingTitle || "Listing"}”?`
+      )
+    )
+      return;
 
     // optimistic UI
     const prevItems = items;
     setItems((curr) =>
-      curr.map((x) => ((x.id || x._id) === id ? { ...x, status: "cancel_request" } : x))
+      curr.map((x) =>
+        (x.id || x._id) === id ? { ...x, status: "cancel_request" } : x
+      )
     );
     setCancelling((prev) => ({ ...prev, [id]: true }));
 
@@ -151,13 +204,15 @@ export default function BookingsPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      // Firestore mirror (optional but enables partner "Needs attention")
+      // Firestore mirror (enables partner "Needs attention")
       const fsId = getFsId(b);
       if (fsId) {
         try {
           await updateDoc(doc(db, "bookings", fsId), {
             status: "cancel_request",
+            // keep both flags in sync for all pages
             cancelRequested: true,
+            cancellationRequested: true,
             updatedAt: serverTimestamp(),
             request: {
               type: "cancel",
@@ -240,7 +295,9 @@ export default function BookingsPage() {
     <main className="min-h-screen bg-[#0f1419] text-white px-4 py-10">
       <div className="max-w-6xl mx-auto">
         <header className="flex items-center justify-between mb-6">
-          <h1 className="text-3xl font-extrabold tracking-tight">Your Bookings</h1>
+          <h1 className="text-3xl font-extrabold tracking-tight">
+            Your Bookings
+          </h1>
           <button
             onClick={() => setRefreshKey((k) => k + 1)}
             className="px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10"
@@ -278,7 +335,9 @@ export default function BookingsPage() {
         {!loading && !err && total === 0 && (
           <div className="rounded-2xl border border-white/10 bg-gray-900/60 p-6">
             <p className="mb-2 font-semibold">No bookings found.</p>
-            <p className="text-gray-300">When you book a stay, it’ll appear here.</p>
+            <p className="text-gray-300">
+              When you book a stay, it’ll appear here.
+            </p>
           </div>
         )}
 
@@ -288,9 +347,54 @@ export default function BookingsPage() {
               {visible.map((b) => {
                 const id = b.id || b._id;
                 const s = String(b.status || "").toLowerCase();
+
+                const refundable = isRefundEligible(b);
+
                 const canRequest =
-                  !isPast(b.checkOut) && !["cancelled", "cancel_request", "refund_requested"].includes(s);
+                  refundable &&
+                  !isPast(b.checkOut) &&
+                  !["cancelled", "cancel_request", "refund_requested"].includes(
+                    s
+                  );
+
                 const canChat = ["confirmed", "paid"].includes(s);
+                const canCheckIn =
+                  !isPast(b.checkOut) &&
+                  ["confirmed", "paid"].includes(s);
+
+                const hasCancelReq =
+                  (b.cancellationRequested ||
+                    b.cancelRequested ||
+                    s === "cancel_request" ||
+                    s === "refund_requested") &&
+                  !["cancelled", "refunded"].includes(s);
+
+                let subtitle = b.listingLocation || "";
+                if (s === "refunded") {
+                  subtitle = "Payment has been refunded.";
+                } else if (hasCancelReq) {
+                  subtitle =
+                    "Cancellation requested — awaiting host/partner.";
+                }
+
+                const statusLabel = (() => {
+                  switch (s) {
+                    case "paid":
+                    case "confirmed":
+                      return "confirmed";
+                    case "cancelled":
+                      return "cancelled";
+                    case "refunded":
+                      return "refunded";
+                    case "cancel_request":
+                    case "refund_requested":
+                      return "cancel requested";
+                    case "pending":
+                      return "pending";
+                    default:
+                      return s || "pending";
+                  }
+                })();
 
                 return (
                   <li
@@ -303,44 +407,64 @@ export default function BookingsPage() {
                           <h3 className="text-lg font-semibold">
                             {b.listingTitle || "Listing"}
                           </h3>
-                          <p className="text-sm text-gray-300">
-                            {b.listingLocation || ""}
-                          </p>
+                          {subtitle && (
+                            <p className="text-sm text-gray-300">
+                              {subtitle}
+                            </p>
+                          )}
                           <p className="text-xs text-gray-400 mt-1">
                             Booked: {fmtDate(b.createdAt, true)}
                           </p>
+                          {!refundable && s === "confirmed" && !hasCancelReq && (
+                            <p className="text-[11px] text-amber-200/80 mt-1">
+                              Non-refundable based on booking policy.
+                            </p>
+                          )}
                         </div>
+
                         <span
                           className={`text-xs px-2 py-1 rounded-md border ${
                             s === "paid" || s === "confirmed"
                               ? "border-emerald-400 text-emerald-300 bg-emerald-400/10"
                               : s === "cancelled"
-                              ? "border-red-400 text-red-300 bg-red-400/10"
-                              : s === "cancel_request" || s === "refund_requested"
-                              ? "border-amber-400 text-amber-300 bg-amber-400/10"
-                              : "border-gray-400 text-gray-300 bg-gray-400/10"
+                              ? "border-red-400 text-red-300 bg-red-500/10"
+                              : s === "refunded"
+                              ? "border-amber-400 text-amber-200 bg-amber-500/10"
+                              : s === "cancel_request" ||
+                                s === "refund_requested"
+                              ? "border-amber-400 text-amber-200 bg-amber-500/10"
+                              : "border-slate-400 text-slate-200 bg-slate-500/10"
                           }`}
                         >
-                          {b.status || "—"}
+                          {statusLabel}
                         </span>
                       </div>
 
                       <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                         <div className="rounded-xl bg-black/30 border border-white/10 p-3">
                           <div className="text-gray-400">Check-in</div>
-                          <div className="font-medium">{fmtDate(b.checkIn)}</div>
+                          <div className="font-medium">
+                            {fmtDate(b.checkIn)}
+                          </div>
                         </div>
                         <div className="rounded-xl bg-black/30 border border-white/10 p-3">
                           <div className="text-gray-400">Check-out</div>
-                          <div className="font-medium">{fmtDate(b.checkOut)}</div>
+                          <div className="font-medium">
+                            {fmtDate(b.checkOut)}
+                          </div>
                         </div>
                       </div>
 
                       <div className="mt-3 flex items-center justify-between">
                         <div className="text-gray-300">
-                          Guests: <span className="font-medium">{b.guests || 1}</span>
+                          Guests:{" "}
+                          <span className="font-medium">
+                            {b.guests || 1}
+                          </span>
                         </div>
-                        <div className="text-lg font-semibold">{ngn(b.total)}</div>
+                        <div className="text-lg font-semibold">
+                          {ngn(b.total ?? b.amountN ?? b.totalAmount ?? 0)}
+                        </div>
                       </div>
 
                       <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
@@ -361,7 +485,9 @@ export default function BookingsPage() {
                                 : "bg-amber-900/30 border-amber-400/60 text-amber-200 hover:bg-amber-900/50"
                             }`}
                           >
-                            {cancelling[id] ? "Requesting…" : "Request cancel"}
+                            {cancelling[id]
+                              ? "Requesting…"
+                              : "Request cancel"}
                           </button>
                         )}
 
@@ -371,6 +497,28 @@ export default function BookingsPage() {
                             className="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-black font-semibold"
                           >
                             Chat with Host/Partner
+                          </button>
+                        )}
+
+                        {/* ✅ Open guest receipt */}
+                        <button
+                          onClick={() =>
+                            nav("/booking-complete", { state: { booking: b } })
+                          }
+                          className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-sm"
+                        >
+                          Receipt
+                        </button>
+
+                        {/* ✅ Guest check-in guide (only for confirmed & upcoming) */}
+                        {canCheckIn && (
+                          <button
+                            onClick={() =>
+                              nav(`/checkin/${id}`, { state: { booking: b } })
+                            }
+                            className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-sm"
+                          >
+                            Check-in guide
                           </button>
                         )}
 
@@ -422,4 +570,4 @@ export default function BookingsPage() {
       </div>
     </main>
   );
-} 
+}

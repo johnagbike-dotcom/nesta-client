@@ -17,7 +17,10 @@ export default function Register() {
 
   const goNext = () => {
     // after sign up, we want them to pick a role first
-    navigate("/role-selection", { replace: true, state: { next: state?.next || null } });
+    navigate("/role-selection", {
+      replace: true,
+      state: { next: state?.next || null },
+    });
   };
 
   const onSubmit = async (e) => {
@@ -26,14 +29,23 @@ export default function Register() {
     setError("");
 
     try {
-      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const trimmedEmail = email.trim();
+      const cred = await createUserWithEmailAndPassword(
+        auth,
+        trimmedEmail,
+        password
+      );
+
+      const display = trimmedEmail.split("@")[0] || "User";
 
       // create/merge minimal profile doc
       await setDoc(
         doc(db, "users", cred.user.uid),
         {
           email: cred.user.email,
-          role: null,      // will be set on /role-selection
+          emailLower: cred.user.email?.toLowerCase() || "",
+          displayName: display,
+          role: null, // will be set on /role-selection
           plan: "free",
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -42,11 +54,14 @@ export default function Register() {
       );
 
       // give Firebase Auth a displayName so header can show something
-      await updateProfile(cred.user, { displayName: cred.user.email?.split("@")[0] || "User" });
+      await updateProfile(cred.user, { displayName: display });
 
       goNext();
     } catch (err) {
-      setError(err?.message?.replace("Firebase:", "").trim() || "Failed to create account.");
+      setError(
+        err?.message?.replace("Firebase:", "").trim() ||
+          "Failed to create account."
+      );
     } finally {
       setBusy(false);
     }
@@ -55,7 +70,9 @@ export default function Register() {
   return (
     <main className="dash-bg">
       <div className="container dash-wrap" style={{ paddingBottom: 60 }}>
-        <button className="btn ghost" onClick={() => navigate(-1)}>← Back</button>
+        <button className="btn ghost" onClick={() => navigate(-1)}>
+          ← Back
+        </button>
 
         <div
           className="card"
@@ -64,8 +81,10 @@ export default function Register() {
             padding: 26,
             borderRadius: 16,
             border: "1px solid rgba(255,255,255,0.12)",
-            background: "linear-gradient(180deg, rgba(30,41,59,0.40), rgba(30,41,59,0.30))",
-            boxShadow: "0 18px 36px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.06)",
+            background:
+              "linear-gradient(180deg, rgba(30,41,59,0.40), rgba(30,41,59,0.30))",
+            boxShadow:
+              "0 18px 36px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.06)",
             maxWidth: 520,
             marginLeft: "auto",
             marginRight: "auto",
@@ -73,7 +92,8 @@ export default function Register() {
         >
           <h1 style={{ margin: "0 0 8px" }}>Create your Nesta account</h1>
           <p className="muted" style={{ marginTop: 0 }}>
-            Join Nesta to list or discover premium stays — <strong>fast, safe, and easy</strong>.
+            Join Nesta to list or discover premium stays —{" "}
+            <strong>fast, safe, and easy</strong>.
           </p>
 
           {error && (
@@ -93,7 +113,9 @@ export default function Register() {
           )}
 
           <form onSubmit={onSubmit} style={{ marginTop: 14 }}>
-            <label className="muted" htmlFor="email">Email</label>
+            <label className="muted" htmlFor="email">
+              Email
+            </label>
             <input
               id="email"
               className="input"
@@ -114,7 +136,9 @@ export default function Register() {
               }}
             >
               <div>
-                <label className="muted" htmlFor="password">Password</label>
+                <label className="muted" htmlFor="password">
+                  Password
+                </label>
                 <input
                   id="password"
                   className="input"
@@ -127,7 +151,11 @@ export default function Register() {
                 />
               </div>
               <div style={{ display: "flex", alignItems: "flex-end" }}>
-                <button type="button" className="btn" onClick={() => setShow((s) => !s)}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setShow((s) => !s)}
+                >
                   {show ? "Hide" : "Show"}
                 </button>
               </div>
@@ -143,19 +171,31 @@ export default function Register() {
             </button>
 
             <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
-              <Link className="btn ghost" to="/phone-signin">Use phone instead</Link>
+              <Link className="btn ghost" to="/phone-signin">
+                Use phone instead
+              </Link>
             </div>
 
             <p className="muted" style={{ marginTop: 12 }}>
               Already have an account?{" "}
-              <Link to="/login" className="linkish" style={{ fontWeight: 700 }}>
+              <Link
+                to="/login"
+                className="linkish"
+                style={{ fontWeight: 700 }}
+              >
                 Sign in
               </Link>
             </p>
             <p className="muted" style={{ fontSize: 13, marginTop: 6 }}>
               By creating an account, you agree to our{" "}
-              <Link to="/terms" className="linkish">Terms</Link> and{" "}
-              <Link to="/privacy" className="linkish">Privacy Policy</Link>.
+              <Link to="/terms" className="linkish">
+                Terms
+              </Link>{" "}
+              and{" "}
+              <Link to="/privacy" className="linkish">
+                Privacy Policy
+              </Link>
+              .
             </p>
           </form>
         </div>

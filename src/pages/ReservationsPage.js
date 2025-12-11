@@ -248,14 +248,14 @@ export default function ReservationsPage() {
 
   if (!user) {
     return (
-      <main className="min-h-screen bg-[#0f1419] text-white px-4 py-10">
+      <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white px-4 py-10">
         <div className="max-w-6xl mx-auto">Please sign in.</div>
       </main>
     );
   }
   if (!isHostOrPartner) {
     return (
-      <main className="min-h-screen bg-[#0f1419] text-white px-4 py-10">
+      <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white px-4 py-10">
         <div className="max-w-6xl mx-auto">
           <h1 className="text-2xl font-bold">Reservations</h1>
           <p className="text-gray-300 mt-2">Only hosts and verified partners can view this page.</p>
@@ -265,10 +265,18 @@ export default function ReservationsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#0f1419] text-white px-4 py-10">
+    <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white px-4 py-10">
       <div className="max-w-7xl mx-auto">
         <button onClick={() => nav(-1)} className="btn ghost mb-3">← Back</button>
-        <h1 className="text-3xl font-extrabold tracking-tight mb-3">Reservations</h1>
+        <h1
+  className="text-3xl font-extrabold tracking-tight mb-3"
+  style={{
+    fontFamily:
+      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+  }}
+>
+  Reservations
+</h1>
 
         {/* Dashboard */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">

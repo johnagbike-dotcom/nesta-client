@@ -55,7 +55,8 @@ const ngn = (n) => {
 
 const diffNights = (checkIn, checkOut) => {
   if (!checkIn || !checkOut) return 0;
-  let inD = checkIn, outD = checkOut;
+  let inD = checkIn,
+    outD = checkOut;
   if (typeof inD === "object" && typeof inD.seconds === "number")
     inD = new Date(inD.seconds * 1000);
   if (typeof outD === "object" && typeof outD.seconds === "number")
@@ -72,7 +73,27 @@ export default function BookingCompletePage() {
   const { state } = useLocation();
   const [snapshot, setSnapshot] = useState(null);
 
+  // If we were navigated here from BookingDetailsPage or BookingsPage,
+  // we’ll have a full canonical booking in state.booking.
+  const routeBooking =
+    state?.booking &&
+    (state.booking.listingTitle ||
+      state.booking.total ||
+      state.booking.amountN)
+      ? state.booking
+      : null;
+
+  // Tiny ribbon label (where did the user come from?)
+  // For now: routeBooking = existing booking / My Bookings,
+  // otherwise: post-checkout flow.
+  const entrySourceRibbon = routeBooking
+    ? "My Bookings → Receipt"
+    : "Post-checkout summary";
+
   useEffect(() => {
+    // In "receipt mode" (existing booking), we skip the checkout snapshot logic.
+    if (routeBooking) return;
+
     // 1) prefer router state
     const statePending = state?.booking || state?.pending || null;
     const stateTx = state?.tx || null;
@@ -130,7 +151,7 @@ export default function BookingCompletePage() {
     try {
       sessionStorage.removeItem("paystack_tx");
     } catch {}
-  }, [state]);
+  }, [state, routeBooking]);
 
   const info = useMemo(() => {
     const p = snapshot?.pending;
@@ -173,7 +194,273 @@ export default function BookingCompletePage() {
     .toLowerCase()
     .includes("success");
 
-  /* ---------- states ---------- */
+  /* ---------- RECEIPT MODE (existing booking) ---------- */
+  if (routeBooking) {
+    const b = routeBooking;
+
+    const listingTitle =
+      b.listingTitle || b.listing?.title || b.title || "Listing";
+    const location =
+      b.listingLocation ||
+      [b.city, b.area].filter(Boolean).join(", ") ||
+      "";
+    const ref = b.reference || b.ref || b.id || "";
+    const status = (b.status || "").toLowerCase();
+
+    const nights =
+      typeof b.nights === "number" && b.nights > 0
+        ? b.nights
+        : diffNights(b.checkIn, b.checkOut);
+
+    const nightly =
+      b.pricePerNight ||
+      b.listing?.pricePerNight ||
+      (nights > 0 ? (b.total || b.amountN || 0) / nights : 0);
+
+    const subtotal =
+      b.subtotal ??
+      (nights > 0 ? nights * Number(nightly || 0) : 0);
+
+    const fee =
+      b.fee ??
+      (b.total != null
+        ? Math.max(0, Number(b.total) - subtotal)
+        : 0);
+
+    const total =
+      b.total != null ? Number(b.total) : subtotal + fee;
+
+    const isSuccess = ["confirmed", "paid", "success"].includes(status);
+
+    return (
+      <main className="dash-bg">
+        <div className="container dash-wrap" style={{ paddingBottom: 64 }}>
+          <div
+            className="card"
+            style={{
+              maxWidth: 980,
+              marginInline: "auto",
+              borderRadius: 18,
+              padding: 22,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background:
+                "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
+            }}
+          >
+            {/* header */}
+            <div
+              style={{
+                display: "flex",
+                gap: 18,
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+                <div
+                  style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: 12,
+                    background: isSuccess
+                      ? "rgba(16,185,129,0.15)"
+                      : "rgba(239,68,68,0.15)",
+                    display: "grid",
+                    placeItems: "center",
+                    border: isSuccess
+                      ? "1px solid rgba(16,185,129,0.35)"
+                      : "1px solid rgba(239,68,68,0.35)",
+                  }}
+                >
+                  <span style={{ fontSize: 22 }}>
+                    {isSuccess ? "✅" : "⚠️"}
+                  </span>
+                </div>
+                <div>
+                  <h2 style={{ margin: "0 0 6px" }}>
+                    {isSuccess ? "Booking confirmed" : "Booking receipt"}
+                  </h2>
+                  <div className="muted" style={{ fontSize: 13 }}>
+                    Ref: {safeText(ref) || "—"}
+                  </div>
+                </div>
+              </div>
+
+              {/* tiny ribbon */}
+              <div>
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: "4px 10px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(148,163,184,0.7)",
+                    background: "rgba(15,23,42,0.9)",
+                    textTransform: "none",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {entrySourceRibbon}
+                </span>
+              </div>
+            </div>
+
+            {/* body */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0,1.4fr) minmax(0,1fr)",
+                gap: 20,
+                marginTop: 20,
+              }}
+            >
+              {/* left: stay details */}
+              <section>
+                <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>
+                  {listingTitle}
+                </h3>
+                {location && (
+                  <p className="muted" style={{ margin: 0 }}>
+                    {location}
+                  </p>
+                )}
+
+                <div
+                  style={{
+                    marginTop: 12,
+                    display: "grid",
+                    gap: 8,
+                    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+                  }}
+                >
+                  <div>
+                    <div className="muted" style={{ fontSize: 13 }}>
+                      Check-in
+                    </div>
+                    <div style={{ fontWeight: 600 }}>
+                      {fmtDate(b.checkIn)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: 13 }}>
+                      Check-out
+                    </div>
+                    <div style={{ fontWeight: 600 }}>
+                      {fmtDate(b.checkOut)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: 13 }}>
+                      Nights
+                    </div>
+                    <div style={{ fontWeight: 600 }}>
+                      {nights || "—"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: 13 }}>
+                      Guests
+                    </div>
+                    <div style={{ fontWeight: 600 }}>
+                      {b.guests || 1}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 16, fontSize: 13 }}>
+                  <div className="muted">
+                    Status:{" "}
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(148,163,184,0.6)",
+                        fontSize: 11,
+                      }}
+                    >
+                      {b.status || "—"}
+                    </span>
+                  </div>
+                </div>
+              </section>
+
+              {/* right: totals */}
+              <section
+                style={{
+                  borderRadius: 14,
+                  padding: 14,
+                  background: "rgba(15,23,42,0.85)",
+                  border: "1px solid rgba(148,163,184,0.4)",
+                }}
+              >
+                <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>
+                  Payment summary
+                </h3>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 4,
+                    fontSize: 14,
+                  }}
+                >
+                  <span className="muted">
+                    Nightly rate × {nights || 1}
+                  </span>
+                  <span style={{ fontWeight: 600 }}>
+                    {ngn(subtotal)}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 4,
+                    fontSize: 14,
+                  }}
+                >
+                  <span className="muted">Service fee</span>
+                  <span style={{ fontWeight: 600 }}>{ngn(fee)}</span>
+                </div>
+                <div
+                  style={{
+                    marginTop: 8,
+                    paddingTop: 8,
+                    borderTop: "1px solid rgba(148,163,184,0.45)",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontWeight: 700,
+                  }}
+                >
+                  <span>Total</span>
+                  <span>{ngn(total)}</span>
+                </div>
+              </section>
+            </div>
+
+            {/* footer actions */}
+            <div
+              style={{
+                marginTop: 22,
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+              }}
+            >
+              <Link className="btn ghost" to="/bookings">
+                My bookings
+              </Link>
+              <Link className="btn" to="/">
+                Back home
+              </Link>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  /* ---------- PENDING SNAPSHOT / CHECKOUT FLOW ---------- */
+
   if (!snapshot) {
     return (
       <main className="dash-bg">
@@ -247,38 +534,66 @@ export default function BookingCompletePage() {
           }}
         >
           {/* header */}
-          <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
-            <div
-              style={{
-                width: 42,
-                height: 42,
-                borderRadius: 12,
-                background: isSuccess
-                  ? "rgba(16,185,129,0.15)"
-                  : "rgba(239,68,68,0.15)",
-                display: "grid",
-                placeItems: "center",
-                border: isSuccess
-                  ? "1px solid rgba(16,185,129,0.35)"
-                  : "1px solid rgba(239,68,68,0.35)",
-              }}
-            >
-              <span style={{ fontSize: 22 }}>{isSuccess ? "✅" : "⚠️"}</span>
-            </div>
-            <div>
-              <h2 style={{ margin: "0 0 6px" }}>
-                {isSuccess ? "Payment successful" : "Payment status unknown"}
-              </h2>
-              <div className="muted" style={{ fontSize: 13 }}>
-                {safeText(snapshot?.tx?.reference)
-                  ? (
+          <div
+            style={{
+              display: "flex",
+              gap: 18,
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+              <div
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 12,
+                  background: isSuccess
+                    ? "rgba(16,185,129,0.15)"
+                    : "rgba(239,68,68,0.15)",
+                  display: "grid",
+                  placeItems: "center",
+                  border: isSuccess
+                    ? "1px solid rgba(16,185,129,0.35)"
+                    : "1px solid rgba(239,68,68,0.35)",
+                }}
+              >
+                <span style={{ fontSize: 22 }}>
+                  {isSuccess ? "✅" : "⚠️"}
+                </span>
+              </div>
+              <div>
+                <h2 style={{ margin: "0 0 6px" }}>
+                  {isSuccess ? "Payment successful" : "Payment status unknown"}
+                </h2>
+                <div className="muted" style={{ fontSize: 13 }}>
+                  {safeText(snapshot?.tx?.reference) ? (
                     <>
                       Reference:{" "}
                       <code>{safeText(snapshot.tx.reference)}</code>
                     </>
-                    )
-                  : <>Completed at {fmtDate(snapshot.when)}</>}
+                  ) : (
+                    <>Completed at {fmtDate(snapshot.when)}</>
+                  )}
+                </div>
               </div>
+            </div>
+
+            {/* tiny ribbon */}
+            <div>
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(148,163,184,0.7)",
+                  background: "rgba(15,23,42,0.9)",
+                  textTransform: "none",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {entrySourceRibbon}
+              </span>
             </div>
           </div>
 
@@ -344,7 +659,10 @@ export default function BookingCompletePage() {
                   View bookings
                 </Link>
                 {safeText(listing.id) && (
-                  <Link className="btn ghost" to={`/listing/${safeText(listing.id)}`}>
+                  <Link
+                    className="btn ghost"
+                    to={`/listing/${safeText(listing.id)}`}
+                  >
                     Open listing
                   </Link>
                 )}
@@ -358,4 +676,4 @@ export default function BookingCompletePage() {
       </div>
     </main>
   );
-} 
+}

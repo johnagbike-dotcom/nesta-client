@@ -478,7 +478,7 @@ export default function ChatPage() {
   /* ---------------- guards ---------------- */
   if (!user) {
     return (
-      <main className="min-h-[70vh] px-4 py-10 text-white bg-[#0f1419]">
+      <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h2 className="text-2xl font-bold mb-2">Chat</h2>
           <p className="text-gray-300">Please sign in to start chatting.</p>
@@ -490,7 +490,7 @@ export default function ChatPage() {
   // no context, no forced chat, no counterparty → show helper
   if (!forcedChatId && !counterUid && !listing?.id) {
     return (
-      <main className="min-h-[70vh] px-4 py-10 text-white bg-[#0f1419]">
+      <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h2 className="text-2xl font-bold mb-2">Chat with Host/Partner</h2>
           <p className="text-gray-300">
@@ -531,14 +531,20 @@ export default function ChatPage() {
   })();
 
   return (
-    <main className="min-h-[70vh] px-4 py-6 text-white bg-[#0f1419] motion-fade-in">
+    <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
       <div className="max-w-3xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-3 motion-slide-up">
           <div>
-            <h1 className="text-xl font-extrabold tracking-tight flex items-center gap-2">
-              {headerTitle || "Chat with Host/Partner"}
-            </h1>
+            <h1
+  className="text-xl font-extrabold tracking-tight flex items-center gap-2"
+  style={{
+    fontFamily:
+      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+  }}
+>
+  {headerTitle || "Chat with Host/Partner"}
+</h1>
             <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
               <span className="inline-flex items-center gap-1">
                 <span

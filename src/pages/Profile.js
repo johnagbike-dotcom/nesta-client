@@ -1,7 +1,26 @@
+// src/pages/Profile.js
 import React, { useEffect, useMemo, useState } from "react";
 import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
+
+/**
+ * Strip obvious emails and phone numbers from any free-text field.
+ * We keep phone as a dedicated field, but we do NOT allow contact
+ * details in displayName for anti-leakage / luxury policy.
+ */
+function stripContactInfo(raw) {
+  if (!raw) return "";
+  let s = String(raw);
+
+  // Remove emails
+  s = s.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email removed]");
+
+  // Remove phone-like sequences: +234..., 080..., etc. 7+ digits with separators
+  s = s.replace(/\+?\d[\d\s\-().]{6,}\d/g, "[number removed]");
+
+  return s.trim();
+}
 
 export default function Profile() {
   const { user, profile, isAdmin, loading, logout, refreshProfile } = useAuth();
@@ -57,10 +76,13 @@ export default function Profile() {
       setSaving(true);
       setMessage("");
 
+      // Enforce luxury anti-leakage: no emails/phones in displayName
+      const cleanDisplayName = stripContactInfo(form.displayName);
+
       // Build the update payload respecting permissions
       const payload = {
-        displayName: form.displayName,
-        phone: form.phone,
+        displayName: cleanDisplayName,
+        phone: form.phone?.trim() || "",
         updatedAt: serverTimestamp(),
       };
 
@@ -76,7 +98,11 @@ export default function Profile() {
 
       await updateDoc(doc(db, "users", user.uid), payload);
       await refreshProfile();
-      setMessage("Profile updated.");
+      setMessage(
+        cleanDisplayName !== form.displayName
+          ? "Profile updated. We’ve cleaned any contact info from your name to keep bookings on Nesta."
+          : "Profile updated."
+      );
     } catch (err) {
       console.error(err);
       setMessage(err?.message || "Could not update profile.");
@@ -105,7 +131,8 @@ export default function Profile() {
     <div className="p-6 max-w-2xl mx-auto text-slate-200">
       <h1 className="text-2xl font-semibold mb-1">My Profile</h1>
       <p className="text-sm text-slate-400 mb-6">
-        Update your account details, role, and settings.
+        Update your account details. Contact details are only revealed to guests
+        through Nesta after confirmed bookings and valid subscriptions.
       </p>
 
       {message && (
@@ -132,14 +159,19 @@ export default function Profile() {
             name="displayName"
             value={form.displayName}
             onChange={onChange}
-            placeholder="Jane Doe"
+            placeholder="Nesta Host"
             className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500"
           />
+          <p className="mt-1 text-xs text-slate-400">
+            For security, we automatically remove phone numbers and emails from
+            your name. Guests will only see verified contacts at the right time
+            in the booking journey.
+          </p>
         </div>
 
-        {/* Phone */}
+        {/* Phone (internal contact) */}
         <div>
-          <label className="block text-sm mb-1">Phone</label>
+          <label className="block text-sm mb-1">Phone (kept private)</label>
           <input
             name="phone"
             value={form.phone}
@@ -147,6 +179,10 @@ export default function Profile() {
             placeholder="+234…"
             className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500"
           />
+          <p className="mt-1 text-xs text-slate-400">
+            This phone number is stored securely and only surfaced to verified
+            guests in line with Nesta’s booking and subscription rules.
+          </p>
         </div>
 
         {/* Role */}
@@ -201,4 +237,4 @@ export default function Profile() {
       </form>
     </div>
   );
-} 
+}

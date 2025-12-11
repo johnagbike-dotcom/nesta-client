@@ -1,25 +1,31 @@
 // src/pages/CreateListing.js
 import React, { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  addDoc,
-  collection,
-  serverTimestamp,
-} from "firebase/firestore";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
 import ImageUploader from "../components/ImageUploader";
+import ListingMap from "../components/ListingMap";
 
 /**
  * CreateListing
  * - Luxury-styled form with strict validation
  * - Supports Host (ownerId) and Verified Partner (partnerUid + managers[])
  * - Adds SEO slug + searchable keywords
- * - Lets user pre-check “request_featured” (saved as a separate doc that admin can approve)
+ * - Redacts emails/phone numbers from guest-facing fields (title, description, rules)
  */
 
-const TYPES = ["Apartment", "Bungalow", "Studio", "Loft", "Villa", "Penthouse", "Hotel", "Other"];
+const TYPES = [
+  "Apartment",
+  "Bungalow",
+  "Studio",
+  "Loft",
+  "Villa",
+  "Penthouse",
+  "Hotel",
+  "Other",
+];
 const STATUS = ["active", "inactive", "review"];
 const AMENITIES = [
   "Wi-Fi",
@@ -33,6 +39,28 @@ const AMENITIES = [
   "Pool",
   "Gym",
 ];
+
+// simple default spotlight plan for “requestFeatured” on create
+const DEFAULT_SPOTLIGHT_PLAN = {
+  planKey: "spotlight",
+  planLabel: "Spotlight · 24 hours",
+  planPrice: 20000,
+  durationDays: 1,
+};
+
+// Redact obvious emails & phone numbers from guest-facing copy
+function redactContactText(raw) {
+  if (!raw) return "";
+  let s = String(raw);
+
+  // Email → [email removed]
+  s = s.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email removed]");
+
+  // Phone-like patterns → [number removed]
+  s = s.replace(/\+?\d[\d\s\-().]{6,}\d/g, "[number removed]");
+
+  return s.trim();
+}
 
 function Section({ title, subtitle, children }) {
   return (
@@ -61,6 +89,7 @@ function TextInput(props) {
       className={[
         "w-full rounded-xl bg-white/5 border border-white/10",
         "px-3 py-2 outline-none focus:border-yellow-400",
+        props.className || "",
       ].join(" ")}
     />
   );
@@ -73,6 +102,7 @@ function Select(props) {
       className={[
         "w-full rounded-xl bg-white/5 border border-white/10",
         "px-3 py-2 outline-none focus:border-yellow-400",
+        props.className || "",
       ].join(" ")}
     />
   );
@@ -85,6 +115,7 @@ function TextArea(props) {
       className={[
         "w-full min-h-[120px] rounded-xl bg-white/5 border border-white/10",
         "px-3 py-2 outline-none focus:border-yellow-400",
+        props.className || "",
       ].join(" ")}
     />
   );
@@ -129,6 +160,8 @@ export default function CreateListing() {
     bedrooms: "",
     bathrooms: "",
     size: "",
+    lat: null,
+    lng: null,
   });
 
   const [amenities, setAmenities] = useState([]);
@@ -139,12 +172,12 @@ export default function CreateListing() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const roleRaw = (profile?.role || "").toLowerCase();
   const isPartner =
-    (profile?.role || "").toLowerCase() === "partner" ||
-    (profile?.role || "").toLowerCase() === "verified_partner";
-
-  const isHost =
-    (profile?.role || "").toLowerCase() === "host" || !isPartner;
+    roleRaw === "partner" ||
+    roleRaw === "verified_partner" ||
+    roleRaw === "partner_verified";
+  const isHost = !isPartner; // default path
 
   const canSubmit = useMemo(() => {
     return (
@@ -153,6 +186,7 @@ export default function CreateListing() {
       form.area.trim().length >= 2 &&
       Number(form.pricePerNight) > 0 &&
       images.length > 0
+      // lat/lng remain optional for now; they are enforced visually by the map
     );
   }, [form, images.length]);
 
@@ -175,9 +209,9 @@ export default function CreateListing() {
       .replace(/(^-|-$)+/g, "");
   }
 
-  function keywords() {
+  function keywords(cleanTitle) {
     const bag = [
-      form.title,
+      cleanTitle,
       form.type,
       form.city,
       form.area,
@@ -200,9 +234,7 @@ export default function CreateListing() {
       return;
     }
     if (!canSubmit) {
-      setErr(
-        "Please complete all required fields and add at least one photo."
-      );
+      setErr("Please complete all required fields and add at least one photo.");
       priceFieldRef.current?.focus();
       return;
     }
@@ -211,34 +243,76 @@ export default function CreateListing() {
     setErr("");
 
     try {
-      const nowSlug = slugify(`${form.title}-${form.city}-${form.area}`);
+      const uid = user.uid;
+
+      // Redact contact info from guest-facing fields
+      const cleanTitle = redactContactText(form.title.trim());
+      const cleanDesc = redactContactText(form.description);
+      const cleanRules = redactContactText(houseRules);
+
+      const nowSlug = slugify(`${cleanTitle}-${form.city}-${form.area}`);
       const price = Number(form.pricePerNight || 0);
 
+      // ownership fields so partner/host can edit immediately
+      const baseOwner = {
+        ownerUid: uid,
+        ownerId: uid,
+        hostUid: uid,
+        hostId: uid,
+        userUid: uid,
+        userId: uid,
+        createdBy: uid,
+        createdByUid: uid,
+      };
+
+      const partnerBits = isPartner
+        ? {
+            partnerUid: uid,
+            partnerId: uid,
+            managers: [uid],
+          }
+        : {
+            partnerUid: null,
+            partnerId: null,
+            managers: [],
+          };
+
       const payload = {
-        title: form.title.trim(),
+        title: cleanTitle,
         type: form.type,
         city: form.city.trim(),
         area: form.area.trim(),
         pricePerNight: price,
         status: form.status,
-        description: form.description.trim(),
+        description: cleanDesc,
         bedrooms: form.bedrooms ? Number(form.bedrooms) : null,
         bathrooms: form.bathrooms ? Number(form.bathrooms) : null,
         size: form.size ? String(form.size) : "",
-        // 🔐 store photos in *both* fields for compatibility
+
+        // location / map
+        lat:
+          typeof form.lat === "number" && !Number.isNaN(form.lat)
+            ? form.lat
+            : null,
+        lng:
+          typeof form.lng === "number" && !Number.isNaN(form.lng)
+            ? form.lng
+            : null,
+
+        // store photos in both fields for compatibility
         images,
         imageUrls: images,
         amenities,
-        houseRules: houseRules?.trim() || "",
+        houseRules: cleanRules,
         slug: nowSlug,
-        keywords: keywords(),
+        keywords: keywords(cleanTitle),
 
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
 
-        ownerId: isHost ? user.uid : null,
-        partnerUid: isPartner ? user.uid : null,
-        managers: isPartner ? [user.uid] : [],
+        // ownership
+        ...baseOwner,
+        ...partnerBits,
 
         sponsored: false, // admin flips to true after approval
         featured: false, // legacy flag; keep false
@@ -250,11 +324,18 @@ export default function CreateListing() {
         try {
           await addDoc(collection(db, "featureRequests"), {
             listingId: docRef.id,
-            title: payload.title,
-            requestedBy: user.uid,
+            listingTitle: payload.title,
+            hostUid: uid,
+            hostEmail: user.email || profile?.email || "",
+            type: "featured-carousel",
+            ...DEFAULT_SPOTLIGHT_PLAN,
+            price: DEFAULT_SPOTLIGHT_PLAN.planPrice,
+            requestedBy: uid,
             requesterRole: profile?.role || "",
             status: "pending",
             createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            primaryImageUrl: images[0] || null,
           });
         } catch (e) {
           console.warn("feature request failed", e);
@@ -288,7 +369,9 @@ export default function CreateListing() {
           Post a Listing
         </h1>
         <p className="text-white/70">
-          Share a premium stay. Keep details clear and pricing accurate.
+          Share a premium stay. Keep details clear, pricing accurate, and avoid
+          putting phone numbers or emails in your description — Nesta will
+          handle secure contact reveal.
         </p>
       </div>
 
@@ -300,12 +383,12 @@ export default function CreateListing() {
 
       <form onSubmit={handleCreate} className="mt-5 grid gap-4 max-w-5xl">
         {/* Essentials */}
-        <Section
-          title="Essentials"
-          subtitle="Core info guests see first."
-        >
+        <Section title="Essentials" subtitle="Core info guests see first.">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Title" hint="e.g. Cozy Loft in Ikoyi GRA">
+            <Field
+              label="Title"
+              hint="e.g. Cozy Loft in Ikoyi GRA (no phone numbers or emails)"
+            >
               <TextInput
                 value={form.title}
                 onChange={(e) => setField("title", e.target.value)}
@@ -392,13 +475,82 @@ export default function CreateListing() {
             </Field>
           </div>
 
-          <Field label="Description" hint="Tell guests what makes this place exceptional.">
+          <Field
+            label="Description"
+            hint="Focus on experience and quality. We automatically remove any phone numbers or emails."
+          >
             <TextArea
               value={form.description}
               onChange={(e) => setField("description", e.target.value)}
               maxLength={1000}
             />
           </Field>
+        </Section>
+
+        {/* Location + Map */}
+        <Section
+          title="Location & map"
+          subtitle="Drop a pin close to the property. Guests see only an approximate area before booking."
+        >
+          <div className="grid md:grid-cols-2 gap-4 items-start">
+            <div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Latitude" hint="Click the map or paste manually.">
+                  <TextInput
+                    className="text-xs"
+                    value={form.lat ?? ""}
+                    onChange={(e) =>
+                      setField(
+                        "lat",
+                        e.target.value === "" ? null : Number(e.target.value)
+                      )
+                    }
+                    placeholder="e.g. 6.435"
+                  />
+                </Field>
+                <Field
+                  label="Longitude"
+                  hint="Click the map or paste manually."
+                >
+                  <TextInput
+                    className="text-xs"
+                    value={form.lng ?? ""}
+                    onChange={(e) =>
+                      setField(
+                        "lng",
+                        e.target.value === "" ? null : Number(e.target.value)
+                      )
+                    }
+                    placeholder="e.g. 3.421"
+                  />
+                </Field>
+              </div>
+              <p className="mt-2 text-[11px] text-white/55">
+                Exact street details are only shown to confirmed guests. Use the
+                pin to mark a nearby safe point.
+              </p>
+            </div>
+
+            <div className="mt-1">
+              <ListingMap
+                lat={
+                  typeof form.lat === "number" && !Number.isNaN(form.lat)
+                    ? form.lat
+                    : null
+                }
+                lng={
+                  typeof form.lng === "number" && !Number.isNaN(form.lng)
+                    ? form.lng
+                    : null
+                }
+                editable
+                onChange={(pos) => {
+                  setField("lat", pos.lat);
+                  setField("lng", pos.lng);
+                }}
+              />
+            </div>
+          </div>
         </Section>
 
         {/* Amenities */}
@@ -436,7 +588,7 @@ export default function CreateListing() {
             <TextArea
               value={houseRules}
               onChange={(e) => setHouseRules(e.target.value)}
-              placeholder="Check-in after 2pm, no smoking indoors, quiet hours 10pm–7am, etc."
+              placeholder="Check-in after 2pm, no smoking indoors, quiet hours 10pm–7am, etc. (no phone numbers/emails)"
             />
           </Field>
 
@@ -449,7 +601,9 @@ export default function CreateListing() {
               onChange={(e) => setRequestFeatured(e.target.checked)}
             />
             <label htmlFor="req-featured" className="text-sm text-white/90">
-              Request to be <span className="font-semibold text-yellow-400">Featured</span> in the carousel
+              Request to be{" "}
+              <span className="font-semibold text-yellow-400">Featured</span> in
+              the carousel (our team will review and confirm payment details).
             </label>
           </div>
         </Section>
@@ -482,7 +636,7 @@ export default function CreateListing() {
               </span>
             ) : (
               <span>
-                Role: <strong>Host</strong> • ownerId will be your UID
+                Role: <strong>Host</strong> • owner fields linked to your UID
               </span>
             )}
           </div>

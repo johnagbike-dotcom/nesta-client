@@ -9,48 +9,69 @@ export default function ReserveSuccessPage() {
   const listing = state?.listing || null;
 
   return (
-    <main className="min-h-screen bg-[#0b0f14] text-white pt-20 px-4 pb-10">
-      <div className="max-w-lg mx-auto rounded-3xl border border-emerald-400/25 bg-gradient-to-b from-emerald-500/10 via-black/10 to-black/40 p-8 text-center shadow-[0_20px_80px_rgba(0,0,0,0.35)]">
-        <div className="w-16 h-16 mx-auto rounded-full bg-emerald-500/15 border border-emerald-400/40 grid place-items-center mb-5">
-          <span className="text-2xl">✓</span>
-        </div>
-        <h1 className="text-2xl font-extrabold tracking-tight">
-          Booking confirmed
+    <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white pt-24 px-4 pb-16">
+      <div className="max-w-lg mx-auto rounded-3xl border border-emerald-400/25 bg-gradient-to-b from-emerald-500/10 via-black/20 to-black/60 p-8 text-center shadow-[0_35px_100px_rgba(0,0,0,0.6)] backdrop-blur-md">
+
+       {/* Success Icon */}
+<div className="w-20 h-20 mx-auto rounded-full bg-emerald-500/20 border border-emerald-400/40 grid place-items-center mb-6 shadow-[0_10px_35px_rgba(0,128,0,0.3)] animate-pulse">
+  <span className="text-3xl font-bold text-emerald-300 transform scale-100 transition-transform duration-300">
+    ✓
+  </span>
+</div>
+
+
+        {/* Heading */}
+        <h1
+          className="text-3xl font-semibold tracking-tight"
+          style={{
+            fontFamily:
+              'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+          }}
+        >
+          Booking Confirmed
         </h1>
-        <p className="text-gray-200 mt-2">
-          Your reservation has been received. A host/partner will review and
-          share check-in details.
+
+        <p className="text-gray-300 mt-3 text-sm leading-relaxed">
+          Your reservation has been successfully secured.  
+          Your host/partner will share check-in instructions shortly.
         </p>
 
+        {/* Listing + Reference */}
         {listing ? (
-          <p className="mt-4 text-sm text-gray-300">
-            Listing: <span className="font-semibold">{listing.title}</span>
-          </p>
-        ) : null}
-        {bookingId ? (
-          <p className="mt-1 text-xs text-gray-400">
-            Ref: <span className="font-mono">{bookingId}</span>
+          <p className="mt-5 text-sm text-gray-200">
+            Listing:{" "}
+            <span className="font-semibold text-amber-300">
+              {listing.title}
+            </span>
           </p>
         ) : null}
 
-        <div className="mt-6 flex flex-wrap gap-3 justify-center">
+        {bookingId ? (
+          <p className="mt-1 text-xs text-gray-400">
+            Reference:{" "}
+            <span className="font-mono text-emerald-300">{bookingId}</span>
+          </p>
+        ) : null}
+
+        {/* Buttons */}
+        <div className="mt-7 flex flex-wrap gap-3 justify-center">
           <button
             onClick={() => nav("/bookings")}
-            className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-semibold"
+            className="px-6 py-2.5 rounded-full bg-amber-500 hover:bg-amber-400 text-black font-semibold shadow-[0_8px_30px_rgba(0,0,0,0.5)]"
           >
-            View my bookings
+            View My Bookings
           </button>
           <button
             onClick={() => nav("/explore")}
-            className="px-5 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
+            className="px-6 py-2.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
           >
-            Continue browsing
+            Continue Browsing
           </button>
         </div>
 
-        <p className="mt-6 text-[11px] text-gray-500">
-          Contact details stay hidden by policy — they reveal only when your
-          booking status and host/partner subscription permit.
+        <p className="mt-6 text-[11px] text-gray-500 leading-relaxed">
+          Contact details stay hidden by policy —  
+          they reveal only when your booking status and host/partner subscription permit.
         </p>
       </div>
     </main>

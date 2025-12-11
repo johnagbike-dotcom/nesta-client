@@ -1,4 +1,3 @@
-// src/pages/PartnerListingsPage.js
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -15,6 +14,27 @@ import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 
 const nf = new Intl.NumberFormat("en-NG");
+const FALLBACK =
+  "https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=1200&q=60";
+
+function getListingCover(listing) {
+  if (!listing) return null;
+
+  // Preferred Firestore field
+  if (Array.isArray(listing.images) && listing.images[0]) return listing.images[0];
+
+  // Legacy / alternative arrays
+  if (Array.isArray(listing.imageUrls) && listing.imageUrls[0]) return listing.imageUrls[0];
+  if (Array.isArray(listing.media) && listing.media[0]?.url) return listing.media[0].url;
+
+  // Single URL fields
+  if (listing.imageUrl) return listing.imageUrl;
+  if (listing.coverImage) return listing.coverImage;
+  if (listing.heroImage) return listing.heroImage;
+  if (listing.photo) return listing.photo;
+
+  return null;
+}
 
 /**
  * Shared page for:
@@ -225,6 +245,7 @@ export default function PartnerListingsPage({
               const nightly = Number(r.pricePerNight || 0);
               const s = r.status || "active";
               const featured = !!r.featured;
+              const cover = getListingCover(r);
 
               return (
                 <article
@@ -253,6 +274,26 @@ export default function PartnerListingsPage({
 
                   {/* Main row */}
                   <div className="flex flex-col md:flex-row md:items-center gap-4">
+                    {/* Thumbnail */}
+                    <div className="w-full md:w-40 h-28 rounded-2xl overflow-hidden bg-black/40 flex-shrink-0">
+                      {cover ? (
+                        <img
+                          src={cover}
+                          alt={r.title || "Listing"}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <img
+                          src={FALLBACK}
+                          alt="Nesta luxury stay"
+                          className="w-full h-full object-cover opacity-90"
+                          loading="lazy"
+                        />
+                      )}
+                    </div>
+
+                    {/* Text */}
                     <div className="flex-1 space-y-1">
                       <h2 className="text-lg md:text-xl font-bold truncate">
                         {r.title || "Untitled"}

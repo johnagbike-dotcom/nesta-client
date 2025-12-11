@@ -17,16 +17,19 @@ import { getApp } from "firebase/app";
 const db = getFirestore(getApp());
 
 /**
-* Deterministic thread id so we never create duplicates and we don't need composite indexes.
-* b:<bookingId>::g:<guestId>::h:<hostId>
-*/
-const buildThreadId = (bookingId, guestId, hostId) =>
+ * Deterministic thread id so we never create duplicates.
+ * Format: b:<bookingId>::g:<guestId>::h:<hostId>
+ */
+export const buildThreadId = (bookingId, guestId, hostId) =>
   `b:${bookingId}::g:${guestId}::h:${hostId}`;
 
 /**
-* Create (idempotent) or return a thread for a booking.
-* Requires bookingId, listingId, guestId, hostId.
-*/
+ * Create (idempotent) or return a thread for a booking.
+ * Requires bookingId, listingId, guestId, hostId.
+ *
+ * We also store listingTitle + participants so Inbox / Chat can render nicely.
+ * Contact-reveal logic is handled on the client in ChatRoom.
+ */
 export async function getOrCreateThreadForBooking({
   bookingId,
   listingId,
@@ -47,15 +50,15 @@ export async function getOrCreateThreadForBooking({
       id: threadId,
       bookingId,
       listingId,
+      listingTitle,
       guestId,
       hostId,
       participants: [guestId, hostId],
-      title: listingTitle,
       lastMessage: null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      archivedFor: [],   // optional future feature
-      pinnedBy: [],      // optional future feature
+      archivedFor: [], // reserved for future use
+      pinnedBy: [],    // reserved for future use
     });
   }
 
@@ -63,17 +66,20 @@ export async function getOrCreateThreadForBooking({
 }
 
 /**
-* Subscribe to messages for a thread.
-*/
+ * Subscribe to messages for a thread.
+ * Calls onUpdate(messagesArray) on every change.
+ */
 export function subscribeToMessages(threadId, onUpdate) {
   if (!threadId || typeof onUpdate !== "function") {
     console.warn("subscribeToMessages: invalid threadId or onUpdate callback");
     return () => {};
   }
+
   const q = query(
     collection(db, "messages", threadId, "items"),
     orderBy("createdAt", "asc")
   );
+
   return onSnapshot(q, (ss) => {
     const out = [];
     ss.forEach((d) => out.push({ id: d.id, ...d.data() }));
@@ -82,8 +88,8 @@ export function subscribeToMessages(threadId, onUpdate) {
 }
 
 /**
-* Send a message to a thread.
-*/
+ * Send a message to a thread.
+ */
 export async function sendMessage({ threadId, text, senderId }) {
   if (!threadId) throw new Error("threadId required");
   if (!text?.trim()) return;
@@ -101,7 +107,11 @@ export async function sendMessage({ threadId, text, senderId }) {
 
   // Update chat's last message
   await updateDoc(doc(db, "chats", threadId), {
-    lastMessage: { text: msg.text, senderId, createdAt: serverTimestamp() },
+    lastMessage: {
+      text: msg.text,
+      senderId,
+      createdAt: serverTimestamp(),
+    },
     updatedAt: serverTimestamp(),
   });
-} 
+}

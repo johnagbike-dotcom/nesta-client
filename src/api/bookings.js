@@ -14,21 +14,24 @@ import {
   where,
   orderBy,
   limit,
-  arrayUnion,
-  arrayRemove,
   Timestamp,
-  deleteDoc,
-  setDoc,
 } from "firebase/firestore";
 
 // ---------------- REST BASE + FETCH ----------------
-const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000")
+  .replace(/\/+$/, "");
 
+// generic JSON fetch helper
 async function fetchJson(url, options = {}) {
   const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+    credentials: "include",
     ...options,
   });
+
   const text = await res.text();
   let data;
   try {
@@ -36,15 +39,90 @@ async function fetchJson(url, options = {}) {
   } catch {
     data = text;
   }
+
   if (!res.ok) {
     const message =
-      (typeof data === "string" && data) || data?.error || data?.message || `${res.status} ${res.statusText}`;
+      (typeof data === "string" && data) ||
+      data?.error ||
+      data?.message ||
+      `${res.status} ${res.statusText}`;
     throw new Error(message);
   }
   return data;
 }
 
-// ======================= REST (unchanged) =======================
+// small helper to safely turn FS dates into ISO strings
+function toIso(v) {
+  if (!v) return null;
+  try {
+    if (typeof v.toDate === "function") v = v.toDate();
+    else if (typeof v.seconds === "number") v = new Date(v.seconds * 1000);
+    const d = v instanceof Date ? v : new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+// Push booking snapshots into the admin JSON + payouts ledger
+export async function syncBookingToAdminLedger(bookingId, statusOverride) {
+  try {
+    if (!bookingId) return;
+
+    const ref = doc(db, "bookings", bookingId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
+    const b = snap.data() || {};
+    const status = (statusOverride || b.status || "confirmed").toLowerCase();
+
+    const createdAt = toIso(
+      b.createdAt && b.createdAt.toDate
+        ? b.createdAt
+        : b.createdAt || b.created || null
+    );
+
+    const checkIn = toIso(b.checkIn || b.startDate || null);
+    const checkOut = toIso(b.checkOut || b.endDate || null);
+
+    const amount = Number(
+      b.amountN ??
+        b.total ??
+        b.totalAmount ??
+        b.grossAmount ??
+        0
+    );
+
+    const payload = {
+      id: bookingId,
+      status,
+      listingId: b.listingId || null,
+      listingTitle: b.listingTitle || b.title || "",
+      guestEmail: b.email || b.guestEmail || "",
+      hostEmail:
+        b.hostEmail ||
+        b.ownerEmail ||
+        b.hostContactEmail ||
+        b.payeeEmail ||
+        "",
+      nights: Number(b.nights || b.nightsCount || 1),
+      totalAmount: amount,
+      provider: b.provider || "paystack",
+      reference: b.reference || b.gatewayRef || "",
+      createdAt,
+      checkIn,
+      checkOut,
+    };
+
+    await fetchJson(`${API_BASE}/api/admin/bookings-sync`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.warn("[bookings] syncBookingToAdminLedger failed:", err);
+  }
+}
+
+// ======================= REST (admin JSON) =======================
 
 /** Return shape: { data: Booking[] } */
 export async function listBookings(queryStr = "") {
@@ -133,9 +211,8 @@ export async function deleteBooking(id) {
 // ======================= FIRESTORE FLOW =======================
 
 /**
-* Create a PENDING booking *before* opening the payment popup.
-* Stores enough context for the hold + later confirmation.
-*/
+ * Create a PENDING booking *before* opening the payment popup.
+ */
 export async function createPendingBookingFS({
   listing,       // { id, title, city, area, pricePerNight, ownerId/hostId/partnerUid? }
   user,          // Firebase auth user
@@ -149,8 +226,6 @@ export async function createPendingBookingFS({
   checkOut = null,  // "YYYY-MM-DD" or Date
   expiresAt = null, // Date
 }) {
-  const hostOrPartner = listing?.hostId || listing?.ownerId || listing?.partnerUid || null;
-
   const payload = {
     // listing
     listingId: listing?.id || null,
@@ -163,8 +238,8 @@ export async function createPendingBookingFS({
     ownershipType: listing?.ownerId ? "host" : listing?.partnerUid ? "partner" : null,
 
     // guest/user
-    userId: user?.uid || null,  // used across pages
-    guestId: user?.uid || null, // duplicate for clarity
+    userId: user?.uid || null,
+    guestId: user?.uid || null,
     email: user?.email || null,
 
     // stay
@@ -200,8 +275,8 @@ export async function createPendingBookingFS({
 }
 
 /**
-* Ensure a single pending hold (with TTL). Returns { id, expiresAt }
-*/
+ * Ensure a single pending hold (with TTL). Returns { id, expiresAt }
+ */
 export async function ensurePendingHoldFS({
   listing,
   user,
@@ -266,20 +341,32 @@ export async function markBookingConfirmedFS(
     reference,
     updatedAt: serverTimestamp(),
   });
+
+  // Mirror into admin ledger JSON + payouts
+  await syncBookingToAdminLedger(bookingId, "confirmed");
 }
 
 /** Mark booking failed/cancelled (reason used in `gateway`) */
 export async function markBookingFailedFS(bookingId, reason = "cancelled") {
   const ref = doc(db, "bookings", bookingId);
-  const normalized = reason === "cancelled" ? "cancelled" : reason === "expired" ? "expired" : "failed";
+  const normalized =
+    reason === "cancelled"
+      ? "cancelled"
+      : reason === "expired"
+      ? "expired"
+      : "failed";
+
   await updateDoc(ref, {
     status: normalized,
     gateway: reason,
     updatedAt: serverTimestamp(),
   });
+
+  // Keep admin ledger in sync as well
+  await syncBookingToAdminLedger(bookingId, normalized);
 }
 
-/** Mark confirmed booking as refunded (admin/ops) */
+/** Mark confirmed booking as refunded (admin/ops/host action) */
 export async function markBookingRefundedFS(bookingId, note = "manual_refund") {
   const ref = doc(db, "bookings", bookingId);
   await updateDoc(ref, {
@@ -287,6 +374,9 @@ export async function markBookingRefundedFS(bookingId, note = "manual_refund") {
     gateway: note,
     updatedAt: serverTimestamp(),
   });
+
+  // Push refund status (and negative payout) into admin ledger
+  await syncBookingToAdminLedger(bookingId, "refunded");
 }
 
 /** Release a pending hold (host/partner/admin action) */
@@ -297,11 +387,9 @@ export async function releaseHoldFS(bookingId, note = "released_by_admin") {
     gateway: note,
     updatedAt: serverTimestamp(),
   });
-}
 
-/** Legacy alias some code may still call */
-export async function markBookingExpiredFS(bookingId) {
-  return releaseHoldFS(bookingId, "expired");
+  // Treat as expired in the ledger
+  await syncBookingToAdminLedger(bookingId, "expired");
 }
 
 /** Auto-expire pending bookings whose expiresAt is in the past */
@@ -313,7 +401,11 @@ export async function expireStaleBookings() {
     snap.forEach((d) => {
       const b = d.data();
       if (b.status !== "pending") return;
-      const exp = b.expiresAt?.toDate ? b.expiresAt.toDate() : b.expiresAt ? new Date(b.expiresAt) : null;
+      const exp = b.expiresAt?.toDate
+        ? b.expiresAt.toDate()
+        : b.expiresAt
+        ? new Date(b.expiresAt)
+        : null;
       if (exp && exp.getTime() < now) {
         ops.push(
           updateDoc(doc(db, "bookings", d.id), {
@@ -331,7 +423,6 @@ export async function expireStaleBookings() {
 }
 
 // ======================= HOLDS COLLECTION (optional) =======================
-// If you use the separate /holds collection anywhere, keep these helpers.
 
 export async function fetchActiveHoldsFS({ guestId, listingId, checkIn, checkOut }) {
   if (!guestId || !listingId) return [];
@@ -387,7 +478,9 @@ export async function convertHoldFS(holdId) {
     if (!holdId) return;
     const ref = doc(db, "holds", holdId);
     await updateDoc(ref, { status: "converted", updatedAt: serverTimestamp() });
-  } catch {}
+  } catch {
+    // ignore
+  }
 }
 
 export async function getHoldFS(holdId) {
@@ -395,4 +488,4 @@ export async function getHoldFS(holdId) {
   const snap = await getDoc(doc(db, "holds", holdId));
   if (!snap.exists()) return null;
   return { id: snap.id, ...snap.data() };
-} 
+}

@@ -1,4 +1,3 @@
-// src/pages/HostListingsPage.js
 import React from "react";
 import PartnerListingsPage from "./PartnerListingsPage";
 

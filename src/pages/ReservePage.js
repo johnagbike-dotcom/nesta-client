@@ -48,7 +48,7 @@ function Stepper({ step }) {
     { id: 3, label: "Payment" },
   ];
   return (
-    <div className="flex items-center gap-3 mb-6">
+    <div className="flex flex-wrap items-center gap-3 mb-6">
       {steps.map((s, idx) => {
         const active = step === s.id;
         const done = step > s.id;
@@ -57,7 +57,7 @@ function Stepper({ step }) {
             <div
               className={`w-8 h-8 rounded-full grid place-items-center text-xs font-bold border ${
                 active
-                  ? "bg-amber-400 text-black border-amber-300"
+                  ? "bg-amber-400 text-black border-amber-300 shadow-[0_10px_30px_rgba(0,0,0,.6)]"
                   : done
                   ? "bg-emerald-500/20 text-emerald-200 border-emerald-300/60"
                   : "bg-white/5 text-white/70 border-white/20"
@@ -176,32 +176,38 @@ export default function ReservePage() {
   // Guard – non-guests
   if (user && !isGuest) {
     return (
-      <main className="min-h-screen bg-[#0b0f14] text-white grid place-items-center px-4">
-        <div className="max-w-lg w-full rounded-2xl border border-amber-400/30 bg-black/30 p-6 backdrop-blur-sm">
-          <h2 className="text-xl font-bold text-amber-300">
+      <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white grid place-items-center px-4">
+        <div className="max-w-lg w-full rounded-3xl border border-amber-400/30 bg-black/40 p-6 backdrop-blur-sm shadow-[0_24px_70px_rgba(0,0,0,.75)]">
+          <h2
+            className="text-xl font-bold text-amber-300"
+            style={{
+              fontFamily:
+                'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+            }}
+          >
             Reservation not available
           </h2>
-          <p className="mt-2 text-gray-200">
+          <p className="mt-2 text-gray-200 text-sm">
             You’re signed in as <strong>{role}</strong>. Only guests can make
             reservations.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <button
-              className="px-4 py-2 rounded-xl bg-amber-500 text-black font-semibold hover:bg-amber-400"
+              className="px-4 py-2 rounded-full bg-amber-500 text-black font-semibold hover:bg-amber-400 text-sm"
               onClick={() => nav(-1)}
             >
               ← Back
             </button>
             {role === "partner" || role === "verified_partner" ? (
               <button
-                className="px-4 py-2 rounded-xl bg-white/10 border border-white/20 text-sm hover:bg-white/15"
+                className="px-4 py-2 rounded-full bg-white/10 border border-white/20 text-xs md:text-sm hover:bg-white/15"
                 onClick={() => nav("/partner")}
               >
                 Go to Partner dashboard
               </button>
             ) : role === "host" ? (
               <button
-                className="px-4 py-2 rounded-xl bg-white/10 border border-white/20 text-sm hover:bg-white/15"
+                className="px-4 py-2 rounded-full bg-white/10 border border-white/20 text-xs md:text-sm hover:bg-white/15"
                 onClick={() => nav("/host")}
               >
                 Go to Host dashboard
@@ -298,8 +304,8 @@ export default function ReservePage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#05070b] text-white">
-      <div className="max-w-5xl mx-auto px-4 py-8">
+    <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white">
+      <div className="max-w-5xl mx-auto px-4 pt-24 pb-10">
         {/* Header + back */}
         <div className="flex items-center justify-between gap-3 mb-4">
           <button
@@ -315,24 +321,46 @@ export default function ReservePage() {
           )}
         </div>
 
-        {/* Stepper */}
+        {/* Title + stepper */}
+        <div className="mb-6">
+          <h1
+            className="text-2xl md:text-[28px] font-semibold tracking-tight"
+            style={{
+              fontFamily:
+                'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+            }}
+          >
+            Complete your reservation
+          </h1>
+          <p className="text-sm text-white/70 max-w-xl mt-1">
+            Lock in your stay with secure payment. Hosts are notified instantly
+            once your booking is confirmed.
+          </p>
+        </div>
+
         <Stepper step={step} />
 
-        <div className="grid gap-6 md:grid-cols-[minmax(0,1.5fr),minmax(0,1fr)] items-start">
+        <div className="grid gap-6 md:grid-cols-[minmax(0,1.55fr),minmax(0,1fr)] items-start">
           {/* LEFT – forms per step */}
           <div className="space-y-4">
-            {/* Listing title */}
-            <div className="rounded-2xl bg-gradient-to-r from-[#12151c] via-[#0b0f14] to-[#05070b] border border-white/10 p-4">
+            {/* Listing title card */}
+            <div className="rounded-3xl bg-gradient-to-r from-[#12151c] via-[#0b0f14] to-[#05070b] border border-white/10 p-4 shadow-[0_20px_60px_rgba(0,0,0,.75)]">
               {loadingListing ? (
                 <div className="h-6 w-40 rounded-full bg-white/5 animate-pulse" />
               ) : (
                 <>
-                  <h2 className="text-xl font-bold">
-                    Reserve: {listing?.title || "Listing"}
+                  <h2
+                    className="text-lg font-semibold"
+                    style={{
+                      fontFamily:
+                        'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                    }}
+                  >
+                    {listing?.title || "Listing"}
                   </h2>
                   <p className="text-xs text-gray-400 mt-1">
-                    Secure booking on Nesta • host is notified instantly after
-                    payment.
+                    Secure booking on Nesta • host sees your request as soon as
+                    payment is successful.
                   </p>
                 </>
               )}
@@ -340,12 +368,12 @@ export default function ReservePage() {
 
             {/* Step 1: Dates & guests */}
             {step === 1 && (
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-4">
-                <h3 className="text-sm font-semibold text-amber-300">
+              <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
+                <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
                   Step 1 · Dates & guests
                 </h3>
 
-                <Field label="Guests" hint="Max as allowed by listing">
+                <Field label="Guests" hint="Max as allowed by host">
                   <Input
                     type="number"
                     min={1}
@@ -374,7 +402,7 @@ export default function ReservePage() {
                 </div>
 
                 <p className="text-xs text-gray-400">
-                  Choose valid dates; check-out must be after check-in.
+                  Choose valid dates – your check-out must be after check-in.
                 </p>
 
                 <div className="flex justify-between items-center mt-2">
@@ -387,10 +415,10 @@ export default function ReservePage() {
                     type="button"
                     disabled={!canGoToStep2}
                     onClick={() => setStep(2)}
-                    className={`px-4 py-2 rounded-xl text-sm font-semibold ${
+                    className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
                       canGoToStep2
-                        ? "bg-amber-500 hover:bg-amber-400 text-black"
-                        : "bg-white/5 text-white/40 cursor-not-allowed"
+                        ? "bg-amber-500 hover:bg-amber-400 text-black shadow-[0_12px_40px_rgba(0,0,0,.6)]"
+                        : "bg-white/5 text-white/35 cursor-not-allowed"
                     }`}
                   >
                     Next: guest details →
@@ -401,14 +429,14 @@ export default function ReservePage() {
 
             {/* Step 2: Guest details / ID */}
             {step === 2 && (
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-4">
-                <h3 className="text-sm font-semibold text-amber-300">
+              <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
+                <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
                   Step 2 · Guest details
                 </h3>
 
                 <p className="text-xs text-gray-400">
-                  For security, we capture a quick ID reference. The host will
-                  only see a masked version.
+                  For security, we capture a quick ID reference. The host only
+                  sees a masked version.
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -449,7 +477,7 @@ export default function ReservePage() {
                   <button
                     type="button"
                     onClick={() => setStep(1)}
-                    className="px-3 py-1.5 rounded-xl text-xs bg-white/5 border border-white/15 hover:bg-white/10"
+                    className="px-3 py-1.5 rounded-full text-xs bg-white/5 border border-white/15 hover:bg-white/10"
                   >
                     ← Back
                   </button>
@@ -457,10 +485,10 @@ export default function ReservePage() {
                     type="button"
                     disabled={!canGoToStep3}
                     onClick={() => setStep(3)}
-                    className={`px-4 py-2 rounded-xl text-sm font-semibold ${
+                    className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
                       canGoToStep3
-                        ? "bg-amber-500 hover:bg-amber-400 text-black"
-                        : "bg-white/5 text-white/40 cursor-not-allowed"
+                        ? "bg-amber-500 hover:bg-amber-400 text-black shadow-[0_12px_40px_rgba(0,0,0,.6)]"
+                        : "bg-white/5 text-white/35 cursor-not-allowed"
                     }`}
                   >
                     Next: payment →
@@ -471,27 +499,27 @@ export default function ReservePage() {
 
             {/* Step 3: Payment */}
             {step === 3 && (
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-4">
-                <h3 className="text-sm font-semibold text-amber-300">
+              <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
+                <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
                   Step 3 · Payment
                 </h3>
                 <p className="text-xs text-gray-400">
-                  We’ll create a temporary reservation hold, then redirect you
-                  to a secure payment window.
+                  We’ll create a temporary reservation hold, then open a secure
+                  Paystack window to complete your booking.
                 </p>
 
-                <div className="flex flex-wrap gap-2 mt-2">
+                <div className="flex flex-wrap gap-2 mt-3">
                   <button
                     onClick={onPaystack}
                     disabled={!canPay || busy}
-                    className={`px-4 py-2 rounded-xl text-sm font-semibold ${
+                    className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
                       canPay
-                        ? "bg-amber-500 hover:bg-amber-600 text-black"
-                        : "bg-gray-700 text-gray-400 cursor-not-allowed"
+                        ? "bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-500 text-black shadow-[0_18px_50px_rgba(0,0,0,.7)]"
+                        : "bg-gray-700/80 text-gray-400 cursor-not-allowed"
                     } ${busy ? "animate-pulse" : ""}`}
                   >
                     {busy ? "Processing…" : "Confirm & Pay (Paystack)"}
-                  </button>                               
+                  </button>
                 </div>
 
                 {holdInfo?.expiresAt && (
@@ -504,7 +532,7 @@ export default function ReservePage() {
                 <button
                   type="button"
                   onClick={() => setStep(2)}
-                  className="mt-3 px-3 py-1.5 rounded-xl text-xs bg-white/5 border border-white/15 hover:bg-white/10"
+                  className="mt-3 px-3 py-1.5 rounded-full text-xs bg-white/5 border border-white/15 hover:bg-white/10"
                 >
                   ← Back to details
                 </button>
@@ -514,8 +542,12 @@ export default function ReservePage() {
 
           {/* RIGHT – summary card */}
           <aside className="space-y-4">
-            <div className="rounded-2xl bg-[#090d12] border border-white/10 p-4">
-              <h3 className="text-sm font-semibold mb-2">Booking summary</h3>
+            <div className="rounded-3xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,.8)]">
+              <h3
+                className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70"
+              >
+                Booking summary
+              </h3>
               {listing ? (
                 <>
                   <p className="text-sm text-white/90">{listing.title}</p>
@@ -523,20 +555,21 @@ export default function ReservePage() {
                     {listing.area || "—"}, {listing.city || "Nigeria"}
                   </p>
                   <div className="mt-3 text-sm text-gray-300">
-                    ₦{Number(listing.pricePerNight || 0).toLocaleString()}/night
+                    {ngn(listing.pricePerNight || 0)}{" "}
+                    <span className="text-xs text-white/60">/ night</span>
                   </div>
-                  <div className="mt-2 text-sm">
+                  <div className="mt-3 text-sm">
                     {nights > 0 ? (
                       <>
                         {nights} night(s) · {guests} guest(s)
                         <br />
-                        <span className="font-semibold">
+                        <span className="font-semibold text-amber-300">
                           Total: {ngn(total)}
                         </span>
                       </>
                     ) : (
                       <span className="text-gray-500 text-xs">
-                        Select dates to see total.
+                        Select dates to see your total.
                       </span>
                     )}
                   </div>
@@ -546,19 +579,28 @@ export default function ReservePage() {
               )}
             </div>
 
-            <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
+            <div className="rounded-3xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
               <p>
-                Your payment is processed securely via Paystack.
-                Nesta does not store your full card details.
+                Your payment is processed securely via Paystack. Nesta never
+                stores your full card details.
               </p>
               <p>
-                In case of any issue, your reservation hold will automatically
-                expire and the host will not be notified as confirmed.
+                If payment fails or is cancelled, your temporary reservation
+                hold will automatically expire and the host will not see it as a
+                confirmed booking.
               </p>
             </div>
           </aside>
         </div>
       </div>
+      {/* Secure Checkout Strip */}
+<div className="mt-10 border-t border-white/5 pt-6">
+  <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
+    <span className="text-lg">🔒</span>
+    <span>Secure checkout · Powered by Paystack · Encrypted payment processing</span>
+  </div>
+</div>
+
     </main>
   );
 }

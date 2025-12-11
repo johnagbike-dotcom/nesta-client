@@ -1,4 +1,3 @@
-// src/pages/GuestExplorePage.js
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -16,6 +15,25 @@ import { useAuth } from "../auth/AuthContext";
 const nf = new Intl.NumberFormat("en-NG");
 const FALLBACK =
   "https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=1200&q=60";
+
+function getListingCover(listing) {
+  if (!listing) return null;
+
+  // Preferred Firestore field
+  if (Array.isArray(listing.images) && listing.images[0]) return listing.images[0];
+
+  // Legacy / alternative arrays
+  if (Array.isArray(listing.imageUrls) && listing.imageUrls[0]) return listing.imageUrls[0];
+  if (Array.isArray(listing.media) && listing.media[0]?.url) return listing.media[0].url;
+
+  // Single URL fields
+  if (listing.imageUrl) return listing.imageUrl;
+  if (listing.coverImage) return listing.coverImage;
+  if (listing.heroImage) return listing.heroImage;
+  if (listing.photo) return listing.photo;
+
+  return null;
+}
 
 export default function GuestExplorePage() {
   const { user } = useAuth();
@@ -311,6 +329,8 @@ export default function GuestExplorePage() {
               const guests = l.maxGuests || l.guests;
               const type = l.propertyType || l.type;
 
+              const cover = getListingCover(l);
+
               // 🔑 are we the manager (host or partner) for this listing?
               const isManager =
                 user &&
@@ -331,9 +351,9 @@ export default function GuestExplorePage() {
                   className="rounded-2xl bg-[#0f1419] border border-white/5 overflow-hidden hover:border-amber-300/50 hover:-translate-y-1 transition-all duration-200 shadow-[0_14px_40px_rgba(0,0,0,0.35)]"
                 >
                   <div className="relative h-40 bg-black/40 overflow-hidden">
-                    {Array.isArray(l.imageUrls) && l.imageUrls[0] ? (
+                    {cover ? (
                       <img
-                        src={l.imageUrls[0]}
+                        src={cover}
                         alt={l.title || "Listing"}
                         className="w-full h-full object-cover"
                         loading="lazy"

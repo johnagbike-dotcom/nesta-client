@@ -45,6 +45,14 @@ function getLocalLastRead(uid, chatId) {
   }
 }
 
+// Safely normalise lastMessage which may be a string or an object { text, senderId, createdAt }
+function lastMessageText(lastMessage) {
+  if (!lastMessage) return "";
+  if (typeof lastMessage === "string") return lastMessage;
+  if (typeof lastMessage.text === "string") return lastMessage.text;
+  return "";
+}
+
 export default function InboxPage() {
   const { user } = useAuth();
   const nav = useNavigate();
@@ -163,7 +171,7 @@ export default function InboxPage() {
     const filteredByText = kw
       ? filtered.filter((t) => {
           const title = (t.listingTitle || "").toLowerCase();
-          const last = (t.lastMessage || "").toLowerCase();
+          const last = lastMessageText(t.lastMessage).toLowerCase();
           return (
             title.includes(kw) ||
             last.includes(kw) ||
@@ -253,7 +261,9 @@ export default function InboxPage() {
             {unreadCount > 0 && (
               <span
                 className="ml-2 inline-flex items-center justify-center text-xs font-semibold px-2 py-0.5 rounded-full border border-amber-400/40 bg-amber-400/10 text-amber-300"
-                title={`${unreadCount} unread ${unreadCount === 1 ? "chat" : "chats"}`}
+                title={`${unreadCount} unread ${
+                  unreadCount === 1 ? "chat" : "chats"
+                }`}
               >
                 {unreadCount} new
               </span>
@@ -376,11 +386,12 @@ export default function InboxPage() {
                             Typing…
                           </span>
                         ) : (
-                          t.lastMessage || "—"
+                          lastMessageText(t.lastMessage) || "—"
                         )}
                       </div>
                       <div className="mt-1 text-xs text-gray-400">
-                        With: <span className="text-gray-200">{partnerUid}</span>
+                        With:{" "}
+                        <span className="text-gray-200">{partnerUid}</span>
                       </div>
                     </div>
 

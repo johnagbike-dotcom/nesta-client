@@ -6,7 +6,6 @@ import AdminHeader from "../../components/AdminHeader";
 import DateRangeBar from "../../components/DateRangeBar";
 import { withRangeParams } from "../../lib/api";
 import LuxeBtn from "../../components/LuxeBtn";
-import Pill from "../../components/Pill";
 
 /* ───────────────── axios ───────────────── */
 const api = axios.create({
@@ -25,29 +24,53 @@ const getArray = (data) => {
 };
 
 const Badge = ({ label, tone = "slate" }) => {
+  // Colours aligned with Transactions status chips
   const map = {
-    green:  { bg: "rgba(16,185,129,.18)",  text: "#a7f3d0", ring: "rgba(16,185,129,.35)" },
-    red:    { bg: "rgba(239,68,68,.18)",   text: "#fecaca", ring: "rgba(239,68,68,.35)" },
-    blue:   { bg: "rgba(59,130,246,.18)",  text: "#bfdbfe", ring: "rgba(59,130,246,.35)" },
-    amber:  { bg: "rgba(245,158,11,.18)",  text: "#fde68a", ring: "rgba(245,158,11,.35)" },
-    slate:  { bg: "rgba(148,163,184,.18)", text: "#e5e7eb", ring: "rgba(148,163,184,.35)" },
+    green: {
+      bg: "#0ea75a",          // like "confirmed"
+      text: "#e8fff3",
+      ring: "#0a7e43",
+    },
+    red: {
+      bg: "#cf2336",          // like "cancelled"
+      text: "#ffe9ec",
+      ring: "#a51a2a",
+    },
+    amber: {
+      bg: "#d19b00",          // like "refunded"
+      text: "#fff7e0",
+      ring: "#a77a00",
+    },
+    slate: {
+      bg: "#6b7280",          // like "pending"
+      text: "#eef2ff",
+      ring: "#555b66",
+    },
+    blue: {
+      bg: "#2563eb",          // rich cobalt for Host
+      text: "#dbeafe",
+      ring: "#1d4ed8",
+    },
   };
+
   const c = map[tone] || map.slate;
+
   return (
     <span
       style={{
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        height: 28,
-        padding: "0 10px",
-        minWidth: 74,
+        minWidth: 96,
+        height: 34,
+        padding: "0 12px",
         borderRadius: 999,
         background: c.bg,
         color: c.text,
         border: `1px solid ${c.ring}`,
-        fontWeight: 800,
-        fontSize: 12,
+        fontWeight: 700,
+        fontSize: 13,
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,.06)",
         textTransform: "capitalize",
       }}
     >
@@ -55,6 +78,28 @@ const Badge = ({ label, tone = "slate" }) => {
     </span>
   );
 };
+
+// Map user role -> badge tone
+const toneForRole = (role) => {
+  const r = String(role || "guest").toLowerCase();
+
+  if (r === "admin") return "red";        // 🔴 Admin
+  if (r === "host") return "blue";        // 🔵 Host
+  if (r === "partner") return "amber";    // 🟡 Partner
+  return "slate";                         // ⚪ Guest
+};
+
+
+// Map status -> badge tone
+const toneForStatus = (status) => {
+  const s = String(status || "active").toLowerCase();
+  if (s === "active") return "green";
+  if (s === "disabled" || s === "suspended") return "red";
+  return "slate";
+};
+
+const pretty = (s) =>
+  !s ? "—" : s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 
 /* ─────────────── Luxe dropdown (Manage ▾) ─────────────── */
 function ActionMenu({ row, onSetRole, onToggleStatus }) {
@@ -317,11 +362,30 @@ export default function ManageUsers() {
   const usersCsvHref = useMemo(() => withRangeParams("/admin/users/export.csv", range), [range]);
 
   /* ---------- UI helpers (tabs with LuxeBtn) ---------- */
-  const TabBtn = ({ active, label, kindActive = "slate", onClick }) => (
-    <LuxeBtn kind={active ? kindActive : "slate"} small onClick={onClick} title={label}>
-      {label}
-    </LuxeBtn>
-  );
+ /* ---------- UI helpers (tabs styled like Transactions) ---------- */
+const TabBtn = ({ active, label, onClick }) => (
+  <button
+    onClick={onClick}
+    style={{
+      padding: "10px 14px",
+      borderRadius: 14,
+      border: "1px solid rgba(255,255,255,12)",
+      background: active ? "#413cff" : "rgba(255,255,255,.06)",
+      color: active ? "#eef2ff" : "#cfd3da",
+      fontWeight: 800,
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      transition: "filter .12s ease, transform .04s ease",
+    }}
+    onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
+    onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
+    onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.06)")}
+    onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+  >
+    {label}
+  </button>
+);
+
   
   /* ───────────── render ───────────── */
   return (
@@ -492,12 +556,19 @@ export default function ManageUsers() {
                         {r.name} • <span style={{ opacity: 0.6 }}>{r.id}</span>
                       </div>
                     </td>
-                    <td style={{ padding: "12px 16px" }}>
-  <Pill kind="role" value={r.role} />
-</td>
-                    <td style={{ padding: "12px 16px" }}>
-  <Pill kind="status" value={r.status} />
-</td>
+              <td style={{ padding: "12px 16px" }}>
+                <Badge
+                  label={pretty(r.role || "guest")}
+                    tone={toneForRole(r.role)}
+                />
+              </td>
+              <td style={{ padding: "12px 16px" }}>
+                <Badge
+                  label={pretty(r.status || "active")}
+                    tone={toneForStatus(r.status)}
+              />
+              </td>
+
                     <td style={{ padding: "12px 16px" }}>
                       {r.createdAt ? dayjs(r.createdAt).format("YYYY-MM-DD") : "—"}
                     </td>

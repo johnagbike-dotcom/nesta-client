@@ -119,7 +119,7 @@ function ListingCard({ l, onView, onReserve, onFav, isFaved, tabIndex = 0 }) {
   return (
     <article
       className="group relative rounded-2xl border border-white/10 bg-white/5 overflow-hidden
-                 hover:bg-white/10 transition-all duration-200 hover:shadow-[0_10px_40px_rgba(250,204,21,.15)]
+                 hover:bg-white/10 transition-all duration-200 hover:shadow-[0_12px_40px_rgba(250,204,21,.15)]
                  hover:-translate-y-0.5 focus-outline"
       role="button"
       tabIndex={tabIndex}
@@ -369,7 +369,6 @@ export default function SearchBrowse() {
       ioRef.current = null;
     }
 
-    // Skip IO if user prefers reduced motion (keeps button fallback)
     const prefersReduced =
       typeof window !== "undefined" &&
       window.matchMedia &&
@@ -421,110 +420,167 @@ export default function SearchBrowse() {
     });
   }
 
+  const filterChips = [
+    { label: "Search", value: q || "Any" },
+    { label: "City", value: city || "Any" },
+    {
+      label: "Min ₦",
+      value: Number.isFinite(min) ? min.toLocaleString() : "Any",
+    },
+    {
+      label: "Max ₦",
+      value: Number.isFinite(max) ? max.toLocaleString() : "Any",
+    },
+  ];
+
   /* -------------------------- Render -------------------------- */
   return (
-    <main className="container" style={{ maxWidth: 1200, margin: "32px auto", padding: "0 16px" }}>
+    <main
+      className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white"
+    >
       <ShimmerAndFadeStyle />
       <ToastHub />
 
-      <button onClick={() => window.history.back()} className="btn" style={btnGhost}>
-        ← Back
-      </button>
-
-      <h1 style={{ color: "#fff", margin: "12px 0 4px" }}>Browse listings</h1>
-      <FilterBar />
-
-      <p style={{ color: "#9aa4b2", marginBottom: 16 }}>
-        Search: <strong>{q || "—"}</strong> | City: <strong>{city || "—"}</strong> | Min ₦:{" "}
-        <strong>{Number.isFinite(min) ? min.toLocaleString() : "—"}</strong> | Max ₦:{" "}
-        <strong>{Number.isFinite(max) ? max.toLocaleString() : "—"}</strong>{" "}
-        <button onClick={clearFilters} style={linkReset}>
-          Reset
-        </button>
-      </p>
-
-      {/* Loading -> shimmer skeleton grid */}
-      {loading && (
-        <div className={gridCls} aria-busy="true" aria-live="polite">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
-      )}
-
-      {/* Error */}
-      {!loading && error && (
-        <div style={alertError} role="alert">
-          {error}{" "}
-          {indexUrl ? (
-            <>
-              If the console shows an index URL, click it or{" "}
-              <a href={indexUrl} target="_blank" rel="noreferrer" style={link}>
-                open this link
-              </a>{" "}
-              to auto-create the index, then refresh.
-            </>
-          ) : (
-            <>Check your Firestore rules and network.</>
-          )}
-        </div>
-      )}
-
-      {/* Empty */}
-      {!loading && !error && listings.length === 0 && (
-        <Muted>No listings match your search.</Muted>
-      )}
-
-      {/* Results */}
-      {!loading && !error && listings.length > 0 && (
-        <>
-          <div className={gridCls}>
-            {listings.map((l, i) => {
-              // mark as seen for fade-in stagger
-              if (!seenIds.has(l.id)) {
-                // copy set lazily without re-render storm
-                setTimeout(() => {
-                  setSeenIds((prev) => {
-                    if (prev.has(l.id)) return prev;
-                    const next = new Set(prev);
-                    next.add(l.id);
-                    return next;
-                  });
-                }, 0);
-              }
-              const delayMs = (i % 12) * 40; // gentle stagger
-              return (
-                <div
-                  key={l.id}
-                  className="fade-in"
-                  style={{ animationDelay: `${delayMs}ms` }}
-                >
-                  <ListingCard
-                    l={l}
-                    onView={() => nav(`/listing/${l.id}`)}
-                    onReserve={() => nav(`/listing/${l.id}?tab=reserve`)}
-                    onFav={(e) => {
-                      e?.stopPropagation?.();
-                      toggleFav(l.id);
-                    }}
-                    isFaved={favs.has(l.id)}
-                  />
-                </div>
-              );
-            })}
+      <div
+        className="max-w-6xl mx-auto"
+        style={{ marginTop: 80, padding: "0 16px 32px" }}
+      >
+        {/* Header row */}
+        <div className="flex flex-col gap-4 mb-4">
+          <div className="flex items-center justify-between gap-3">
+            <button onClick={() => window.history.back()} className="btn" style={btnGhost}>
+              ← Back
+            </button>
+            {listings.length > 0 && !loading && (
+              <span className="text-xs text-white/60">
+                {listings.length} stay{listings.length === 1 ? "" : "s"} found
+              </span>
+            )}
           </div>
 
-          {/* Infinite scroll sentinel + accessible fallback button */}
-          <div ref={sentinelRef} aria-hidden="true" />
-          {hasMore && (
-            <div style={{ display: "grid", placeItems: "center", marginTop: 16 }}>
-              <button onClick={loadMore} style={btnGhost} aria-label="Load more results">
-                Load more
-              </button>
+          <div>
+            <h1
+              style={{
+                fontFamily:
+                  'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                fontSize: 28,
+                fontWeight: 600,
+                letterSpacing: 0.4,
+                marginBottom: 4,
+              }}
+            >
+              Explore signature stays
+            </h1>
+            <p className="text-sm text-white/70 max-w-xl">
+              Refine your search to find curated apartments, townhouses, and villas across
+              Nesta’s verified homes.
+            </p>
+          </div>
+        </div>
+
+        {/* Filter bar */}
+        <div className="rounded-2xl border border-white/10 bg-black/30 backdrop-blur-sm p-3 mb-3">
+          <FilterBar />
+        </div>
+
+        {/* Filter summary chips */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          {filterChips.map((chip) => (
+            <span
+              key={chip.label}
+              className="text-xs px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-white/80"
+            >
+              <span className="text-white/40 mr-1">{chip.label}:</span>
+              {chip.value}
+            </span>
+          ))}
+          <button onClick={clearFilters} style={linkReset}>
+            Reset filters
+          </button>
+        </div>
+
+        {/* Loading -> shimmer skeleton grid */}
+        {loading && (
+          <div className={gridCls} aria-busy="true" aria-live="polite">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
+          </div>
+        )}
+
+        {/* Error */}
+        {!loading && error && (
+          <div style={alertError} role="alert">
+            {error}{" "}
+            {indexUrl ? (
+              <>
+                If the console shows an index URL, click it or{" "}
+                <a href={indexUrl} target="_blank" rel="noreferrer" style={link}>
+                  open this link
+                </a>{" "}
+                to auto-create the index, then refresh.
+              </>
+            ) : (
+              <>Check your Firestore rules and network.</>
+            )}
+          </div>
+        )}
+
+        {/* Empty */}
+        {!loading && !error && listings.length === 0 && (
+          <Muted>No listings match your current filters.</Muted>
+        )}
+
+        {/* Results */}
+        {!loading && !error && listings.length > 0 && (
+          <>
+            <div className={gridCls}>
+              {listings.map((l, i) => {
+                // mark as seen for fade-in stagger
+                if (!seenIds.has(l.id)) {
+                  setTimeout(() => {
+                    setSeenIds((prev) => {
+                      if (prev.has(l.id)) return prev;
+                      const next = new Set(prev);
+                      next.add(l.id);
+                      return next;
+                    });
+                  }, 0);
+                }
+                const delayMs = (i % 12) * 40; // gentle stagger
+                return (
+                  <div
+                    key={l.id}
+                    className="fade-in"
+                    style={{ animationDelay: `${delayMs}ms` }}
+                  >
+                    <ListingCard
+                      l={l}
+                      onView={() => nav(`/listing/${l.id}`)}
+                      onReserve={() => nav(`/listing/${l.id}?tab=reserve`)}
+                      onFav={(e) => {
+                        e?.stopPropagation?.();
+                        toggleFav(l.id);
+                      }}
+                      isFaved={favs.has(l.id)}
+                    />
+                  </div>
+                );
+              })}
             </div>
-          )}
-        </>
-      )}
+
+            {/* Infinite scroll sentinel + accessible fallback button */}
+            <div ref={sentinelRef} aria-hidden="true" />
+            {hasMore && (
+              <div style={{ display: "grid", placeItems: "center", marginTop: 16 }}>
+                <button onClick={loadMore} style={btnGhost} aria-label="Load more results">
+                  Load more
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </main>
   );
 }
@@ -576,16 +632,29 @@ const linkReset = {
   background: "transparent",
   border: "none",
   cursor: "pointer",
+  fontSize: 12,
 };
 const btnGhost = {
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.15)",
+  background: "rgba(255,255,255,0.05)",
+  border: "1px solid rgba(255,255,255,0.18)",
   color: "#e5e7eb",
-  padding: "6px 12px",
+  padding: "6px 14px",
   borderRadius: 999,
   cursor: "pointer",
+  fontSize: 13,
 };
 
 function Muted({ children }) {
-  return <div style={{ color: "#9aa4b2", padding: "12px 0" }}>{children}</div>;
-} 
+  return (
+    <div
+      style={{
+        color: "#9aa4b2",
+        padding: "20px 0",
+        textAlign: "center",
+        fontSize: 14,
+      }}
+    >
+      {children}
+    </div>
+  );
+}

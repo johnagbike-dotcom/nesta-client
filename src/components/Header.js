@@ -5,6 +5,35 @@ import useUserProfile from "../hooks/useUserProfile";
 import useUnreadCount from "../hooks/useUnreadCount";
 import useReservationsAttentionCount from "../hooks/useReservationsAttentionCount";
 
+// ⬇️ Update this path/filename to match where you place the logo asset
+import nestaLogo from "../assets/Official Logo.jpg";
+
+// Small brand component so we don’t repeat it 4 times
+function BrandButton({ onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2 cursor-pointer px-2 py-1 
+                 transition-all duration-300 hover:opacity-90 hover:scale-[1.03]"
+    >
+      <img
+        src={nestaLogo}
+        alt="Nesta"
+        className="h-12 w-auto md:h-14 lg:h-16"
+      />
+
+      {/* OPTIONAL WORDMARK (hidden by default) */}
+      {/* 
+      <span className="hidden lg:inline text-xs font-semibold 
+                      tracking-[0.28em] text-amber-300 uppercase">
+        NESTA
+      </span>
+      */}
+    </button>
+  );
+}
+
+
 export default function Header() {
   const nav = useNavigate();
   const { user, logout } = useAuth();
@@ -44,12 +73,8 @@ export default function Header() {
     return (
       <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
-          <button
-            onClick={() => nav("/")}
-            className="font-bold text-xl text-[#f5b301] cursor-pointer"
-          >
-            NESTA
-          </button>
+          <BrandButton onClick={() => nav("/")} />
+
           <nav className="flex items-center gap-1">
             <NavLink to="/explore" className={navClass} end>
               Browse
@@ -61,6 +86,7 @@ export default function Header() {
               Post an Ad
             </NavLink>
           </nav>
+
           <div className="flex items-center gap-2">
             <button
               onClick={() => nav("/login")}
@@ -85,12 +111,8 @@ export default function Header() {
     return (
       <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
-          <button
-            onClick={() => nav("/")}
-            className="font-bold text-xl text-[#f5b301] cursor-pointer"
-          >
-            NESTA
-          </button>
+          <BrandButton onClick={() => nav("/")} />
+
           <nav className="flex items-center gap-1">
             <NavLink to="/admin" className={navClass} end>
               Admin
@@ -99,6 +121,7 @@ export default function Header() {
               Inbox {unread > 0 ? `(${unread})` : ""}
             </NavLink>
           </nav>
+
           <div className="flex items-center gap-3 max-w-[280px]">
             <span className="truncate bg-white/5 px-3 py-1 rounded-full text-xs text-white/80">
               {user.email}
@@ -123,18 +146,13 @@ export default function Header() {
     return (
       <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
-          <button
-            onClick={() => nav("/")}
-            className="font-bold text-xl text-[#f5b301] cursor-pointer"
-          >
-            NESTA
-          </button>
+          <BrandButton onClick={() => nav("/")} />
+
           <nav className="flex items-center gap-1">
             <NavLink to="/host" className={navClass} end>
               Host dashboard
             </NavLink>
 
-            {/* ✅ host now goes to /host-reservations */}
             <AttentionReservationsLink
               to="/host-reservations"
               navClass={navClass}
@@ -144,11 +162,11 @@ export default function Header() {
             <NavLink to="/host-listings" className={navClass}>
               Manage listings
             </NavLink>
-
             <NavLink to="/inbox" className={navClass}>
               Inbox {unread > 0 ? `(${unread})` : ""}
             </NavLink>
           </nav>
+
           <div className="flex items-center gap-3 max-w-[320px]">
             <span className="truncate bg-white/5 px-3 py-1 rounded-full text-xs text-white/80 flex items-center gap-2">
               {user.email}
@@ -174,18 +192,13 @@ export default function Header() {
     return (
       <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
-          <button
-            onClick={() => nav("/")}
-            className="font-bold text-xl text-[#f5b301] cursor-pointer"
-          >
-            NESTA
-          </button>
+          <BrandButton onClick={() => nav("/")} />
+
           <nav className="flex items-center gap-1">
             <NavLink to="/partner" className={navClass} end>
               Partner dashboard
             </NavLink>
 
-            {/* partner keeps /reservations */}
             <AttentionReservationsLink
               to="/reservations"
               navClass={navClass}
@@ -199,6 +212,7 @@ export default function Header() {
               Inbox {unread > 0 ? `(${unread})` : ""}
             </NavLink>
           </nav>
+
           <div className="flex items-center gap-3 max-w-[320px]">
             <span className="truncate bg-white/5 px-3 py-1 rounded-full text-xs text-white/80 flex items-center gap-2">
               {user.email}
@@ -223,12 +237,8 @@ export default function Header() {
   return (
     <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
       <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
-        <button
-          onClick={() => nav("/")}
-          className="font-bold text-xl text-[#f5b301] cursor-pointer"
-        >
-          NESTA
-        </button>
+        <BrandButton onClick={() => nav("/")} />
+
         <nav className="flex items-center gap-1">
           <NavLink to="/explore" className={navClass} end>
             Browse
@@ -243,6 +253,7 @@ export default function Header() {
             Inbox {unread > 0 ? `(${unread})` : ""}
           </NavLink>
         </nav>
+
         <div className="flex items-center gap-3 max-w-[280px]">
           <span className="truncate bg-white/5 px-3 py-1 rounded-full text-xs text-white/80">
             {user.email}

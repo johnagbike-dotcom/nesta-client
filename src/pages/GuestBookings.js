@@ -3,7 +3,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
-  getDoc,
   getDocs,
   limit,
   onSnapshot,
@@ -191,86 +190,57 @@ export default function GuestBookings() {
     const future = !isPastDate(b._rawCheckIn ?? b.checkIn);
     return s === "confirmed" && future && isGuest;
   };
+
   const canCancel = (b) => {
     const s = (b.status || "").toLowerCase();
     const future = !isPastDate(b._rawCheckIn ?? b.checkIn);
     return s === "confirmed" && future && isGuest && !b.cancellationRequested;
   };
+
   const canChat = (b) => {
     const s = (b.status || "").toLowerCase();
     return isGuest && (s === "confirmed" || s === "paid");
   };
 
-  /* ------------- 🔥 UPDATED: robust openChatFromBooking ------------- */
-  async function openChatFromBooking(bk) {
-    try {
-      // 1) start from what booking already has
-      let listingId = bk.listingId || bk.listing?.id || null;
-      let partnerUid =
-        bk.hostId ||
-        bk.ownerId ||
-        bk.partnerUid ||
-        null; // support all naming variants
-      let listingTitle =
-        bk.title || bk.listingTitle || bk.listing?.title || "Listing";
+  const canSeeCheckinGuide = (b) => {
+    const s = (b.status || "").toLowerCase();
+    return isGuest && (s === "confirmed" || s === "paid");
+  };
 
-      // 2) if booking was shallow, re-fetch booking
-      if ((!listingId || !partnerUid) && bk.id) {
-        const fresh = await getDoc(doc(db, "bookings", bk.id));
-        if (fresh.exists()) {
-          const bd = fresh.data();
-          listingId = listingId || bd.listingId || bd.listing?.id || null;
-          listingTitle =
-            listingTitle ||
-            bd.title ||
-            bd.listingTitle ||
-            bd.listing?.title ||
-            "Listing";
-          partnerUid =
-            partnerUid ||
-            bd.hostId ||
-            bd.ownerId ||
-            bd.partnerUid ||
-            null;
-        }
-      }
+  /* --------- Booking → luxury chat (guest side) ---------- */
+  function openChatFromBooking(bk) {
+    if (!bk || !bk.id) return;
 
-      // 3) if we still don't have partner, look at the listing itself
-      if (listingId && !partnerUid) {
-        const lsnap = await getDoc(doc(db, "listings", listingId));
-        if (lsnap.exists()) {
-          const ld = lsnap.data();
-          listingTitle = listingTitle || ld.title || "Listing";
-          partnerUid =
-            ld.ownerId || ld.hostId || ld.partnerUid || partnerUid || null;
-        }
-      }
+    const listingId = bk.listingId || bk.listing?.id || null;
+    const listingTitle =
+      bk.title || bk.listingTitle || bk.listing?.title || "Listing";
 
-      // 4) final guard
-      if (!listingId || !partnerUid) {
-        toast(
-          "This booking doesn’t have a visible host/partner yet. Ask support to attach ownerId.",
-          "error"
-        );
-        return;
-      }
+    const hostId =
+      bk.hostId ||
+      bk.ownerId ||
+      bk.partnerUid ||
+      bk.listingOwner ||
+      null;
 
-      // 5) go to chat – ChatPage.js already knows how to hydrate booking-based threads
-      nav("/chat", {
-        state: {
-          partnerUid,
-          listing: { id: listingId, title: listingTitle },
-          from: "bookings",
-          booking: bk,
-          bookingId: bk.id,
-        },
-      });
-    } catch (e) {
-      console.error(e);
-      toast("Couldn't open chat.", "error");
+    if (!listingId || !hostId) {
+      toast(
+        "This booking is missing host/partner details. Please contact support.",
+        "error"
+      );
+      return;
     }
+
+    nav(`/booking/${bk.id}/chat`, {
+      state: {
+        bookingId: bk.id,
+        listing: { id: listingId, title: listingTitle },
+        guestId: user?.uid || bk.guestId || bk.guestUid || null,
+        hostId,
+        from: "guest_bookings",
+      },
+    });
   }
-  /* ---------------------------------------------------- */
+  /* ------------------------------------------------------- */
 
   function openEdit(b) {
     setSelected(b);
@@ -428,7 +398,7 @@ export default function GuestBookings() {
                       </div>
                     </div>
 
-                    <div className="mt-4 flex items-center justify-end gap-2">
+                    <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
                       <button
                         onClick={() => setSelected(b)}
                         className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10"
@@ -460,6 +430,17 @@ export default function GuestBookings() {
                           className="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white"
                         >
                           Chat with Host/Partner
+                        </button>
+                      )}
+
+                      {canSeeCheckinGuide(b) && (
+                        <button
+                          onClick={() =>
+                            nav(`/checkin/${b.id}`, { state: { booking: b } })
+                          }
+                          className="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-semibold"
+                        >
+                          Check-in guide
                         </button>
                       )}
                     </div>
@@ -525,7 +506,7 @@ export default function GuestBookings() {
             </div>
           </div>
 
-          <div className="mt-5 flex items-center justify-end gap-2">
+          <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
             {selected.listingId && (
               <button
                 className="px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10"
@@ -537,6 +518,21 @@ export default function GuestBookings() {
                 Open listing
               </button>
             )}
+
+            {canSeeCheckinGuide(selected) && (
+              <button
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-semibold"
+                onClick={() => {
+                  nav(`/checkin/${selected.id}`, {
+                    state: { booking: selected },
+                  });
+                  setSelected(null);
+                }}
+              >
+                Check-in guide
+              </button>
+            )}
+
             <button
               className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700"
               onClick={() => setSelected(null)}
