@@ -352,11 +352,14 @@ export default function ManageUsers() {
   };
 
   const setStatus = async (row, status) => {
-    const prev = rows.slice();
-    setRows(rows.map((r) => (r.id === row.id ? { ...r, status } : r)));
-    const ok = await patchUser(row.id, { status });
-    if (!ok) setRows(prev);
-  };
+  const prev = rows.slice();
+  setRows(rows.map((r) => (r.id === row.id ? { ...r, status } : r)));
+
+  const disabled = status === "disabled";
+  const ok = await patchUser(row.id, { disabled });
+
+  if (!ok) setRows(prev);
+};
 
   // server-streamed CSV link
   const usersCsvHref = useMemo(() => withRangeParams("/admin/users/export.csv", range), [range]);
