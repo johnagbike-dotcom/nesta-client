@@ -6,7 +6,9 @@ import useUnreadCount from "../hooks/useUnreadCount";
 import useReservationsAttentionCount from "../hooks/useReservationsAttentionCount";
 
 // ⬇️ Update this path/filename to match where you place the logo asset
-import nestaLogo from "../assets/Official Logo.jpg";
+import nestaLogo from "../assets/Official-Logo.jpg";
+
+const TOPBAR_H = 88; // change to 96 if you still see overlap
 
 // Small brand component so we don’t repeat it 4 times
 function BrandButton({ onClick }) {
@@ -49,8 +51,8 @@ export default function Header() {
   const isHost = !!user && (roleRaw === "host" || roleRaw === "verified_host");
   const isPartner =
     !!user && (roleRaw === "partner" || roleRaw === "verified_partner");
-  const isAdmin =
-    !!user && (profile?.isAdmin === true || roleRaw === "admin");
+  const isAdmin = !!user && roleRaw === "admin";
+
 
   const linkBase =
     "px-3 py-2 rounded-md text-sm font-medium transition-colors";
@@ -71,8 +73,11 @@ export default function Header() {
   /* ───────── VISITOR ───────── */
   if (!user) {
     return (
-      <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
+      <header
+  className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5"
+  style={{ height: TOPBAR_H }}
+>
+        <div className="max-w-6xl mx-auto h-full flex items-center justify-between px-6 gap-4">
           <BrandButton onClick={() => nav("/")} />
 
           <nav className="flex items-center gap-1">
@@ -109,8 +114,11 @@ export default function Header() {
   /* ───────── ADMIN ───────── */
   if (isAdmin) {
     return (
-      <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
+      <header
+  className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5"
+  style={{ height: TOPBAR_H }}
+      >
+        <div className="max-w-6xl mx-auto h-full flex items-center justify-between px-6 gap-4">
           <BrandButton onClick={() => nav("/")} />
 
           <nav className="flex items-center gap-1">
@@ -144,8 +152,11 @@ export default function Header() {
   /* ───────── HOST ───────── */
   if (isHost) {
     return (
-      <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
+      <header
+  className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5"
+  style={{ height: TOPBAR_H }}
+>
+        <div className="max-w-6xl mx-auto h-full flex items-center justify-between px-6 gap-4">
           <BrandButton onClick={() => nav("/")} />
 
           <nav className="flex items-center gap-1">
@@ -190,8 +201,11 @@ export default function Header() {
   /* ───────── PARTNER ───────── */
   if (isPartner) {
     return (
-      <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
+      <header
+  className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5"
+  style={{ height: TOPBAR_H }}
+>
+        <div className="max-w-6xl mx-auto h-full flex items-center justify-between px-6 gap-4">
           <BrandButton onClick={() => nav("/")} />
 
           <nav className="flex items-center gap-1">
@@ -235,8 +249,11 @@ export default function Header() {
 
   /* ───────── LOGGED-IN GUEST ───────── */
   return (
-    <header className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5">
-      <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
+    <header
+  className="fixed top-0 left-0 w-full z-50 bg-[#0e0e0e]/90 backdrop-blur-md border-b border-white/5"
+  style={{ height: TOPBAR_H }}
+>
+      <div className="max-w-6xl mx-auto h-full flex items-center justify-between px-6 gap-4">
         <BrandButton onClick={() => nav("/")} />
 
         <nav className="flex items-center gap-1">

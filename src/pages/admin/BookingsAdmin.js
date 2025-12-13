@@ -3,8 +3,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import dayjs from "dayjs";
 import axios from "axios";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import AdminHeader from "../../components/AdminHeader";
 import { useToast } from "../../context/ToastContext";
+import AdminLayout from "../../layouts/AdminLayout";
 
 // Firestore helpers (for resolving chat UIDs)
 import { db } from "../../firebase";
@@ -16,7 +16,7 @@ import {
   limit as fsLimit,
 } from "firebase/firestore";
 
-/* axios base -------------------------------------------------------- */
+/* axios base */
 const api = axios.create({
   baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
     /\/$/,
@@ -26,13 +26,13 @@ const api = axios.create({
   timeout: 15000,
 });
 
-/* helpers ----------------------------------------------------------- */
+/* helpers */
 const money = (n) =>
   typeof n === "number"
     ? n.toLocaleString("en-NG", { style: "currency", currency: "NGN" })
     : String(n || 0);
 
-/* tone same as Transactions look ----------------------------------- */
+/* status tones */
 const statusTone = {
   confirmed: { bg: "#0ea75a", text: "#e8fff3", ring: "#0a7e43" },
   paid: { bg: "#0ea75a", text: "#e8fff3", ring: "#0a7e43" },
@@ -129,7 +129,6 @@ export default function BookingsAdmin() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  /* on first load, see if dashboard sent a filter ------------------- */
   useEffect(() => {
     const f = searchParams.get("filter");
     if (f) {
@@ -139,16 +138,13 @@ export default function BookingsAdmin() {
     }
   }, [searchParams]);
 
-  // when tab is changed manually → scroll to top too
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [tab]);
 
-  /* load from ADMIN ledger only ------------------------------------- */
   const load = async () => {
     setLoading(true);
     try {
-      // Ask the server for up to 500 latest bookings in the admin ledger
       const { data } = await api.get("/admin/bookings", {
         params: { status: "all", q: "", page: 1, limit: 500 },
       });
@@ -210,7 +206,6 @@ export default function BookingsAdmin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* counts ---------------------------------------------------------- */
   const counts = useMemo(() => {
     const c = {
       all: rows.length,
@@ -228,13 +223,11 @@ export default function BookingsAdmin() {
     return c;
   }, [rows]);
 
-  /* filtered -------------------------------------------------------- */
   const filtered = useMemo(() => {
     let list = rows;
 
     if (tab === "cancel_req") list = list.filter((r) => r.cancellationRequested);
-    else if (tab === "date_change")
-      list = list.filter((r) => r.dateChangeRequested);
+    else if (tab === "date_change") list = list.filter((r) => r.dateChangeRequested);
     else if (tab !== "all") list = list.filter((r) => r.status === tab);
 
     const q = query.trim().toLowerCase();
@@ -249,7 +242,6 @@ export default function BookingsAdmin() {
     return list;
   }, [rows, tab, query]);
 
-  /* pagination ------------------------------------------------------ */
   const total = filtered.length;
   const lastPage = Math.max(1, Math.ceil(total / perPage));
   const pageItems = useMemo(() => {
@@ -257,9 +249,6 @@ export default function BookingsAdmin() {
     return filtered.slice(start, start + perPage);
   }, [filtered, page, perPage]);
 
-  /* backend helpers ------------------------------------------------- */
-
-  // Dedicated refund endpoint – this is what writes a NEGATIVE payout row
   const refundBooking = async (id) => {
     try {
       await api.post(`/bookings/${encodeURIComponent(id)}/refund`, {
@@ -272,13 +261,10 @@ export default function BookingsAdmin() {
     }
   };
 
-  // Generic status update (confirm / cancel etc.)
   const patchStatus = async (id, status) => {
     const fns = [
       (x) => `/admin/bookings/${x}/status`,
-      (x) => `/bookings/${x}/status`,
       (x, s) => `/admin/bookings/${x}/${s}`,
-      (x, s) => `/bookings/${x}/${s}`,
     ];
     for (const fn of fns) {
       try {
@@ -302,7 +288,6 @@ export default function BookingsAdmin() {
 
     const prev = rows.slice();
 
-    // Optimistic UI update
     setRows(
       rows.map((r) =>
         r.id === row.id
@@ -317,11 +302,8 @@ export default function BookingsAdmin() {
     );
 
     let ok = false;
-    if (toStatus === "refunded") {
-      ok = await refundBooking(row.id);
-    } else {
-      ok = await patchStatus(row.id, toStatus);
-    }
+    if (toStatus === "refunded") ok = await refundBooking(row.id);
+    else ok = await patchStatus(row.id, toStatus);
 
     setBusyId(null);
 
@@ -333,17 +315,13 @@ export default function BookingsAdmin() {
     }
   };
 
-  /* ---------------------- chat helpers ---------------------- */
   async function findUserUidByEmail(email) {
     if (!email) return null;
     try {
       const qSnap = await getDocs(
         fsQuery(collection(db, "users"), where("email", "==", email), fsLimit(1))
       );
-      if (!qSnap.empty) {
-        const doc = qSnap.docs[0];
-        return doc.id;
-      }
+      if (!qSnap.empty) return qSnap.docs[0].id;
     } catch (e) {
       console.warn("Email lookup failed:", e);
     }
@@ -367,12 +345,7 @@ export default function BookingsAdmin() {
 
     if (partnerUid) {
       nav("/chat", {
-        state: {
-          partnerUid,
-          listing: { id: listingId, title },
-          from: "admin_bookings",
-          bookingId: row.id,
-        },
+        state: { partnerUid, listing: { id: listingId, title }, from: "admin_bookings", bookingId: row.id },
       });
       return;
     }
@@ -380,12 +353,7 @@ export default function BookingsAdmin() {
     const resolvedUid = await findUserUidByEmail(partnerEmail);
     if (resolvedUid) {
       nav("/chat", {
-        state: {
-          partnerUid: resolvedUid,
-          listing: { id: listingId, title },
-          from: "admin_bookings",
-          bookingId: row.id,
-        },
+        state: { partnerUid: resolvedUid, listing: { id: listingId, title }, from: "admin_bookings", bookingId: row.id },
       });
       toast && toast("Resolved user by email and opened chat.", "success");
       return;
@@ -398,24 +366,11 @@ export default function BookingsAdmin() {
         note: `Wanted to message ${target} for booking ${row.id} (${row.listing}) but UID was missing.`,
       },
     });
-    toast &&
-      toast("Couldn’t find that user in Firestore. Opened inbox instead.", "info");
+    toast && toast("Couldn’t find that user in Firestore. Opened inbox instead.", "info");
   };
 
-  /* CSV ------------------------------------------------------------- */
   const exportCsv = () => {
-    const header = [
-      "id",
-      "listing",
-      "guest",
-      "status",
-      "amount",
-      "checkIn",
-      "checkOut",
-      "createdAt",
-      "gateway",
-      "ref",
-    ];
+    const header = ["id", "listing", "guest", "status", "amount", "checkIn", "checkOut", "createdAt", "gateway", "ref"];
     const lines = [header.join(",")];
 
     filtered.forEach((r) => {
@@ -439,9 +394,7 @@ export default function BookingsAdmin() {
       lines.push(line);
     });
 
-    const blob = new Blob([lines.join("\n")], {
-      type: "text/csv;charset=utf-8;",
-    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -453,15 +406,11 @@ export default function BookingsAdmin() {
     toast && toast("CSV exported.", "success");
   };
 
-  /* render ---------------------------------------------------------- */
   return (
-    <div style={{ padding: 16 }}>
-      <AdminHeader
-        back
-        title="Bookings overview"
-        subtitle="Latest guest reservations across the platform."
-      />
-
+    <AdminLayout
+      title="Bookings overview"
+      subtitle="Latest guest reservations across the platform."
+    >
       {/* filters + search + tools */}
       <div
         style={{
@@ -540,6 +489,7 @@ export default function BookingsAdmin() {
           >
             Total loaded: {rows.length}
           </span>
+
           <input
             value={query}
             onChange={(e) => {
@@ -556,6 +506,7 @@ export default function BookingsAdmin() {
               minWidth: 210,
             }}
           />
+
           <button
             onClick={exportCsv}
             style={{
@@ -570,6 +521,7 @@ export default function BookingsAdmin() {
           >
             Export CSV
           </button>
+
           <button
             onClick={load}
             style={{
@@ -592,8 +544,7 @@ export default function BookingsAdmin() {
         style={{
           borderRadius: 18,
           border: "1px solid rgba(255,255,255,.03)",
-          background:
-            "radial-gradient(circle at top, rgba(15,23,42,.65), rgba(2,6,23,1))",
+          background: "radial-gradient(circle at top, rgba(15,23,42,.65), rgba(2,6,23,1))",
           overflow: "hidden",
         }}
       >
@@ -629,6 +580,7 @@ export default function BookingsAdmin() {
               : r.dateChangeRequested
               ? "date-change"
               : r.status;
+
             return (
               <div
                 key={r.id}
@@ -641,16 +593,9 @@ export default function BookingsAdmin() {
                   alignItems: "center",
                 }}
               >
-                {/* listing */}
                 <div>
                   <div style={{ fontWeight: 700, color: "#fff" }}>{r.listing}</div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "rgba(226,232,240,.6)",
-                      marginTop: 2,
-                    }}
-                  >
+                  <div style={{ fontSize: 12, color: "rgba(226,232,240,.6)", marginTop: 2 }}>
                     id: {r.id}
                     <br />
                     guest: {r.guest}
@@ -669,35 +614,23 @@ export default function BookingsAdmin() {
                   </div>
                 </div>
 
-                {/* dates */}
                 <div style={{ fontSize: 13, color: "#e2e8f0" }}>
                   In: {r.checkIn ? dayjs(r.checkIn).format("YYYY-MM-DD") : "—"}
                   <br />
                   Out: {r.checkOut ? dayjs(r.checkOut).format("YYYY-MM-DD") : "—"}
                 </div>
 
-                {/* amount */}
                 <div style={{ fontWeight: 700, color: "#fff" }}>
                   {money(r.amount)}
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: "rgba(226,232,240,.5)",
-                      marginTop: 2,
-                    }}
-                  >
+                  <div style={{ fontSize: 11, color: "rgba(226,232,240,.5)", marginTop: 2 }}>
                     {r.gateway} • {String(r.ref || "-").slice(0, 14)}
                   </div>
                 </div>
 
-                {/* created */}
                 <div style={{ fontSize: 12, color: "rgba(226,232,240,.6)" }}>
-                  {r.createdAt
-                    ? dayjs(r.createdAt).format("DD/MM/YYYY, HH:mm")
-                    : "—"}
+                  {r.createdAt ? dayjs(r.createdAt).format("DD/MM/YYYY, HH:mm") : "—"}
                 </div>
 
-                {/* actions */}
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   {r.status === "confirmed" ? (
                     <>
@@ -725,6 +658,7 @@ export default function BookingsAdmin() {
                       Mark confirmed
                     </ActionBtn>
                   )}
+
                   <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "guest")}>
                     Msg guest
                   </ActionBtn>
@@ -750,9 +684,9 @@ export default function BookingsAdmin() {
         }}
       >
         <div style={{ color: "#94a3b8", fontSize: 13 }}>
-          Showing {(page - 1) * perPage + 1} –{" "}
-          {Math.min(page * perPage, total)} of {total} results
+          Showing {(page - 1) * perPage + 1} – {Math.min(page * perPage, total)} of {total} results
         </div>
+
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
@@ -769,9 +703,11 @@ export default function BookingsAdmin() {
           >
             Prev
           </button>
+
           <span style={{ color: "#e2e8f0", fontWeight: 700 }}>
             {page} / {lastPage}
           </span>
+
           <button
             onClick={() => setPage((p) => Math.min(lastPage, p + 1))}
             disabled={page === lastPage}
@@ -789,6 +725,6 @@ export default function BookingsAdmin() {
           </button>
         </div>
       </div>
-    </div>
+    </AdminLayout>
   );
 }

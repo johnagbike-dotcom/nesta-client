@@ -2,14 +2,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import dayjs from "dayjs";
-import AdminHeader from "../../components/AdminHeader";
 import DateRangeBar from "../../components/DateRangeBar";
 import { withRangeParams } from "../../lib/api";
 import LuxeBtn from "../../components/LuxeBtn";
+import AdminLayout from "../../layouts/AdminLayout";
+import { useAuth } from "../../auth/AuthContext";
+import useUserProfile from "../../hooks/useUserProfile";
 
 /* ───────────────── axios ───────────────── */
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
+    /\/$/,
+    ""
+  ),
   timeout: 15000,
 });
 
@@ -23,36 +28,18 @@ const getArray = (data) => {
   return [];
 };
 
-const Badge = ({ label, tone = "slate" }) => {
-  // Colours aligned with Transactions status chips
-  const map = {
-    green: {
-      bg: "#0ea75a",          // like "confirmed"
-      text: "#e8fff3",
-      ring: "#0a7e43",
-    },
-    red: {
-      bg: "#cf2336",          // like "cancelled"
-      text: "#ffe9ec",
-      ring: "#a51a2a",
-    },
-    amber: {
-      bg: "#d19b00",          // like "refunded"
-      text: "#fff7e0",
-      ring: "#a77a00",
-    },
-    slate: {
-      bg: "#6b7280",          // like "pending"
-      text: "#eef2ff",
-      ring: "#555b66",
-    },
-    blue: {
-      bg: "#2563eb",          // rich cobalt for Host
-      text: "#dbeafe",
-      ring: "#1d4ed8",
-    },
-  };
+const pretty = (s) =>
+  !s ? "—" : String(s).charAt(0).toUpperCase() + String(s).slice(1).toLowerCase();
 
+const Badge = ({ label, tone = "slate" }) => {
+  const map = {
+    green: { bg: "#0ea75a", text: "#e8fff3", ring: "#0a7e43" },
+    red: { bg: "#cf2336", text: "#ffe9ec", ring: "#a51a2a" },
+    amber: { bg: "#d19b00", text: "#fff7e0", ring: "#a77a00" },
+    slate: { bg: "#6b7280", text: "#eef2ff", ring: "#555b66" },
+    blue: { bg: "#2563eb", text: "#dbeafe", ring: "#1d4ed8" },
+    purple: { bg: "#7c3aed", text: "#f3e8ff", ring: "#6d28d9" }, // super admin
+  };
   const c = map[tone] || map.slate;
 
   return (
@@ -79,18 +66,15 @@ const Badge = ({ label, tone = "slate" }) => {
   );
 };
 
-// Map user role -> badge tone
-const toneForRole = (role) => {
+const toneForRole = (role, adminLevel) => {
   const r = String(role || "guest").toLowerCase();
-
-  if (r === "admin") return "red";        // 🔴 Admin
-  if (r === "host") return "blue";        // 🔵 Host
-  if (r === "partner") return "amber";    // 🟡 Partner
-  return "slate";                         // ⚪ Guest
+  if (r === "admin" && String(adminLevel || "").toLowerCase() === "super") return "purple";
+  if (r === "admin") return "red";
+  if (r === "host") return "blue";
+  if (r === "partner") return "amber";
+  return "slate";
 };
 
-
-// Map status -> badge tone
 const toneForStatus = (status) => {
   const s = String(status || "active").toLowerCase();
   if (s === "active") return "green";
@@ -98,11 +82,16 @@ const toneForStatus = (status) => {
   return "slate";
 };
 
-const pretty = (s) =>
-  !s ? "—" : s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
-
-/* ─────────────── Luxe dropdown (Manage ▾) ─────────────── */
-function ActionMenu({ row, onSetRole, onToggleStatus }) {
+/* ─────────────── Action menu ─────────────── */
+function ActionMenu({
+  row,
+  isSuperAdmin,
+  busy,
+  onSetRole,
+  onToggleStatus,
+  onMakeAdminStaff,
+  onMakeSuperAdmin,
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -133,14 +122,31 @@ function ActionMenu({ row, onSetRole, onToggleStatus }) {
     background: "rgba(255,255,255,.08)",
     color: "#e6e9ef",
     border: "1px solid rgba(255,255,255,.18)",
-    cursor: "pointer",
+    cursor: busy ? "not-allowed" : "pointer",
+    opacity: busy ? 0.6 : 1,
     transition: "filter .15s ease, transform .04s ease",
+    whiteSpace: "nowrap",
   };
+
+  const menuBtn = {
+    width: "100%",
+    textAlign: "left",
+    padding: "10px 12px",
+    border: "none",
+    background: "transparent",
+    color: "#e6e9ef",
+    fontSize: 14,
+    cursor: busy ? "not-allowed" : "pointer",
+    opacity: busy ? 0.6 : 1,
+  };
+
+  const isRowAdmin = String(row.role || "").toLowerCase() === "admin";
+  const isRowSuper = String(row.adminLevel || "").toLowerCase() === "super";
 
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => !busy && setOpen((v) => !v)}
         style={btnBase}
         onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.06)")}
         onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
@@ -154,14 +160,15 @@ function ActionMenu({ row, onSetRole, onToggleStatus }) {
             position: "absolute",
             top: "42px",
             right: 0,
-            minWidth: 190,
+            minWidth: 220,
             borderRadius: 14,
             background: "rgba(22,22,26,.98)",
             border: "1px solid rgba(255,255,255,.10)",
-            boxShadow: "0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04)",
+            boxShadow:
+              "0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04)",
             backdropFilter: "blur(6px)",
             overflow: "hidden",
-            zIndex: 30,
+            zIndex: 50,
           }}
         >
           <div
@@ -185,20 +192,12 @@ function ActionMenu({ row, onSetRole, onToggleStatus }) {
           ].map((opt) => (
             <button
               key={opt.key}
+              disabled={busy}
               onClick={() => {
                 onSetRole(opt.key);
                 setOpen(false);
               }}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                padding: "10px 12px",
-                border: "none",
-                background: "transparent",
-                color: "#e6e9ef",
-                fontSize: 14,
-                cursor: "pointer",
-              }}
+              style={menuBtn}
               onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             >
@@ -208,6 +207,7 @@ function ActionMenu({ row, onSetRole, onToggleStatus }) {
 
           <div style={{ borderTop: "1px solid rgba(255,255,255,.06)", padding: 8 }}>
             <button
+              disabled={busy}
               onClick={() => {
                 onToggleStatus();
                 setOpen(false);
@@ -216,19 +216,86 @@ function ActionMenu({ row, onSetRole, onToggleStatus }) {
                 width: "100%",
                 padding: "10px 12px",
                 borderRadius: 10,
-                fontWeight: 800,
+                fontWeight: 900,
                 border: "1px solid rgba(255,255,255,.10)",
                 background:
                   row.status === "active"
                     ? "linear-gradient(180deg,#ff8a8a,#ff5959)"
                     : "linear-gradient(180deg,#34d399,#10b981)",
                 color: "#1a1414",
-                cursor: "pointer",
+                cursor: busy ? "not-allowed" : "pointer",
+                opacity: busy ? 0.6 : 1,
               }}
             >
               {row.status === "active" ? "Disable" : "Enable"}
             </button>
           </div>
+
+          {/* SUPER ADMIN ONLY */}
+          {isSuperAdmin && (
+            <>
+              <div
+                style={{
+                  padding: "10px 10px",
+                  fontSize: 11,
+                  letterSpacing: ".04em",
+                  textTransform: "uppercase",
+                  color: "rgba(255,255,255,.55)",
+                  borderTop: "1px solid rgba(255,255,255,.06)",
+                }}
+              >
+                Admin controls
+              </div>
+
+              {!isRowAdmin && (
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    onMakeAdminStaff();
+                    setOpen(false);
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "12px 12px",
+                    border: "none",
+                    background: "transparent",
+                    color: "#e6e9ef",
+                    fontWeight: 900,
+                    cursor: busy ? "not-allowed" : "pointer",
+                    textAlign: "left",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  Make Admin (Staff)
+                </button>
+              )}
+
+              {isRowAdmin && !isRowSuper && (
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    onMakeSuperAdmin();
+                    setOpen(false);
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "12px 12px",
+                    border: "none",
+                    background: "transparent",
+                    color: "#e6e9ef",
+                    fontWeight: 900,
+                    cursor: busy ? "not-allowed" : "pointer",
+                    textAlign: "left",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  Promote to Super Admin
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -237,69 +304,64 @@ function ActionMenu({ row, onSetRole, onToggleStatus }) {
 
 /* ───────────────── component ───────────────── */
 export default function ManageUsers() {
+  /* ✅ ALL HOOKS MUST BE HERE (TOP), NO CONDITIONS */
+  const { user } = useAuth();
+  const { profile } = useUserProfile(user?.uid);
+  const isSuperAdmin = String(profile?.adminLevel || "").toLowerCase() === "super";
+
   const [range, setRange] = useState({ from: "", to: "" });
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [busyId, setBusyId] = useState(null);
 
   const [q, setQ] = useState("");
-  const [roleTab, setRoleTab] = useState("all"); // all | guest | host | partner | admin
-  const [statusTab, setStatusTab] = useState("any"); // any | active | disabled
+  const [roleTab, setRoleTab] = useState("all");
+  const [statusTab, setStatusTab] = useState("any");
 
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  // base load (fallback directory)
+  const normalizeUser = (u) => ({
+    id: u.id || u._id || u.uid,
+    email: u.email || "-",
+    name: u.name || u.displayName || "-",
+    role: (u.role || u.type || "guest").toLowerCase(),
+    adminLevel: (u.adminLevel || "").toLowerCase(), // may be missing (fine)
+    status: (u.status || (u.disabled ? "disabled" : "active")).toLowerCase(),
+    createdAt: u.createdAt || u.created_at || u.createdAtMillis || null,
+    lastLogin: u.lastLogin || u.last_sign_in || null,
+  });
+
   const load = async () => {
     setLoading(true);
     try {
-      const endpoints = ["/admin/users", "/users"];
-      let out = [];
-      for (const ep of endpoints) {
-        try {
-          const res = await api.get(ep);
-          out = getArray(res.data);
-          break;
-        } catch {}
-      }
-      const norm = out.map((u) => ({
-        id: u.id || u._id || u.uid,
-        email: u.email || "-",
-        name: u.name || u.displayName || "-",
-        role: (u.role || u.type || "guest").toLowerCase(),
-        status: (u.status || (u.disabled ? "disabled" : "active")).toLowerCase(),
-        createdAt: u.createdAt || u.created_at || u.createdAtMillis || null,
-        lastLogin: u.lastLogin || u.last_sign_in || null,
-      }));
-      setRows(norm);
+      const res = await api.get("/admin/users");
+      const out = getArray(res.data);
+      setRows(out.map(normalizeUser));
+      setPage(1);
+    } catch {
+      // ignore
     } finally {
       setLoading(false);
-      setPage(1);
     }
   };
 
-  // range-aware fetch (server-filtered if supported)
+  // range-aware fetch (if your server supports it)
   useEffect(() => {
     setLoading(true);
     fetch(withRangeParams("/admin/users?status=all&role=all&page=1&limit=200", range))
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
-        if (json?.data) {
-          setRows(
-            json.data.map((u) => ({
-              id: u.id || u._id || u.uid,
-              email: u.email || "-",
-              name: u.name || u.displayName || "-",
-              role: (u.role || u.type || "guest").toLowerCase(),
-              status: (u.status || (u.disabled ? "disabled" : "active")).toLowerCase(),
-              createdAt: u.createdAt || u.created_at || u.createdAtMillis || null,
-              lastLogin: u.lastLogin || u.last_sign_in || null,
-            }))
-          );
+        const list = Array.isArray(json?.data) ? json.data : null;
+        if (list) {
+          setRows(list.map(normalizeUser));
+          setPage(1);
         }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [range]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range.from, range.to]);
 
   useEffect(() => {
     load();
@@ -332,74 +394,114 @@ export default function ManageUsers() {
     return filtered.slice(s, s + perPage);
   }, [filtered, page, perPage]);
 
-  /* ───────────── actions (resilient) ───────────── */
   const patchUser = async (id, body) => {
-    const endpoints = [(x) => `/admin/users/${x}`, (x) => `/users/${x}`];
-    for (const fn of endpoints) {
-      try {
-        await api.patch(fn(id), body);
-        return true;
-      } catch {}
+    try {
+      await api.patch(`/admin/users/${id}`, body);
+      return true;
+    } catch {
+      return false;
     }
-    return false;
   };
 
   const setRole = async (row, role) => {
+    if (!row?.id) return;
+    setBusyId(row.id);
     const prev = rows.slice();
     setRows(rows.map((r) => (r.id === row.id ? { ...r, role } : r)));
     const ok = await patchUser(row.id, { role });
     if (!ok) setRows(prev);
+    setBusyId(null);
   };
 
   const setStatus = async (row, status) => {
-  const prev = rows.slice();
-  setRows(rows.map((r) => (r.id === row.id ? { ...r, status } : r)));
+    if (!row?.id) return;
+    setBusyId(row.id);
+    const prev = rows.slice();
+    setRows(rows.map((r) => (r.id === row.id ? { ...r, status } : r)));
 
-  const disabled = status === "disabled";
-  const ok = await patchUser(row.id, { disabled });
+    const disabled = status === "disabled";
+    const ok = await patchUser(row.id, { disabled });
 
-  if (!ok) setRows(prev);
-};
+    if (!ok) setRows(prev);
+    setBusyId(null);
+  };
 
-  // server-streamed CSV link
+  const promoteToAdminStaff = async (row) => {
+    if (!row?.id) return;
+    setBusyId(row.id);
+    const prev = rows.slice();
+    setRows(
+      rows.map((r) =>
+        r.id === row.id ? { ...r, role: "admin", adminLevel: "staff" } : r
+      )
+    );
+
+    const ok = await patchUser(row.id, {
+      role: "admin",
+      adminLevel: "staff",
+      adminPermissions: {
+        users: true,
+        bookings: true,
+        payouts: false,
+        settings: false,
+        reports: true,
+      },
+    });
+
+    if (!ok) setRows(prev);
+    setBusyId(null);
+  };
+
+  const promoteToSuperAdmin = async (row) => {
+    if (!row?.id) return;
+    setBusyId(row.id);
+    const prev = rows.slice();
+    setRows(
+      rows.map((r) =>
+        r.id === row.id ? { ...r, role: "admin", adminLevel: "super" } : r
+      )
+    );
+
+    const ok = await patchUser(row.id, {
+      role: "admin",
+      adminLevel: "super",
+      adminPermissions: null,
+    });
+
+    if (!ok) setRows(prev);
+    setBusyId(null);
+  };
+
   const usersCsvHref = useMemo(() => withRangeParams("/admin/users/export.csv", range), [range]);
 
-  /* ---------- UI helpers (tabs with LuxeBtn) ---------- */
- /* ---------- UI helpers (tabs styled like Transactions) ---------- */
-const TabBtn = ({ active, label, onClick }) => (
-  <button
-    onClick={onClick}
-    style={{
-      padding: "10px 14px",
-      borderRadius: 14,
-      border: "1px solid rgba(255,255,255,12)",
-      background: active ? "#413cff" : "rgba(255,255,255,.06)",
-      color: active ? "#eef2ff" : "#cfd3da",
-      fontWeight: 800,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      transition: "filter .12s ease, transform .04s ease",
-    }}
-    onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
-    onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
-    onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.06)")}
-    onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
-  >
-    {label}
-  </button>
-);
+  const TabBtn = ({ active, label, onClick }) => (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "10px 14px",
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,.12)",
+        background: active ? "#413cff" : "rgba(255,255,255,.06)",
+        color: active ? "#eef2ff" : "#cfd3da",
+        fontWeight: 800,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        transition: "filter .12s ease, transform .04s ease",
+      }}
+      onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
+      onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
+      onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.06)")}
+      onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+    >
+      {label}
+    </button>
+  );
 
-  
-  /* ───────────── render ───────────── */
   return (
-    <main className="container mx-auto px-4 py-5 text-white">
-      <AdminHeader
-        back
-        title="Manage Users"
-        subtitle="Assign roles (host, partner, admin), disable users, view directory."
-      />
-
-      {/* Date range + Export */}
+    <AdminLayout
+      title="Manage Users"
+      subtitle="Assign roles (host, partner, admin), disable users, view directory."
+    >
       <DateRangeBar range={range} onChange={setRange} />
 
       <div className="flex items-center gap-3" style={{ margin: "10px 0 14px" }}>
@@ -425,61 +527,64 @@ const TabBtn = ({ active, label, onClick }) => (
         <TabBtn
           label={`All ${counts.all}`}
           active={roleTab === "all" && statusTab === "any"}
-          kindActive="gold"
           onClick={() => {
             setRoleTab("all");
             setStatusTab("any");
+            setPage(1);
           }}
         />
         <TabBtn
           label={`Guests ${counts.guest}`}
           active={roleTab === "guest"}
-          kindActive="slate"
           onClick={() => {
             setRoleTab("guest");
             setStatusTab("any");
+            setPage(1);
           }}
         />
         <TabBtn
           label={`Hosts ${counts.host}`}
           active={roleTab === "host"}
-          kindActive="emerald"
           onClick={() => {
             setRoleTab("host");
             setStatusTab("any");
+            setPage(1);
           }}
         />
         <TabBtn
           label={`Partners ${counts.partner}`}
           active={roleTab === "partner"}
-          kindActive="sunset"
           onClick={() => {
             setRoleTab("partner");
             setStatusTab("any");
+            setPage(1);
           }}
         />
         <TabBtn
           label={`Admins ${counts.admin}`}
           active={roleTab === "admin"}
-          kindActive="cobalt"
           onClick={() => {
             setRoleTab("admin");
             setStatusTab("any");
+            setPage(1);
           }}
         />
         <TabBtn
           label={`Active ${counts.active}`}
           active={statusTab === "active"}
-          kindActive="emerald"
           onClick={() => {
             setStatusTab("active");
             setRoleTab("all");
+            setPage(1);
           }}
         />
 
         <input
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setPage(1);
+          }}
           placeholder="Search email, name, id…"
           style={{
             height: 44,
@@ -533,6 +638,7 @@ const TabBtn = ({ active, label, onClick }) => (
                 ))}
               </tr>
             </thead>
+
             <tbody>
               {loading && (
                 <tr>
@@ -559,30 +665,41 @@ const TabBtn = ({ active, label, onClick }) => (
                         {r.name} • <span style={{ opacity: 0.6 }}>{r.id}</span>
                       </div>
                     </td>
-              <td style={{ padding: "12px 16px" }}>
-                <Badge
-                  label={pretty(r.role || "guest")}
-                    tone={toneForRole(r.role)}
-                />
-              </td>
-              <td style={{ padding: "12px 16px" }}>
-                <Badge
-                  label={pretty(r.status || "active")}
-                    tone={toneForStatus(r.status)}
-              />
-              </td>
+
+                    <td style={{ padding: "12px 16px" }}>
+                      <Badge
+                        label={
+                          r.role === "admin" && r.adminLevel === "super"
+                            ? "Super Admin"
+                            : pretty(r.role || "guest")
+                        }
+                        tone={toneForRole(r.role, r.adminLevel)}
+                      />
+                    </td>
+
+                    <td style={{ padding: "12px 16px" }}>
+                      <Badge label={pretty(r.status || "active")} tone={toneForStatus(r.status)} />
+                    </td>
 
                     <td style={{ padding: "12px 16px" }}>
                       {r.createdAt ? dayjs(r.createdAt).format("YYYY-MM-DD") : "—"}
                     </td>
+
                     <td style={{ padding: "12px 16px" }}>
                       {r.lastLogin ? dayjs(r.lastLogin).format("YYYY-MM-DD") : "—"}
                     </td>
+
                     <td style={{ padding: "12px 16px" }}>
                       <ActionMenu
                         row={r}
+                        isSuperAdmin={isSuperAdmin}
+                        busy={busyId === r.id}
                         onSetRole={(role) => setRole(r, role)}
-                        onToggleStatus={() => setStatus(r, r.status === "active" ? "disabled" : "active")}
+                        onToggleStatus={() =>
+                          setStatus(r, r.status === "active" ? "disabled" : "active")
+                        }
+                        onMakeAdminStaff={() => promoteToAdminStaff(r)}
+                        onMakeSuperAdmin={() => promoteToSuperAdmin(r)}
                       />
                     </td>
                   </tr>
@@ -603,9 +720,10 @@ const TabBtn = ({ active, label, onClick }) => (
           }}
         >
           <div style={{ color: "#aeb6c2", fontSize: 13 }}>
-            Showing {total === 0 ? 0 : (page - 1) * perPage + 1}–
-            {Math.min(page * perPage, total)} of {total}
+            Showing {total === 0 ? 0 : (page - 1) * perPage + 1}–{Math.min(page * perPage, total)} of{" "}
+            {total}
           </div>
+
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <select
               value={perPage}
@@ -627,6 +745,7 @@ const TabBtn = ({ active, label, onClick }) => (
                 </option>
               ))}
             </select>
+
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page <= 1}
@@ -638,13 +757,16 @@ const TabBtn = ({ active, label, onClick }) => (
                 background: "rgba(255,255,255,.06)",
                 color: "#cfd3da",
                 cursor: page <= 1 ? "not-allowed" : "pointer",
+                opacity: page <= 1 ? 0.5 : 1,
               }}
             >
               Prev
             </button>
-            <div style={{ width: 80, textAlign: "center", color: "#cfd3da" }}>
+
+            <div style={{ width: 90, textAlign: "center", color: "#cfd3da" }}>
               Page {page} of {lastPage}
             </div>
+
             <button
               onClick={() => setPage((p) => Math.min(lastPage, p + 1))}
               disabled={page >= lastPage}
@@ -656,6 +778,7 @@ const TabBtn = ({ active, label, onClick }) => (
                 background: "rgba(255,255,255,.06)",
                 color: "#cfd3da",
                 cursor: page >= lastPage ? "not-allowed" : "pointer",
+                opacity: page >= lastPage ? 0.5 : 1,
               }}
             >
               Next
@@ -663,6 +786,6 @@ const TabBtn = ({ active, label, onClick }) => (
           </div>
         </div>
       </div>
-    </main>
+    </AdminLayout>
   );
 }
