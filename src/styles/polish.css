@@ -112,87 +112,233 @@
   0%, 80%, 100% { transform: translateY(0); opacity:.5 }
   40% { transform: translateY(-4px); opacity:1 }
 } 
-/* FeaturedCarousel — minimalist luxury look */
+/* =========================
+   FeaturedCarousel — Luxury Polish (v2)
+   Works with the updated FeaturedCarousel.js
+   ========================= */
+
 .carousel {
   width: 100%;
   margin: 14px auto 0;
 }
+
+/* card is clickable now */
 .carousel-card {
   position: relative;
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid rgba(255,255,255,0.12);
-  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(15,23,42,0.6));
-  box-shadow: 0 20px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
+  background: radial-gradient(circle at top left, rgba(255,255,255,0.07), rgba(15,23,42,0.62));
+  box-shadow: 0 20px 46px rgba(0,0,0,0.38), inset 0 1px 0 rgba(255,255,255,0.06);
   overflow: hidden;
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
+
+.carousel-card:hover {
+  border-color: rgba(255, 200, 0, 0.24);
+  transform: translateY(-1px);
+  box-shadow: 0 26px 60px rgba(0,0,0,0.45), 0 0 0 3px rgba(255, 200, 0, 0.06);
+}
+
+/* when you set focus ring via inline .fc-focus, keep it nice */
+.carousel-card:focus-visible {
+  outline: 2px solid rgba(255, 199, 64, .95);
+  outline-offset: 4px;
+}
+
+/* skeleton */
 .carousel-card.skeleton {
-  height: 220px;
-  animation: pulse 1.2s ease-in-out infinite;
+  height: 240px;
+  animation: pulse 1.15s ease-in-out infinite;
   background: linear-gradient(90deg, rgba(255,255,255,0.05), rgba(255,255,255,0.08), rgba(255,255,255,0.05));
   background-size: 400% 400%;
 }
 @keyframes pulse { 0%{background-position:0% 50%} 100%{background-position:100% 50%} }
 
+/* empty state */
+.carousel-card.empty {
+  padding: 18px;
+}
+
+/* media */
 .carousel-card .media {
-  height: 200px;
+  height: 210px;
   background: rgba(255,255,255,0.03);
   border-bottom: 1px solid rgba(255,255,255,0.12);
+  position: relative;
 }
+
 .carousel-card .media img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
+  transform: scale(1.01);
+  transition: transform 400ms ease, filter 220ms ease;
+  filter: saturate(1.02) brightness(1.02);
 }
+
+.carousel-card:hover .media img {
+  transform: scale(1.04);
+  filter: saturate(1.05) brightness(1.03);
+}
+
 .carousel-card .media-fallback {
   width: 100%;
   height: 100%;
   background: linear-gradient(135deg, rgba(240,180,41,0.12), rgba(17,24,39,0.6));
 }
 
+/* meta */
 .carousel-card .meta {
   padding: 12px 14px 14px;
   color: #e5e7eb;
 }
+
 .carousel-card .meta .title {
-  font-weight: 800;
+  font-weight: 850;
   font-size: 1.05rem;
   color: #f3f4f6;
-}
-.carousel-card .meta .sub {
-  margin-top: 2px;
-  font-size: 0.9rem;
-  color: #cbd5e1;
+  letter-spacing: 0.2px;
 }
 
+.carousel-card .meta .sub {
+  margin-top: 2px;
+  font-size: 0.92rem;
+  color: rgba(203, 213, 225, 0.92);
+}
+
+/* nav buttons (make them feel premium + stop click bubbling) */
 .carousel-card .nav {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  height: 36px;
-  width: 36px;
-  line-height: 36px;
+  height: 38px;
+  width: 38px;
+  line-height: 38px;
   text-align: center;
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,0.18);
-  background: rgba(15,23,42,0.55);
+  background: rgba(8, 12, 20, 0.55);
   color: #f3f4f6;
-  font-size: 20px;
+  font-size: 22px;
   cursor: pointer;
   user-select: none;
+  transition: background 160ms ease, border-color 160ms ease, transform 120ms ease, box-shadow 160ms ease;
+  z-index: 5;
 }
+
 .carousel-card .nav.left { left: 10px; }
 .carousel-card .nav.right { right: 10px; }
-.carousel-card .nav:hover { background: rgba(15,23,42,0.75); }
 
+.carousel-card .nav:hover {
+  background: rgba(8, 12, 20, 0.72);
+  border-color: rgba(255, 200, 0, 0.28);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.35);
+}
+
+.carousel-card .nav:active {
+  transform: translateY(-50%) scale(0.98);
+}
+
+.carousel-card .nav:focus-visible {
+  outline: 2px solid rgba(255, 199, 64, .95);
+  outline-offset: 3px;
+}
+
+/* dots */
 .dots {
   display: flex;
-  gap: 6px;
+  gap: 7px;
   justify-content: center;
-  margin-top: 8px;
+  margin-top: 10px;
 }
+
 .dot {
-  width: 8px; height: 8px; border-radius: 999px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
   background: rgba(255,255,255,0.25);
   cursor: pointer;
+  transition: transform 140ms ease, background 160ms ease, box-shadow 160ms ease;
 }
-.dot.active { background: #f0b429; }
+
+.dot:hover {
+  transform: scale(1.15);
+  background: rgba(255,255,255,0.38);
+}
+
+.dot.active {
+  background: #f0b429;
+  box-shadow: 0 0 0 4px rgba(240,180,41,0.14);
+}
+
+.dot:focus-visible {
+  outline: 2px solid rgba(255, 199, 64, .95);
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+
+/* reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .carousel-card,
+  .carousel-card .media img,
+  .carousel-card .nav,
+  .dot {
+    transition: none !important;
+  }
+  .carousel-card:hover {
+    transform: none;
+  }
+  .dot:hover {
+    transform: none;
+  }
+}
+/* =========================
+   ChatPage — Luxury bubbles
+   ========================= */
+
+.nesta-chat-scroll::-webkit-scrollbar { width: 10px; }
+.nesta-chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 999px;
+  border: 2px solid rgba(0,0,0,0.35);
+}
+.nesta-chat-scroll::-webkit-scrollbar-track { background: transparent; }
+
+.nesta-bubble {
+  border-radius: 18px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.05);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.25);
+}
+
+.nesta-bubble.mine {
+  border-color: rgba(255, 200, 0, 0.25);
+  background: linear-gradient(135deg, rgba(255,200,0,0.18), rgba(255,200,0,0.06));
+  box-shadow: 0 10px 30px rgba(0,0,0,0.28), 0 0 0 1px rgba(255,200,0,0.06) inset;
+}
+
+.nesta-bubble.theirs {
+  background: rgba(255,255,255,0.05);
+}
+
+.nesta-stamp {
+  margin-top: 4px;
+  font-size: 10px;
+  color: rgba(203,213,225,0.65);
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.group:hover .nesta-stamp {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* inbox: give unread a slightly warmer border */
+.nesta-chat-unread {
+  border-color: rgba(255, 200, 0, 0.22);
+}
+

@@ -1,11 +1,5 @@
 // src/pages/ChatPage.js
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   addDoc,
@@ -26,6 +20,7 @@ import {
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
+import "../styles/polish.css";
 import "../styles/motion.css";
 
 /* Quick replies per role */
@@ -51,14 +46,27 @@ const QUICK_PARTNER = [
 // how long we consider a user "online" after last presence update
 const ONLINE_WINDOW_MS = 60 * 1000;
 
+function safeMillis(ts) {
+  try {
+    if (!ts) return 0;
+    if (typeof ts?.toMillis === "function") return ts.toMillis();
+    if (typeof ts?.toDate === "function") return ts.toDate().getTime();
+    const d = new Date(ts);
+    const ms = d.getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export default function ChatPage() {
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
+
   const myRole = (profile?.role || "").toLowerCase();
   const isHost = myRole === "host" || myRole === "verified_host";
   const isPartner = myRole === "partner" || myRole === "verified_partner";
   const isGuest = !myRole || myRole === "guest";
-
   const QUICK = isGuest ? QUICK_GUEST : isHost ? QUICK_HOST : QUICK_PARTNER;
 
   const nav = useNavigate();
@@ -67,21 +75,25 @@ export default function ChatPage() {
 
   // Possible inputs
   const forcedChatId = state?.chatId || state?.threadId || null;
-  // NOTE: earlier we allowed ":uid" in the route — we’ll still read it as a fallback
   const paramUid = params?.uid || null;
+
   const bookingFromState = state?.booking || null;
   const bookingIdFromState = state?.bookingId || null;
+
   const partnerUidFromState = state?.partnerUid || paramUid || null;
   const listingFromState = state?.listing || null; // { id, title }
 
   // Derivations
   const [chatId, setChatId] = useState(forcedChatId || null);
   const [headerTitle, setHeaderTitle] = useState("Chat with Host/Partner");
-  const [counterUid, setCounterUid] = useState(null); // hostId / partnerUid
-  const [counterRole, setCounterRole] = useState(null); // "host" | "partner" | "guest"
-  const [listing, setListing] = useState(listingFromState || null); // { id, title }
+  const [counterUid, setCounterUid] = useState(null);
+  const [counterRole, setCounterRole] = useState(null);
+  const [listing, setListing] = useState(listingFromState || null);
 
-  // NEW: counterparty profile
+  // Live chat doc meta (Seen/read receipts)
+  const [chatMeta, setChatMeta] = useState(null);
+
+  // Counterparty profile + presence
   const [counterProfile, setCounterProfile] = useState(null);
   const [counterPresence, setCounterPresence] = useState({
     typing: false,
@@ -121,9 +133,7 @@ export default function ChatPage() {
   );
 
   const presenceLabel = useMemo(() => {
-    // if typing, always show typing
     if (counterPresence.typing) return "Typing…";
-
     const updatedAt = counterPresence.updatedAt;
     if (!updatedAt) return "Offline";
 
@@ -135,11 +145,32 @@ export default function ChatPage() {
         : 0;
 
     const now = Date.now();
-    if (ts && now - ts < ONLINE_WINDOW_MS) {
-      return "Online";
-    }
+    if (ts && now - ts < ONLINE_WINDOW_MS) return "Online";
     return "Last seen recently";
   }, [counterPresence]);
+
+  /* ✅ IMPORTANT: hooks must be above conditional returns */
+  const lastMineMsg = useMemo(() => {
+    const myId = user?.uid;
+    if (!myId || !Array.isArray(messages) || messages.length === 0) return null;
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.senderId === myId) return messages[i];
+    }
+    return null;
+  }, [messages, user?.uid]);
+
+  const otherIdForSeen = otherIdRef.current || null;
+  const otherLastReadMs = otherIdForSeen
+    ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen])
+    : 0;
+
+  const lastMineCreatedMs = safeMillis(lastMineMsg?.createdAt);
+  const showSeen =
+    !!lastMineMsg &&
+    otherLastReadMs > 0 &&
+    lastMineCreatedMs > 0 &&
+    otherLastReadMs >= lastMineCreatedMs;
 
   /* -------- hydrate from booking / state (if no chatId) -------- */
   useEffect(() => {
@@ -153,7 +184,7 @@ export default function ChatPage() {
         if (partnerUidFromState && listingFromState?.id) {
           if (alive) {
             setCounterUid(partnerUidFromState);
-            setCounterRole("host"); // safe default; we can override later if profile says partner
+            setCounterRole("host");
             setListing(listingFromState);
             setHeaderTitle(listingFromState.title || "Chat with Host/Partner");
           }
@@ -222,20 +253,15 @@ export default function ChatPage() {
 
     async function resolveThread() {
       try {
-        // CASE: we were given a chat id directly from inbox
         if (forcedChatId) {
           if (!cancelled) setChatId(forcedChatId);
           return;
         }
 
-        // if we still don't have the other party or listing, we cannot create yet
         if (!user?.uid || !counterUid || !listing?.id || !signature) return;
 
         // 1) try to find existing chat
-        const q1 = query(
-          collection(db, "chats"),
-          where("signature", "==", signature)
-        );
+        const q1 = query(collection(db, "chats"), where("signature", "==", signature));
         const existing = await getDocs(q1);
         if (!existing.empty) {
           const found = existing.docs[0];
@@ -274,84 +300,69 @@ export default function ChatPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    forcedChatId,
-    user?.uid,
-    counterUid,
-    listing?.id,
-    signature,
-    counterRole,
-  ]);
+  }, [forcedChatId, user?.uid, counterUid, listing?.id, signature, counterRole]);
 
-  /* -------- hydrate header + presence when we know chatId -------- */
+  /* -------- live chat doc + header + read receipts + presence refs -------- */
   useEffect(() => {
-    let alive = true;
     if (!chatId || !user?.uid) return;
 
-    async function loadHeaderAndPresence() {
-      try {
-        const snap = await getDoc(doc(db, "chats", chatId));
-        if (!alive || !snap.exists()) return;
+    const chatRef = doc(db, "chats", chatId);
+
+    const unsubChat = onSnapshot(
+      chatRef,
+      async (snap) => {
+        if (!snap.exists()) return;
         const d = snap.data() || {};
+        setChatMeta(d);
         setHeaderTitle(d?.listingTitle || "Chat with Host/Partner");
 
         const parts = Array.isArray(d.participants) ? d.participants : [];
         const otherId = parts.find((p) => p !== user.uid) || counterUid || null;
-        otherIdRef.current = otherId;
-        if (otherId && !counterUid) {
-          setCounterUid(otherId);
-        }
 
-        // clear unread
+        otherIdRef.current = otherId;
+
+        if (otherId && !counterUid) setCounterUid(otherId);
+
+        // best-effort: clear unread flag
         try {
-          await updateDoc(doc(db, "chats", chatId), {
-            unreadFor: arrayRemove(user.uid),
-          });
-        } catch (e) {
-          console.warn("could not clear unread:", e);
-        }
+          await updateDoc(chatRef, { unreadFor: arrayRemove(user.uid) });
+        } catch {}
 
         // presence refs
-        myPresenceRef.current = doc(
-          db,
-          "chats",
-          chatId,
-          "presence",
-          user.uid
-        );
+        myPresenceRef.current = doc(db, "chats", chatId, "presence", user.uid);
         otherPresenceRef.current = otherId
           ? doc(db, "chats", chatId, "presence", otherId)
           : null;
-
-        // subscribe to other presence
-        let unsubPresence = () => {};
-        if (otherPresenceRef.current) {
-          unsubPresence = onSnapshot(
-            otherPresenceRef.current,
-            (ps) => {
-              const data = ps.data() || {};
-              setCounterPresence({
-                typing: Boolean(data.typing),
-                updatedAt: data.updatedAt || null,
-              });
-            },
-            () => {
-              setCounterPresence({ typing: false, updatedAt: null });
-            }
-          );
-        }
-
-        // keep unsub in outer scope
-        return unsubPresence;
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    const maybeUnsubPromise = loadHeaderAndPresence();
+      },
+      (e) => console.error("chat doc listen:", e)
+    );
 
     return () => {
-      alive = false;
+      unsubChat();
+    };
+  }, [chatId, user?.uid, counterUid]);
+
+  /* -------- subscribe to other presence -------- */
+  useEffect(() => {
+    if (!chatId || !user?.uid) return;
+
+    let unsubPresence = () => {};
+
+    if (otherPresenceRef.current) {
+      unsubPresence = onSnapshot(
+        otherPresenceRef.current,
+        (ps) => {
+          const data = ps.data() || {};
+          setCounterPresence({
+            typing: Boolean(data.typing),
+            updatedAt: data.updatedAt || null,
+          });
+        },
+        () => setCounterPresence({ typing: false, updatedAt: null })
+      );
+    }
+
+    return () => {
       setCounterPresence({ typing: false, updatedAt: null });
       if (myPresenceRef.current) {
         setDoc(
@@ -361,13 +372,11 @@ export default function ChatPage() {
         );
       }
       clearTimeout(typingIdleRef.current);
-      if (maybeUnsubPromise && typeof maybeUnsubPromise === "function") {
-        maybeUnsubPromise();
-      }
+      unsubPresence();
     };
-  }, [chatId, user?.uid, counterUid]);
+  }, [chatId, user?.uid]);
 
-  /* -------- fetch counterparty profile once we know counterUid -------- */
+  /* -------- fetch counterparty profile -------- */
   useEffect(() => {
     let alive = true;
     async function loadCounterProfile() {
@@ -375,11 +384,7 @@ export default function ChatPage() {
       try {
         const snap = await getDoc(doc(db, "users", counterUid));
         if (!alive) return;
-        if (snap.exists()) {
-          setCounterProfile(snap.data());
-        } else {
-          setCounterProfile(null);
-        }
+        setCounterProfile(snap.exists() ? snap.data() : null);
       } catch (e) {
         console.error("loadCounterProfile:", e);
       }
@@ -408,6 +413,17 @@ export default function ChatPage() {
     return () => unsub();
   }, [chatId, scrollToBottom, markLocalRead]);
 
+  /* ---------------- mark read while viewing (best-effort) ---------------- */
+  useEffect(() => {
+    if (!chatId || !user?.uid) return;
+    const t = setInterval(() => {
+      updateDoc(doc(db, "chats", chatId), {
+        [`lastReadAt.${user.uid}`]: serverTimestamp(),
+      }).catch(() => {});
+    }, 15000);
+    return () => clearInterval(t);
+  }, [chatId, user?.uid]);
+
   /* ---------------- composer ---------------- */
   const onSend = useCallback(async () => {
     if (!user?.uid || !chatId) return;
@@ -416,7 +432,9 @@ export default function ChatPage() {
 
     try {
       setBusy(true);
+
       const msgsRef = collection(db, "chats", chatId, "messages");
+
       await addDoc(msgsRef, {
         text,
         senderId: user.uid,
@@ -425,11 +443,22 @@ export default function ChatPage() {
       });
 
       const otherId = otherIdRef.current;
+
       await updateDoc(doc(db, "chats", chatId), {
         lastMessage: text,
         updatedAt: serverTimestamp(),
+        [`lastReadAt.${user.uid}`]: serverTimestamp(),
         ...(otherId ? { unreadFor: arrayUnion(otherId) } : {}),
       });
+
+      // stop typing presence immediately after send
+      if (myPresenceRef.current) {
+        setDoc(
+          myPresenceRef.current,
+          { typing: false, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+      }
 
       setMessage("");
       setTimeout(scrollToBottom, 0);
@@ -453,7 +482,6 @@ export default function ChatPage() {
     const v = e.target.value;
     setMessage(v);
 
-    // typing presence
     if (!myPresenceRef.current) return;
     setDoc(
       myPresenceRef.current,
@@ -467,7 +495,7 @@ export default function ChatPage() {
         { typing: false, updatedAt: serverTimestamp() },
         { merge: true }
       );
-    }, 1500);
+    }, 1300);
   };
 
   const quick = async (t) => {
@@ -475,7 +503,7 @@ export default function ChatPage() {
     setTimeout(onSend, 20);
   };
 
-  /* ---------------- guards ---------------- */
+  /* ---------------- guards (NOW safe) ---------------- */
   if (!user) {
     return (
       <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
@@ -487,7 +515,6 @@ export default function ChatPage() {
     );
   }
 
-  // no context, no forced chat, no counterparty → show helper
   if (!forcedChatId && !counterUid && !listing?.id) {
     return (
       <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
@@ -515,7 +542,7 @@ export default function ChatPage() {
     );
   }
 
-  /* ---------------- UI ---------------- */
+  /* ---------------- UI derivations ---------------- */
   const counterDisplayName =
     counterProfile?.displayName ||
     counterProfile?.name ||
@@ -530,42 +557,71 @@ export default function ChatPage() {
     return r ? r.charAt(0).toUpperCase() + r.slice(1) : null;
   })();
 
+  const avatarUrl =
+    counterProfile?.photoURL ||
+    counterProfile?.avatarUrl ||
+    counterProfile?.avatar ||
+    null;
+
   return (
     <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
       <div className="max-w-3xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-3 motion-slide-up">
-          <div>
+          <div className="min-w-0">
             <h1
-  className="text-xl font-extrabold tracking-tight flex items-center gap-2"
-  style={{
-    fontFamily:
-      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
-  }}
->
-  {headerTitle || "Chat with Host/Partner"}
-</h1>
-            <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
-              <span className="inline-flex items-center gap-1">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    counterPresence.typing
-                      ? "bg-amber-300"
-                      : presenceLabel === "Online"
-                      ? "bg-emerald-400"
-                      : "bg-gray-500"
-                  }`}
-                />
-                {presenceLabel}
+              className="text-xl font-extrabold tracking-tight flex items-center gap-3"
+              style={{
+                fontFamily:
+                  'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+              }}
+            >
+              <span className="truncate">
+                {headerTitle || "Chat with Host/Partner"}
               </span>
-              {counterDisplayName ? (
-                <span className="opacity-80">• {counterDisplayName}</span>
-              ) : null}
-              {counterDisplayRole ? (
-                <span className="opacity-50">({counterDisplayRole})</span>
-              ) : null}
+            </h1>
+
+            <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-2 py-1">
+                <span className="relative inline-flex items-center justify-center w-6 h-6 rounded-full overflow-hidden border border-white/10 bg-black/30">
+                  {avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt={counterDisplayName}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-[10px] text-amber-200 font-bold">
+                      {(counterDisplayName || "H").slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+                </span>
+
+                <span className="inline-flex items-center gap-1">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      counterPresence.typing
+                        ? "bg-amber-300"
+                        : presenceLabel === "Online"
+                        ? "bg-emerald-400"
+                        : "bg-gray-500"
+                    }`}
+                  />
+                  {presenceLabel}
+                </span>
+
+                <span className="opacity-80 truncate max-w-[160px]">
+                  • {counterDisplayName}
+                </span>
+                {counterDisplayRole ? (
+                  <span className="opacity-50">({counterDisplayRole})</span>
+                ) : null}
+              </span>
+
+              {showSeen ? <span className="text-amber-300/80">• Seen</span> : null}
             </div>
           </div>
+
           <button
             onClick={() => nav(-1)}
             className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-sm"
@@ -578,13 +634,13 @@ export default function ChatPage() {
         {listing?.id ? (
           <div className="mb-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-2 text-sm flex items-center gap-3">
             <span className="text-amber-200 text-lg">🏡</span>
-            <div className="flex-1">
-              <div className="text-amber-100/90">
+            <div className="flex-1 min-w-0">
+              <div className="text-amber-100/90 truncate">
                 This chat is about:{" "}
                 <span className="font-semibold">{listing.title}</span>
               </div>
               <div className="text-amber-100/50 text-xs">
-                Guests and hosts can keep all booking info in this thread.
+                Keep all booking info in this thread.
               </div>
             </div>
             <button
@@ -601,7 +657,7 @@ export default function ChatPage() {
           {/* Messages list */}
           <div
             ref={listRef}
-            className="h-[460px] overflow-y-auto p-4"
+            className="h-[460px] overflow-y-auto p-4 nesta-chat-scroll"
             style={{ scrollBehavior: "smooth" }}
           >
             {messages.length === 0 ? (
@@ -618,19 +674,13 @@ export default function ChatPage() {
                       mine ? "justify-end" : "justify-start"
                     } motion-stagger`}
                   >
-                    <div className="max-w-[75%] group motion-pop">
-                      <div
-                        className={
-                          mine
-                            ? "px-3 py-2 rounded-2xl bg-gradient-to-br from-amber-500/30 to-amber-400/20 border border-amber-400/30 shadow-md"
-                            : "px-3 py-2 rounded-2xl bg-white/5 border border-white/10 shadow"
-                        }
-                      >
+                    <div className="max-w-[78%] group motion-pop">
+                      <div className={`nesta-bubble ${mine ? "mine" : "theirs"}`}>
                         <div className="whitespace-pre-wrap leading-relaxed">
                           {m.text}
                         </div>
                       </div>
-                      <div className="opacity-0 group-hover:opacity-100 transition text-[10px] text-gray-400 mt-0.5">
+                      <div className="nesta-stamp">
                         {m.createdAt?.toDate
                           ? m.createdAt.toDate().toLocaleString()
                           : ""}
@@ -649,6 +699,7 @@ export default function ChatPage() {
                 Typing…
               </div>
             )}
+
             <div className="flex gap-2">
               <input
                 value={message}
@@ -664,22 +715,23 @@ export default function ChatPage() {
                   }
                 }}
                 placeholder="Type a message…"
-                className="flex-1 px-3 py-2 rounded-xl bg-black/30 border border-white/10 outline-none focus:border-amber-400/50"
+                className="flex-1 px-3 py-2 rounded-xl bg-black/30 border border-white/10 outline-none lux-focus"
               />
+
               <button
                 disabled={!message.trim() || busy || !chatId}
                 onClick={onSend}
                 className={`px-4 py-2 rounded-xl border ${
                   !message.trim() || busy || !chatId
                     ? "bg-gray-800/60 border-white/10 text-gray-500 cursor-not-allowed"
-                    : "bg-amber-600 hover:bg-amber-700 border-amber-500 text-black font-semibold"
+                    : "bg-amber-600 hover:bg-amber-700 border-amber-500 text-black font-semibold btn-amber"
                 }`}
               >
                 Send
               </button>
             </div>
 
-            {/* Quick replies (role-aware) */}
+            {/* Quick replies */}
             <div className="flex flex-wrap gap-2 mt-2">
               {QUICK.map((q) => (
                 <button
@@ -695,8 +747,7 @@ export default function ChatPage() {
         </div>
 
         <div className="text-xs text-gray-400 mt-3 motion-slide-up">
-          Contact details stay hidden by policy; they reveal only when your
-          booking status and host/partner subscription permit.
+          Contact details stay hidden by policy; they reveal only when your booking status and host/partner subscription permit.
         </div>
       </div>
     </main>

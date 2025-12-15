@@ -8,14 +8,24 @@ import LuxeBtn from "../../components/LuxeBtn";
 import AdminLayout from "../../layouts/AdminLayout";
 import { useAuth } from "../../auth/AuthContext";
 import useUserProfile from "../../hooks/useUserProfile";
+import { getAuth } from "firebase/auth";
 
 /* ───────────────── axios ───────────────── */
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
-    /\/$/,
-    ""
-  ),
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
   timeout: 15000,
+});
+
+/* ✅ attach Firebase ID token to every request */
+api.interceptors.request.use(async (config) => {
+  const auth = getAuth();
+  const u = auth.currentUser;
+  if (u) {
+    const token = await u.getIdToken();
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
 
 /* ─────────────── helpers ─────────────── */
@@ -164,8 +174,7 @@ function ActionMenu({
             borderRadius: 14,
             background: "rgba(22,22,26,.98)",
             border: "1px solid rgba(255,255,255,.10)",
-            boxShadow:
-              "0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04)",
+            boxShadow: "0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04)",
             backdropFilter: "blur(6px)",
             overflow: "hidden",
             zIndex: 50,
@@ -185,14 +194,13 @@ function ActionMenu({
           </div>
 
           {[
-            { key: "admin", label: "Admin" },
             { key: "host", label: "Host" },
             { key: "partner", label: "Partner" },
             { key: "guest", label: "Guest" },
           ].map((opt) => (
             <button
               key={opt.key}
-              disabled={busy}
+              disabled={busy || isRowAdmin} // admin locked by backend PATCH
               onClick={() => {
                 onSetRole(opt.key);
                 setOpen(false);
@@ -200,6 +208,7 @@ function ActionMenu({
               style={menuBtn}
               onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              title={isRowAdmin ? "Admins are locked by backend PATCH" : ""}
             >
               {opt.label}
             </button>
@@ -207,7 +216,7 @@ function ActionMenu({
 
           <div style={{ borderTop: "1px solid rgba(255,255,255,.06)", padding: 8 }}>
             <button
-              disabled={busy}
+              disabled={busy || isRowAdmin}
               onClick={() => {
                 onToggleStatus();
                 setOpen(false);
@@ -226,6 +235,7 @@ function ActionMenu({
                 cursor: busy ? "not-allowed" : "pointer",
                 opacity: busy ? 0.6 : 1,
               }}
+              title={isRowAdmin ? "Admins are locked by backend PATCH" : ""}
             >
               {row.status === "active" ? "Disable" : "Enable"}
             </button>
@@ -304,9 +314,9 @@ function ActionMenu({
 
 /* ───────────────── component ───────────────── */
 export default function ManageUsers() {
-  /* ✅ ALL HOOKS MUST BE HERE (TOP), NO CONDITIONS */
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
+
   const isSuperAdmin = String(profile?.adminLevel || "").toLowerCase() === "super";
 
   const [range, setRange] = useState({ from: "", to: "" });
@@ -326,47 +336,45 @@ export default function ManageUsers() {
     email: u.email || "-",
     name: u.name || u.displayName || "-",
     role: (u.role || u.type || "guest").toLowerCase(),
-    adminLevel: (u.adminLevel || "").toLowerCase(), // may be missing (fine)
-    status: (u.status || (u.disabled ? "disabled" : "active")).toLowerCase(),
+    adminLevel: (u.adminLevel || "").toLowerCase(),
+    status: (u.disabled ? "disabled" : "active").toLowerCase(),
+    disabled: !!u.disabled,
     createdAt: u.createdAt || u.created_at || u.createdAtMillis || null,
-    lastLogin: u.lastLogin || u.last_sign_in || null,
+    lastLogin: u.lastLogin || u.lastLoginAt || u.last_sign_in || null,
   });
 
-  const load = async () => {
+  const load = async (forcedRange) => {
     setLoading(true);
     try {
-      const res = await api.get("/admin/users");
+      const r = forcedRange || range;
+      // Your backend users route doesn’t support date range filtering yet,
+      // but we keep this for export symmetry (safe if unused).
+      const url = withRangeParams("/admin/users?status=all&role=all&page=1&limit=200", r);
+
+      const res = await api.get(url);
       const out = getArray(res.data);
       setRows(out.map(normalizeUser));
       setPage(1);
-    } catch {
-      // ignore
+    } catch (e) {
+      console.error("ManageUsers load failed:", e);
+      const code = e?.response?.status;
+      if (code === 401 || code === 403) {
+        window.alert("Unauthorized. Confirm your Firestore users/{uid}.role is 'admin'.");
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // range-aware fetch (if your server supports it)
-  useEffect(() => {
-    setLoading(true);
-    fetch(withRangeParams("/admin/users?status=all&role=all&page=1&limit=200", range))
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json) => {
-        const list = Array.isArray(json?.data) ? json.data : null;
-        if (list) {
-          setRows(list.map(normalizeUser));
-          setPage(1);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.from, range.to]);
-
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    load(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range.from, range.to]);
 
   const filtered = useMemo(() => {
     let list = rows.slice();
@@ -396,83 +404,118 @@ export default function ManageUsers() {
 
   const patchUser = async (id, body) => {
     try {
-      await api.patch(`/admin/users/${id}`, body);
+      await api.patch(`/admin/users/${encodeURIComponent(id)}`, body);
       return true;
-    } catch {
+    } catch (e) {
+      console.error("PATCH failed:", e?.response?.data || e.message);
+      return false;
+    }
+  };
+
+  const setAdminLevel = async (id, level) => {
+    try {
+      await api.post(`/admin/users/${encodeURIComponent(id)}/admin`, { level });
+      return true;
+    } catch (e) {
+      console.error("PROMOTION failed:", e?.response?.data || e.message);
       return false;
     }
   };
 
   const setRole = async (row, role) => {
     if (!row?.id) return;
+
+    // Admin promotion is handled by /admin endpoint only (super admin)
+    if (role === "admin") {
+      if (!isSuperAdmin) return;
+      await promoteToAdminStaff(row);
+      return;
+    }
+
     setBusyId(row.id);
     const prev = rows.slice();
+
     setRows(rows.map((r) => (r.id === row.id ? { ...r, role } : r)));
+
     const ok = await patchUser(row.id, { role });
     if (!ok) setRows(prev);
+
     setBusyId(null);
   };
 
   const setStatus = async (row, status) => {
     if (!row?.id) return;
+
     setBusyId(row.id);
     const prev = rows.slice();
-    setRows(rows.map((r) => (r.id === row.id ? { ...r, status } : r)));
 
     const disabled = status === "disabled";
-    const ok = await patchUser(row.id, { disabled });
+    setRows(rows.map((r) => (r.id === row.id ? { ...r, status, disabled } : r)));
 
+    const ok = await patchUser(row.id, { disabled });
     if (!ok) setRows(prev);
+
     setBusyId(null);
   };
 
   const promoteToAdminStaff = async (row) => {
     if (!row?.id) return;
+    if (!isSuperAdmin) return;
+
     setBusyId(row.id);
     const prev = rows.slice();
+
     setRows(
       rows.map((r) =>
         r.id === row.id ? { ...r, role: "admin", adminLevel: "staff" } : r
       )
     );
 
-    const ok = await patchUser(row.id, {
-      role: "admin",
-      adminLevel: "staff",
-      adminPermissions: {
-        users: true,
-        bookings: true,
-        payouts: false,
-        settings: false,
-        reports: true,
-      },
-    });
-
+    const ok = await setAdminLevel(row.id, "staff");
     if (!ok) setRows(prev);
+
     setBusyId(null);
   };
 
   const promoteToSuperAdmin = async (row) => {
     if (!row?.id) return;
+    if (!isSuperAdmin) return;
+
     setBusyId(row.id);
     const prev = rows.slice();
+
     setRows(
       rows.map((r) =>
         r.id === row.id ? { ...r, role: "admin", adminLevel: "super" } : r
       )
     );
 
-    const ok = await patchUser(row.id, {
-      role: "admin",
-      adminLevel: "super",
-      adminPermissions: null,
-    });
-
+    const ok = await setAdminLevel(row.id, "super");
     if (!ok) setRows(prev);
+
     setBusyId(null);
   };
 
-  const usersCsvHref = useMemo(() => withRangeParams("/admin/users/export.csv", range), [range]);
+  /* ✅ token-safe CSV export */
+  const exportUsersCsv = async () => {
+    try {
+      const url = withRangeParams("/admin/users/export.csv", range);
+      const res = await api.get(url, { responseType: "blob" });
+
+      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8;" });
+      const href = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = `users-${Date.now()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(href);
+    } catch (e) {
+      console.error("CSV export failed:", e);
+      window.alert("Failed to export CSV (check admin auth / backend).");
+    }
+  };
 
   const TabBtn = ({ active, label, onClick }) => (
     <button
@@ -498,18 +541,11 @@ export default function ManageUsers() {
   );
 
   return (
-    <AdminLayout
-      title="Manage Users"
-      subtitle="Assign roles (host, partner, admin), disable users, view directory."
-    >
+    <AdminLayout title="Manage Users" subtitle="Assign roles, disable users, promote admins (super admin only).">
       <DateRangeBar range={range} onChange={setRange} />
 
       <div className="flex items-center gap-3" style={{ margin: "10px 0 14px" }}>
-        <LuxeBtn
-          kind="gold"
-          onClick={() => (window.location.href = usersCsvHref)}
-          title="Export Users CSV"
-        >
+        <LuxeBtn kind="gold" onClick={exportUsersCsv} title="Export Users CSV">
           Export Users CSV
         </LuxeBtn>
       </div>
@@ -595,7 +631,8 @@ export default function ManageUsers() {
             padding: "0 12px",
           }}
         />
-        <LuxeBtn kind="cobalt" onClick={load} title="Refresh directory">
+
+        <LuxeBtn kind="cobalt" onClick={() => load()} title="Refresh directory">
           Refresh
         </LuxeBtn>
       </div>
@@ -720,8 +757,7 @@ export default function ManageUsers() {
           }}
         >
           <div style={{ color: "#aeb6c2", fontSize: 13 }}>
-            Showing {total === 0 ? 0 : (page - 1) * perPage + 1}–{Math.min(page * perPage, total)} of{" "}
-            {total}
+            Showing {total === 0 ? 0 : (page - 1) * perPage + 1}–{Math.min(page * perPage, total)} of {total}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

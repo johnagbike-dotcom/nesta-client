@@ -9,23 +9,16 @@ import ImageUploader from "../components/ImageUploader";
 import ListingMap from "../components/ListingMap";
 
 /**
- * CreateListing
- * - Luxury-styled form with strict validation
- * - Supports Host (ownerId) and Verified Partner (partnerUid + managers[])
- * - Adds SEO slug + searchable keywords
- * - Redacts emails/phone numbers from guest-facing fields (title, description, rules)
+ * CreateListing (Luxury Standard)
+ * - Writes listing fields in a compatible shape for all pages:
+ *   images[] + imageUrls[] + photos[] + primaryImageUrl
+ *   pricePerNight + nightlyRate
+ * - Featured request creates a Firestore featureRequests doc with:
+ *   status=pending, planId, planLabel, price, durationDays
+ * - Admin later approves -> awaiting-payment and locks terms.
  */
 
-const TYPES = [
-  "Apartment",
-  "Bungalow",
-  "Studio",
-  "Loft",
-  "Villa",
-  "Penthouse",
-  "Hotel",
-  "Other",
-];
+const TYPES = ["Apartment", "Bungalow", "Studio", "Loft", "Villa", "Penthouse", "Hotel", "Other"];
 const STATUS = ["active", "inactive", "review"];
 const AMENITIES = [
   "Wi-Fi",
@@ -40,26 +33,30 @@ const AMENITIES = [
   "Gym",
 ];
 
-// simple default spotlight plan for “requestFeatured” on create
+// Default plan for Create (simple + consistent)
 const DEFAULT_SPOTLIGHT_PLAN = {
-  planKey: "spotlight",
+  planId: "spotlight",
   planLabel: "Spotlight · 24 hours",
-  planPrice: 20000,
+  price: 20000,
   durationDays: 1,
 };
 
-// Redact obvious emails & phone numbers from guest-facing copy
+// Redact emails + phone numbers from guest-facing copy
 function redactContactText(raw) {
   if (!raw) return "";
   let s = String(raw);
 
-  // Email → [email removed]
   s = s.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email removed]");
-
-  // Phone-like patterns → [number removed]
   s = s.replace(/\+?\d[\d\s\-().]{6,}\d/g, "[number removed]");
 
   return s.trim();
+}
+
+function slugify(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
 }
 
 function Section({ title, subtitle, children }) {
@@ -166,29 +163,14 @@ export default function CreateListing() {
 
   const [amenities, setAmenities] = useState([]);
   const [houseRules, setHouseRules] = useState("");
-  const [images, setImages] = useState([]); // array of URLs from ImageUploader
+  const [images, setImages] = useState([]); // URLs
   const [requestFeatured, setRequestFeatured] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  const roleRaw = (profile?.role || "").toLowerCase();
-  const isPartner =
-    roleRaw === "partner" ||
-    roleRaw === "verified_partner" ||
-    roleRaw === "partner_verified";
-  const isHost = !isPartner; // default path
-
-  const canSubmit = useMemo(() => {
-    return (
-      form.title.trim().length >= 5 &&
-      form.city.trim().length >= 2 &&
-      form.area.trim().length >= 2 &&
-      Number(form.pricePerNight) > 0 &&
-      images.length > 0
-      // lat/lng remain optional for now; they are enforced visually by the map
-    );
-  }, [form, images.length]);
+  const roleRaw = String(profile?.role || "").toLowerCase();
+  const isPartner = ["partner", "verified_partner", "partner_verified"].includes(roleRaw);
 
   const priceFieldRef = useRef(null);
 
@@ -197,26 +179,21 @@ export default function CreateListing() {
   }
 
   function toggleAmenity(a) {
-    setAmenities((prev) =>
-      prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]
-    );
+    setAmenities((prev) => (prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]));
   }
 
-  function slugify(s) {
-    return s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)+/g, "");
-  }
+  const canSubmit = useMemo(() => {
+    return (
+      form.title.trim().length >= 5 &&
+      form.city.trim().length >= 2 &&
+      form.area.trim().length >= 2 &&
+      Number(form.pricePerNight) > 0 &&
+      images.length > 0
+    );
+  }, [form, images.length]);
 
   function keywords(cleanTitle) {
-    const bag = [
-      cleanTitle,
-      form.type,
-      form.city,
-      form.area,
-      ...(amenities || []),
-    ]
+    const bag = [cleanTitle, form.type, form.city, form.area, ...(amenities || [])]
       .join(" ")
       .toLowerCase();
     const k = new Set();
@@ -229,6 +206,7 @@ export default function CreateListing() {
 
   async function handleCreate(e) {
     e.preventDefault();
+
     if (!user?.uid) {
       alert("Please log in to create a listing.");
       return;
@@ -245,15 +223,16 @@ export default function CreateListing() {
     try {
       const uid = user.uid;
 
-      // Redact contact info from guest-facing fields
       const cleanTitle = redactContactText(form.title.trim());
       const cleanDesc = redactContactText(form.description);
       const cleanRules = redactContactText(houseRules);
 
-      const nowSlug = slugify(`${cleanTitle}-${form.city}-${form.area}`);
       const price = Number(form.pricePerNight || 0);
+      const nowSlug = slugify(`${cleanTitle}-${form.city}-${form.area}`);
 
-      // ownership fields so partner/host can edit immediately
+      const primaryImageUrl = images?.[0] || null;
+
+      // Ownership fields (host + partner support)
       const baseOwner = {
         ownerUid: uid,
         ownerId: uid,
@@ -266,79 +245,96 @@ export default function CreateListing() {
       };
 
       const partnerBits = isPartner
-        ? {
-            partnerUid: uid,
-            partnerId: uid,
-            managers: [uid],
-          }
-        : {
-            partnerUid: null,
-            partnerId: null,
-            managers: [],
-          };
+        ? { partnerUid: uid, partnerId: uid, managers: [uid] }
+        : { partnerUid: null, partnerId: null, managers: [] };
 
       const payload = {
+        // Core display fields
         title: cleanTitle,
+        description: cleanDesc,
         type: form.type,
         city: form.city.trim(),
         area: form.area.trim(),
+        neighbourhood: "", // optional
+        address: "", // optional (should be shown only after confirmation in guest flow)
+
+        // Pricing consistency
         pricePerNight: price,
-        status: form.status,
-        description: cleanDesc,
+        nightlyRate: price,
+
+        // Capacity / details
         bedrooms: form.bedrooms ? Number(form.bedrooms) : null,
         bathrooms: form.bathrooms ? Number(form.bathrooms) : null,
+        maxGuests: null,
         size: form.size ? String(form.size) : "",
+        status: form.status,
 
-        // location / map
-        lat:
-          typeof form.lat === "number" && !Number.isNaN(form.lat)
-            ? form.lat
-            : null,
-        lng:
-          typeof form.lng === "number" && !Number.isNaN(form.lng)
-            ? form.lng
-            : null,
+        // Location
+        lat: typeof form.lat === "number" && !Number.isNaN(form.lat) ? form.lat : null,
+        lng: typeof form.lng === "number" && !Number.isNaN(form.lng) ? form.lng : null,
 
-        // store photos in both fields for compatibility
+        // Images (compat everywhere)
         images,
         imageUrls: images,
+        photos: images,
+        primaryImageUrl,
+
+        // Extras
         amenities,
         houseRules: cleanRules,
+
+        // Search / SEO
         slug: nowSlug,
         keywords: keywords(cleanTitle),
 
+        // Featured flags (admin-controlled)
+        sponsored: false,
+        featured: false,
+        sponsoredUntil: null,
+
+        // Meta
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
 
-        // ownership
+        // Ownership
         ...baseOwner,
         ...partnerBits,
-
-        sponsored: false, // admin flips to true after approval
-        featured: false, // legacy flag; keep false
       };
 
       const docRef = await addDoc(collection(db, "listings"), payload);
 
+      // Featured request (simple default plan)
       if (requestFeatured) {
         try {
           await addDoc(collection(db, "featureRequests"), {
+            kind: "listing-feature",
+            type: "featured-carousel",
+
             listingId: docRef.id,
             listingTitle: payload.title,
+
             hostUid: uid,
             hostEmail: user.email || profile?.email || "",
-            type: "featured-carousel",
-            ...DEFAULT_SPOTLIGHT_PLAN,
-            price: DEFAULT_SPOTLIGHT_PLAN.planPrice,
-            requestedBy: uid,
             requesterRole: profile?.role || "",
+
+            // Luxury: request starts pending, admin reviews + locks terms later
             status: "pending",
+            archived: false,
+
+            // Plan data (default for create; admin can still override when approving)
+            planId: DEFAULT_SPOTLIGHT_PLAN.planId,
+            planLabel: DEFAULT_SPOTLIGHT_PLAN.planLabel,
+            price: DEFAULT_SPOTLIGHT_PLAN.price,
+            durationDays: DEFAULT_SPOTLIGHT_PLAN.durationDays,
+
+            // Preview helpers
+            primaryImageUrl,
+
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
-            primaryImageUrl: images[0] || null,
           });
         } catch (e) {
-          console.warn("feature request failed", e);
+          console.warn("[CreateListing] feature request failed:", e);
         }
       }
 
@@ -346,10 +342,7 @@ export default function CreateListing() {
       nav(`/listing/${docRef.id}`);
     } catch (e) {
       console.error(e);
-      setErr(
-        e?.message ||
-          "We couldn’t create your listing right now. Please try again."
-      );
+      setErr(e?.message || "We couldn’t create your listing right now. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -365,13 +358,10 @@ export default function CreateListing() {
       </button>
 
       <div className="mt-4">
-        <h1 className="text-2xl md:text-3xl font-extrabold text-yellow-400">
-          Post a Listing
-        </h1>
+        <h1 className="text-2xl md:text-3xl font-extrabold text-yellow-400">Post a Listing</h1>
         <p className="text-white/70">
-          Share a premium stay. Keep details clear, pricing accurate, and avoid
-          putting phone numbers or emails in your description — Nesta will
-          handle secure contact reveal.
+          Share a premium stay. Avoid adding phone numbers/emails in your description — Nesta reveals
+          contacts securely after confirmation.
         </p>
       </div>
 
@@ -382,24 +372,18 @@ export default function CreateListing() {
       ) : null}
 
       <form onSubmit={handleCreate} className="mt-5 grid gap-4 max-w-5xl">
-        {/* Essentials */}
         <Section title="Essentials" subtitle="Core info guests see first.">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field
-              label="Title"
-              hint="e.g. Cozy Loft in Ikoyi GRA (no phone numbers or emails)"
-            >
+            <Field label="Title" hint="e.g. Designer Loft in Ikoyi (no phone numbers or emails)">
               <TextInput
                 value={form.title}
                 onChange={(e) => setField("title", e.target.value)}
                 maxLength={80}
               />
             </Field>
+
             <Field label="Type">
-              <Select
-                value={form.type}
-                onChange={(e) => setField("type", e.target.value)}
-              >
+              <Select value={form.type} onChange={(e) => setField("type", e.target.value)}>
                 {TYPES.map((t) => (
                   <option key={t} value={t}>
                     {t}
@@ -409,18 +393,11 @@ export default function CreateListing() {
             </Field>
 
             <Field label="City">
-              <TextInput
-                value={form.city}
-                onChange={(e) => setField("city", e.target.value)}
-                maxLength={40}
-              />
+              <TextInput value={form.city} onChange={(e) => setField("city", e.target.value)} maxLength={40} />
             </Field>
+
             <Field label="Area / Neighbourhood">
-              <TextInput
-                value={form.area}
-                onChange={(e) => setField("area", e.target.value)}
-                maxLength={50}
-              />
+              <TextInput value={form.area} onChange={(e) => setField("area", e.target.value)} maxLength={50} />
             </Field>
 
             <Field label="Price per night (₦)">
@@ -433,11 +410,9 @@ export default function CreateListing() {
                 onChange={(e) => setField("pricePerNight", e.target.value)}
               />
             </Field>
+
             <Field label="Status">
-              <Select
-                value={form.status}
-                onChange={(e) => setField("status", e.target.value)}
-              >
+              <Select value={form.status} onChange={(e) => setField("status", e.target.value)}>
                 {STATUS.map((s) => (
                   <option key={s} value={s}>
                     {s}
@@ -449,45 +424,24 @@ export default function CreateListing() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Bedrooms">
-              <TextInput
-                inputMode="numeric"
-                type="number"
-                min={0}
-                value={form.bedrooms}
-                onChange={(e) => setField("bedrooms", e.target.value)}
-              />
+              <TextInput inputMode="numeric" type="number" min={0} value={form.bedrooms} onChange={(e) => setField("bedrooms", e.target.value)} />
             </Field>
             <Field label="Bathrooms">
-              <TextInput
-                inputMode="numeric"
-                type="number"
-                min={0}
-                value={form.bathrooms}
-                onChange={(e) => setField("bathrooms", e.target.value)}
-              />
+              <TextInput inputMode="numeric" type="number" min={0} value={form.bathrooms} onChange={(e) => setField("bathrooms", e.target.value)} />
             </Field>
             <Field label="Size (m²)">
-              <TextInput
-                placeholder="e.g. 85"
-                value={form.size}
-                onChange={(e) => setField("size", e.target.value)}
-              />
+              <TextInput placeholder="e.g. 85" value={form.size} onChange={(e) => setField("size", e.target.value)} />
             </Field>
           </div>
 
           <Field
             label="Description"
-            hint="Focus on experience and quality. We automatically remove any phone numbers or emails."
+            hint="Focus on the experience and quality. We automatically remove phone numbers/emails."
           >
-            <TextArea
-              value={form.description}
-              onChange={(e) => setField("description", e.target.value)}
-              maxLength={1000}
-            />
+            <TextArea value={form.description} onChange={(e) => setField("description", e.target.value)} maxLength={1000} />
           </Field>
         </Section>
 
-        {/* Location + Map */}
         <Section
           title="Location & map"
           subtitle="Drop a pin close to the property. Guests see only an approximate area before booking."
@@ -499,50 +453,28 @@ export default function CreateListing() {
                   <TextInput
                     className="text-xs"
                     value={form.lat ?? ""}
-                    onChange={(e) =>
-                      setField(
-                        "lat",
-                        e.target.value === "" ? null : Number(e.target.value)
-                      )
-                    }
+                    onChange={(e) => setField("lat", e.target.value === "" ? null : Number(e.target.value))}
                     placeholder="e.g. 6.435"
                   />
                 </Field>
-                <Field
-                  label="Longitude"
-                  hint="Click the map or paste manually."
-                >
+                <Field label="Longitude" hint="Click the map or paste manually.">
                   <TextInput
                     className="text-xs"
                     value={form.lng ?? ""}
-                    onChange={(e) =>
-                      setField(
-                        "lng",
-                        e.target.value === "" ? null : Number(e.target.value)
-                      )
-                    }
+                    onChange={(e) => setField("lng", e.target.value === "" ? null : Number(e.target.value))}
                     placeholder="e.g. 3.421"
                   />
                 </Field>
               </div>
               <p className="mt-2 text-[11px] text-white/55">
-                Exact street details are only shown to confirmed guests. Use the
-                pin to mark a nearby safe point.
+                Exact street details are only shown to confirmed guests. Use the pin to mark a nearby safe point.
               </p>
             </div>
 
             <div className="mt-1">
               <ListingMap
-                lat={
-                  typeof form.lat === "number" && !Number.isNaN(form.lat)
-                    ? form.lat
-                    : null
-                }
-                lng={
-                  typeof form.lng === "number" && !Number.isNaN(form.lng)
-                    ? form.lng
-                    : null
-                }
+                lat={typeof form.lat === "number" && !Number.isNaN(form.lat) ? form.lat : null}
+                lng={typeof form.lng === "number" && !Number.isNaN(form.lng) ? form.lng : null}
                 editable
                 onChange={(pos) => {
                   setField("lat", pos.lat);
@@ -553,36 +485,18 @@ export default function CreateListing() {
           </div>
         </Section>
 
-        {/* Amenities */}
-        <Section
-          title="Amenities"
-          subtitle="Quick highlights guests care about."
-        >
+        <Section title="Amenities" subtitle="Quick highlights guests care about.">
           <div className="flex flex-wrap gap-2">
             {AMENITIES.map((a) => (
-              <Toggle
-                key={a}
-                label={a}
-                checked={amenities.includes(a)}
-                onChange={() => toggleAmenity(a)}
-              />
+              <Toggle key={a} label={a} checked={amenities.includes(a)} onChange={() => toggleAmenity(a)} />
             ))}
           </div>
         </Section>
 
-        {/* Photos */}
-        <Section
-          title="Photos"
-          subtitle="Upload bright images that sell the experience."
-        >
-          <ImageUploader
-            value={images}
-            onChange={setImages}
-            folder={`listing-images/${user?.uid || "anon"}`}
-          />
+        <Section title="Photos" subtitle="Upload bright images that sell the experience.">
+          <ImageUploader value={images} onChange={setImages} folder={`listing-images/${user?.uid || "anon"}`} />
         </Section>
 
-        {/* Rules + Feature */}
         <Section title="Extras">
           <Field label="House rules (optional)">
             <TextArea
@@ -601,14 +515,12 @@ export default function CreateListing() {
               onChange={(e) => setRequestFeatured(e.target.checked)}
             />
             <label htmlFor="req-featured" className="text-sm text-white/90">
-              Request to be{" "}
-              <span className="font-semibold text-yellow-400">Featured</span> in
-              the carousel (our team will review and confirm payment details).
+              Request to be <span className="font-semibold text-yellow-400">Featured</span> in the carousel
+              (admin will review and approve).
             </label>
           </div>
         </Section>
 
-        {/* Submit */}
         <div className="flex items-center gap-3">
           <button
             disabled={busy || !canSubmit}
@@ -621,6 +533,7 @@ export default function CreateListing() {
           >
             {busy ? "Publishing…" : "Publish"}
           </button>
+
           <button
             type="button"
             onClick={() => nav(-1)}
@@ -632,11 +545,11 @@ export default function CreateListing() {
           <div className="ml-auto text-sm text-white/60">
             {isPartner ? (
               <span>
-                Role: <strong>Verified Partner</strong> • managers set to you
+                Role: <strong>Verified Partner</strong>
               </span>
             ) : (
               <span>
-                Role: <strong>Host</strong> • owner fields linked to your UID
+                Role: <strong>Host</strong>
               </span>
             )}
           </div>

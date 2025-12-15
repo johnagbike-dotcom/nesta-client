@@ -1,23 +1,31 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
+
+// ✅ Single source of truth (shared with carousel + listing details)
+import { isFeaturedActive } from "../utils/featured";
 
 const FALLBACK =
   "https://images.unsplash.com/photo-1505691723518-36a5ac3be353?auto=format&fit=crop&w=1200&q=60";
 
+/* ───────────────────────── helpers ───────────────────────── */
+
 function getListingCover(listing) {
   if (!listing) return null;
 
-  // Preferred Firestore field
   if (Array.isArray(listing.images) && listing.images[0]) return listing.images[0];
-
-  // Legacy / alternative arrays
   if (Array.isArray(listing.imageUrls) && listing.imageUrls[0]) return listing.imageUrls[0];
   if (Array.isArray(listing.media) && listing.media[0]?.url) return listing.media[0].url;
 
-  // Single URL fields
   if (listing.imageUrl) return listing.imageUrl;
   if (listing.coverImage) return listing.coverImage;
   if (listing.heroImage) return listing.heroImage;
@@ -26,74 +34,117 @@ function getListingCover(listing) {
   return null;
 }
 
+function isListingMine(listing, uid) {
+  if (!uid || !listing) return false;
+  return (
+    listing.ownerId === uid ||
+    listing.ownerID === uid ||
+    listing.hostUid === uid ||
+    listing.hostId === uid ||
+    listing.partnerUid === uid ||
+    listing.partnerId === uid
+  );
+}
+
+/* ───────────────────────── component ───────────────────────── */
+
 export default function Explore() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // filters
   const [qtext, setQtext] = useState("");
   const [city, setCity] = useState("all");
   const [min, setMin] = useState("");
   const [max, setMax] = useState("");
 
-  // fetch listings
+  /* ───────────────────────── load listings ───────────────────────── */
+
   useEffect(() => {
     let mounted = true;
+
     (async () => {
       try {
         setLoading(true);
-        // active listings only
+
         const qq = query(
           collection(db, "listings"),
           where("status", "==", "active"),
           orderBy("createdAt", "desc"),
           limit(120)
         );
+
         const snap = await getDocs(qq);
         const out = [];
         snap.forEach((d) => out.push({ id: d.id, ...d.data() }));
+
         if (mounted) setRows(out);
       } catch (e) {
-        console.error(e);
+        console.error("[Explore] load error:", e);
         if (mounted) setRows([]);
       } finally {
         if (mounted) setLoading(false);
       }
     })();
+
     return () => {
       mounted = false;
     };
   }, []);
 
-  // build filtered list
-  const filtered = useMemo(() => {
-    const kw = qtext.trim().toLowerCase();
-    const low = min ? Number(min) : null;
-    const high = max ? Number(max) : null;
-    return rows.filter((r) => {
-      const price = Number(r.pricePerNight || 0);
-      const matchCity =
-        city === "all" || (r.city || "").toLowerCase() === city.toLowerCase();
-      const matchKw =
-        !kw ||
-        (r.title || "").toLowerCase().includes(kw) ||
-        (r.area || "").toLowerCase().includes(kw) ||
-        (r.city || "").toLowerCase().includes(kw);
-      const passMin = low == null || price >= low;
-      const passMax = high == null || price <= high;
-      return matchCity && matchKw && passMin && passMax;
-    });
-  }, [rows, qtext, city, min, max]);
+  /* ───────────────────────── derived: cities ───────────────────────── */
 
-  // unique cities for filter
   const cities = useMemo(() => {
     const set = new Set();
     rows.forEach((r) => (r.city ? set.add(r.city) : null));
     return Array.from(set).sort();
   }, [rows]);
 
-  // open chat from explore
+  /* ───────────────────────── derived: filtered + sorted ───────────────────────── */
+
+  const filtered = useMemo(() => {
+    const nowMs = Date.now(); // ✅ compute once
+    const kw = qtext.trim().toLowerCase();
+    const low = min ? Number(min) : null;
+    const high = max ? Number(max) : null;
+
+    const base = rows.filter((r) => {
+      const price = Number(r.pricePerNight || r.nightlyRate || r.price || 0);
+
+      const matchCity =
+        city === "all" || (r.city || "").toLowerCase() === city.toLowerCase();
+
+      const matchKw =
+        !kw ||
+        (r.title || "").toLowerCase().includes(kw) ||
+        (r.area || "").toLowerCase().includes(kw) ||
+        (r.city || "").toLowerCase().includes(kw);
+
+      const passMin = low == null || price >= low;
+      const passMax = high == null || price <= high;
+
+      return matchCity && matchKw && passMin && passMax;
+    });
+
+    // ✅ Premium first (only if still active + not expired), then newest
+    base.sort((a, b) => {
+      const fa = isFeaturedActive(a, nowMs) ? 1 : 0;
+      const fb = isFeaturedActive(b, nowMs) ? 1 : 0;
+      if (fa !== fb) return fb - fa;
+
+      const ta = a.createdAt?.toMillis?.() ?? 0;
+      const tb = b.createdAt?.toMillis?.() ?? 0;
+      return tb - ta;
+    });
+
+    return base;
+  }, [rows, qtext, city, min, max]);
+
+  /* ───────────────────────── actions ───────────────────────── */
+
   const handleChatHost = (listing) => {
     if (!listing) return;
 
@@ -110,46 +161,26 @@ export default function Explore() {
       return;
     }
 
-    const listingPayload = {
-      id: listing.id,
-      title: listing.title || "Listing",
-    };
+    const listingPayload = { id: listing.id, title: listing.title || "Listing" };
 
-    // if not logged in → go login first
     if (!user) {
       navigate("/login", {
         state: {
           from: "/explore",
-          chatFor: {
-            partnerUid: counterUid,
-            listing: listingPayload,
-          },
+          chatFor: { partnerUid: counterUid, listing: listingPayload },
         },
       });
       return;
     }
 
-    // logged in → open chat with proper state
     navigate("/chat", {
-      state: {
-        partnerUid: counterUid,
-        listing: listingPayload,
-        from: "explore",
-      },
+      state: { partnerUid: counterUid, listing: listingPayload, from: "explore" },
     });
   };
 
-  const isListingMine = (listing, uid) => {
-    if (!uid || !listing) return false;
-    return (
-      listing.ownerId === uid ||
-      listing.ownerID === uid ||
-      listing.hostUid === uid ||
-      listing.hostId === uid ||
-      listing.partnerUid === uid ||
-      listing.partnerId === uid
-    );
-  };
+  /* ───────────────────────── render ───────────────────────── */
+
+  const nowMsForBadges = Date.now(); // ✅ once per render (not per card)
 
   return (
     <main className="container" style={{ paddingBottom: 28 }}>
@@ -231,10 +262,14 @@ export default function Explore() {
           }}
         >
           {filtered.map((l) => {
+            const featuredActive = isFeaturedActive(l, nowMsForBadges);
             const hasChatTarget =
               l.partnerUid || l.hostUid || l.ownerId || l.ownerID;
+
             const mine = isListingMine(l, user?.uid);
             const cover = getListingCover(l);
+
+            const price = Number(l.pricePerNight || l.nightlyRate || l.price || 0);
 
             return (
               <article key={l.id} className="listing-card">
@@ -247,30 +282,14 @@ export default function Explore() {
                     overflow: "hidden",
                   }}
                 >
-                  {cover ? (
-                    <img
-                      src={cover}
-                      alt={l.title || "Listing"}
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "cover",
-                      }}
-                      loading="lazy"
-                    />
-                  ) : (
-                    <img
-                      src={FALLBACK}
-                      alt="Nesta luxury stay"
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "cover",
-                      }}
-                      loading="lazy"
-                    />
-                  )}
+                  <img
+                    src={cover || FALLBACK}
+                    alt={l.title || "Listing"}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    loading="lazy"
+                  />
                 </div>
+
                 <h3
                   style={{
                     margin: 0,
@@ -280,7 +299,9 @@ export default function Explore() {
                   }}
                 >
                   {l.title || "Untitled"}
-                  {l.featured ? (
+
+                  {/* ✅ Only show Featured if still active */}
+                  {featuredActive ? (
                     <span
                       className="muted"
                       style={{
@@ -294,12 +315,13 @@ export default function Explore() {
                     </span>
                   ) : null}
                 </h3>
+
                 <div className="muted" style={{ marginBottom: 10 }}>
-                  ₦{Number(l.pricePerNight || 0).toLocaleString()}/night •{" "}
-                  {l.area || "—"}
+                  ₦{price.toLocaleString()}/night • {l.area || "—"}
                   <br />
                   {l.city || "—"}
                 </div>
+
                 <div
                   style={{
                     display: "flex",
@@ -313,10 +335,7 @@ export default function Explore() {
                       <Link className="btn view-btn" to={`/listing/${l.id}`}>
                         View
                       </Link>
-                      <Link
-                        className="btn primary"
-                        to={`/listing/${l.id}/edit`}
-                      >
+                      <Link className="btn primary" to={`/listing/${l.id}/edit`}>
                         Edit
                       </Link>
                     </>

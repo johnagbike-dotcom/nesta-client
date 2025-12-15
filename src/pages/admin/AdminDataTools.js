@@ -1,15 +1,31 @@
 // src/pages/admin/AdminDataTools.js
 import React, { useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../firebase";
+import axios from "axios";
 import { saveAs } from "file-saver";
+import { getAuth } from "firebase/auth";
 import AdminHeader from "../../components/AdminHeader";
+
+/* ------------------------------ axios base ------------------------------ */
+const api = axios.create({
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  timeout: 20000,
+});
+
+// Attach Firebase ID token automatically (required by requireAdmin.js)
+api.interceptors.request.use(async (config) => {
+  const auth = getAuth();
+  const user = auth.currentUser;
+  if (user) {
+    const token = await user.getIdToken();
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 const Panel = ({ title, children }) => (
   <section className="rounded-2xl border border-white/8 bg-[radial-gradient(circle_at_top,_#151820_0%,_#0d1014_45%,_#080b0f_100%)]/90 p-5 shadow-[0_14px_60px_rgba(0,0,0,0.25)]">
-    <h2 className="text-base font-semibold text-white/90 tracking-wide mb-3">
-      {title}
-    </h2>
+    <h2 className="text-base font-semibold text-white/90 tracking-wide mb-3">{title}</h2>
     {children}
   </section>
 );
@@ -30,91 +46,32 @@ const ToolButton = ({ children, onClick, tone = "default", disabled = false }) =
   );
 };
 
-async function snapshotColl(coll) {
-  const snap = await getDocs(collection(db, coll));
-  // 🔧 FIX: spread Firestore data correctly
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-}
-
-function toCsv(rows) {
-  if (!rows?.length) return "id\n";
-
-  const cols = Array.from(
-    rows.reduce((set, r) => {
-      Object.keys(r).forEach((k) => set.add(k));
-      return set;
-    }, new Set())
-  );
-
-  const header = cols.join(",");
-  const lines = rows.map((r) =>
-    cols
-      .map((c) => {
-        const v = r[c];
-        const s =
-          v == null
-            ? ""
-            : typeof v === "object"
-            ? JSON.stringify(v)
-            : String(v);
-        return `"${s.replace(/"/g, '""')}"`;
-      })
-      .join(",")
-  );
-
-  // 🔧 FIX: correct array spread
-  return [header, ...lines].join("\n") + "\n";
+async function downloadCsv(path, filename) {
+  const res = await api.get(path, { responseType: "blob" });
+  const blob = new Blob([res.data], { type: "text/csv;charset=utf-8" });
+  saveAs(blob, filename);
 }
 
 export default function AdminDataTools() {
   const [busy, setBusy] = useState(false);
   const [lastInfo, setLastInfo] = useState("");
 
-  const exportAll = async (fmt) => {
+  const exportCsvPack = async () => {
     setBusy(true);
+    setLastInfo("");
     try {
-      const [users, listings, bookings] = await Promise.all([
-        snapshotColl("users"),
-        snapshotColl("listings"),
-        snapshotColl("bookings"),
-      ]);
+      const now = Date.now();
 
-      if (fmt === "json") {
-        const blob = new Blob(
-          [
-            JSON.stringify(
-              {
-                users,
-                listings,
-                bookings,
-                exportedAt: new Date().toISOString(),
-              },
-              null,
-              2
-            ),
-          ],
-          { type: "application/json;charset=utf-8" }
-        );
-        saveAs(blob, `nesta-export-${Date.now()}.json`);
-      } else {
-        // CSV → 3 files
-        const now = Date.now(); // 🔧 FIX: no Date.Now
-        [
-          { name: `users-${now}.csv`, data: toCsv(users) },
-          { name: `listings-${now}.csv`, data: toCsv(listings) },
-          { name: `bookings-${now}.csv`, data: toCsv(bookings) },
-        ].forEach(({ name, data }) =>
-          saveAs(new Blob([data], { type: "text/csv;charset=utf-8" }), name)
-        );
-      }
+      await downloadCsv("/admin/users/export.csv", `users-${now}.csv`);
+      await downloadCsv("/admin/listings/export.csv", `listings-${now}.csv`);
+      await downloadCsv("/admin/bookings/export.csv", `bookings-${now}.csv`);
+      await downloadCsv("/admin/payouts/export.csv", `payouts-${now}.csv`);
 
-      setLastInfo(
-        `Exported ${fmt.toUpperCase()} • users:${users.length} • listings:${listings.length} • bookings:${bookings.length}`
-      );
+      setLastInfo("Exported CSV pack: users, listings, bookings, payouts.");
     } catch (e) {
       console.error(e);
+      setLastInfo("Export failed. Check admin auth/token + server route mounts.");
       alert("Export failed.");
-      setLastInfo("Export failed.");
     } finally {
       setBusy(false);
     }
@@ -126,7 +83,7 @@ export default function AdminDataTools() {
         <AdminHeader
           back
           title="Data tools & exports"
-          subtitle="Export snapshots of Firestore collections for audit / support."
+          subtitle="Server-side exports (secure, production-ready)."
           rightActions={
             <ToolButton tone="default" onClick={() => window.location.reload()}>
               Refresh
@@ -135,19 +92,14 @@ export default function AdminDataTools() {
         />
 
         <div className="mt-6 grid gap-5 lg:grid-cols-[1.4fr,0.6fr]">
-          {/* left / main */}
           <div className="space-y-5">
-            <Panel title="Quick exports">
+            <Panel title="Quick exports (CSV)">
               <p className="text-sm text-white/70 mb-4">
-                This will read directly from Firestore and generate download files.
-                Keep for admin/support use only.
+                Uses the Admin API to generate CSV exports. Safer than client Firestore reads.
               </p>
               <div className="flex flex-wrap gap-3 items-center">
-                <ToolButton tone="amber" onClick={() => exportAll("csv")} disabled={busy}>
-                  {busy ? "Exporting…" : "Export CSV (users, listings, bookings)"}
-                </ToolButton>
-                <ToolButton tone="primary" onClick={() => exportAll("json")} disabled={busy}>
-                  {busy ? "Exporting…" : "Export JSON (single file)"}
+                <ToolButton tone="amber" onClick={exportCsvPack} disabled={busy}>
+                  {busy ? "Exporting…" : "Export CSV pack (users, listings, bookings, payouts)"}
                 </ToolButton>
                 <span className="text-xs text-white/50">
                   {busy ? "Working…" : lastInfo || "No export yet."}
@@ -156,22 +108,19 @@ export default function AdminDataTools() {
             </Panel>
 
             <Panel title="Maintenance (future)">
-              <p className="text-sm text-white/60 mb-3">
-                These actions will be wired to Cloud Functions later.
-              </p>
+              <p className="text-sm text-white/60 mb-3">These can be wired to admin-only Cloud Functions later.</p>
               <p className="text-xs text-white/40">
                 Examples: anonymise user data on request, recalc analytics, archive old bookings, etc.
               </p>
             </Panel>
           </div>
 
-          {/* right / notes */}
           <div className="space-y-5">
             <Panel title="Notes & guidance">
               <ul className="space-y-2 text-sm text-white/70">
-                <li>• Keep exports restricted to platform owners and senior support staff.</li>
-                <li>• Treat JSON exports as raw, sensitive datasets — store securely.</li>
-                <li>• CSV exports are ideal for Excel/Sheets, pivot tables, and audits.</li>
+                <li>• Exports contain sensitive data — store securely.</li>
+                <li>• Keep admin endpoints locked behind Firebase admin role.</li>
+                <li>• CSV is ideal for audit/reconciliation.</li>
               </ul>
             </Panel>
           </div>

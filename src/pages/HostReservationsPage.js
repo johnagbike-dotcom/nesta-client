@@ -13,6 +13,8 @@ import {
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 
+const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, "");
+
 const ngn = (n) => `₦${Number(n || 0).toLocaleString()}`;
 
 const toDateObj = (v) => {
@@ -531,51 +533,89 @@ function BookingDetailDrawer({
 }) {
   const nav = useNavigate();
 
+  const [contact, setContact] = useState(null);
+  const [contactLoading, setContactLoading] = useState(false);
+  const [contactErr, setContactErr] = useState("");
+
+  useEffect(() => {
+    // Reset contact state each time a new booking is opened
+    if (open && booking?.id) {
+      setContact(null);
+      setContactErr("");
+      setContactLoading(false);
+    }
+  }, [open, booking?.id]);
+
   if (!open || !booking) return null;
 
   const s = String(booking.status || "").toLowerCase();
-  const isConfirmable = [
-    "pending",
-    "hold",
-    "reserved_unpaid",
-    "awaiting_payment",
-  ].includes(s);
+
+  const isConfirmable = ["pending", "hold", "reserved_unpaid", "awaiting_payment"].includes(s);
   const isRefundable = s === "confirmed" || s === "paid";
-  const isCancelable =
-    s === "pending" ||
-    s === "hold" ||
-    s === "reserved_unpaid" ||
-    s === "confirmed" ||
-    s === "paid";
+  const isCancelable = ["pending", "hold", "reserved_unpaid", "confirmed", "paid"].includes(s);
 
-  const goReceipt = () => {
-    nav("/booking-complete", {
-      state: { booking },
-    });
-  };
-
-  const goCheckin = () => {
-    if (!booking.id) return;
-    nav(`/checkin/${booking.id}`, {
-      state: { booking },
-    });
-  };
+  const goReceipt = () => nav("/booking-complete", { state: { booking } });
+  const goCheckin = () => booking.id && nav(`/checkin/${booking.id}`, { state: { booking } });
 
   const datesLabel = () => {
     const ci = toDateObj(booking.checkIn);
     const co = toDateObj(booking.checkOut);
     const fmt = (d) =>
       d
-        ? d.toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-          })
+        ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
         : "—";
     return `${fmt(ci)} → ${fmt(co)}`;
   };
 
   const amount = booking.amountN || booking.total || booking.amount || 0;
+
+  const fetchContact = async () => {
+    if (!booking?.id) return;
+
+    setContactLoading(true);
+    setContactErr("");
+    try {
+      const res = await fetch(`${API_BASE}/bookings/${booking.id}/contact`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      // Try to read JSON safely
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!res.ok) {
+        const msg =
+          payload?.message ||
+          payload?.error ||
+          (res.status === 403
+            ? "Contact details are locked right now (timing/subscription/KYC rule)."
+            : "Could not fetch contact details.");
+        setContactErr(msg);
+        setContact(null);
+        return;
+      }
+
+      setContact({
+        phone: payload?.phone || null,
+        email: payload?.email || null,
+      });
+
+      if (!payload?.phone && !payload?.email) {
+        setContactErr("No contact details found for this booking.");
+      }
+    } catch (e) {
+      console.error("fetchContact failed:", e);
+      setContactErr("Network error: could not fetch contact details.");
+      setContact(null);
+    } finally {
+      setContactLoading(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-sm">
@@ -583,12 +623,9 @@ function BookingDetailDrawer({
         {/* Header */}
         <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-white">
-              Booking details
-            </h2>
+            <h2 className="text-sm font-semibold text-white">Booking details</h2>
             <p className="text-xs text-white/50">
-              {booking.listingTitle || booking.title || "Listing"} ·{" "}
-              {booking.guestEmail || "guest"}
+              {booking.listingTitle || booking.title || "Listing"} · {booking.guestEmail || "guest"}
             </p>
           </div>
           <button
@@ -611,12 +648,9 @@ function BookingDetailDrawer({
 
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
             <div className="text-xs text-white/60">Amount</div>
-            <div className="font-semibold mt-0.5">
-              {ngn(amount)}
-            </div>
+            <div className="font-semibold mt-0.5">{ngn(amount)}</div>
             <div className="text-xs text-white/60 mt-1">
-              Provider: {booking.provider || "—"} · Ref:{" "}
-              {booking.reference || booking.id || "—"}
+              Provider: {booking.provider || "—"} · Ref: {booking.reference || booking.id || "—"}
             </div>
           </div>
 
@@ -635,22 +669,57 @@ function BookingDetailDrawer({
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-            <div className="text-xs text-white/60">Guest</div>
-            <div className="mt-0.5 text-sm">
-              {booking.guestEmail || "—"}
-            </div>
-            {booking.guestPhone && (
-              <div className="text-xs text-white/60 mt-1">
-                Phone: {booking.guestPhone}
+          {/* ✅ Contact reveal card */}
+          <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs text-white/60">Contact details</div>
+                <div className="text-[11px] text-white/45 mt-1">
+                  Locked until eligible (confirmed booking + timing/subscription/KYC rules).
+                </div>
               </div>
-            )}
+
+              <button
+                onClick={fetchContact}
+                disabled={contactLoading}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+                  contactLoading
+                    ? "bg-white/5 border-white/10 text-white/40 cursor-not-allowed"
+                    : "bg-amber-500 text-black border-amber-400 hover:brightness-110"
+                }`}
+              >
+                {contactLoading ? "Checking…" : "Reveal"}
+              </button>
+            </div>
+
+            {contactErr ? (
+              <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-100">
+                {contactErr}
+              </div>
+            ) : null}
+
+            {contact && (contact.phone || contact.email) ? (
+              <div className="mt-3 space-y-2">
+                {contact.phone ? (
+                  <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <div className="text-xs text-white/60">Phone</div>
+                    <div className="text-sm font-semibold">{contact.phone}</div>
+                  </div>
+                ) : null}
+
+                {contact.email ? (
+                  <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <div className="text-xs text-white/60">Email</div>
+                    <div className="text-sm font-semibold">{contact.email}</div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 
         {/* Footer actions */}
         <div className="px-4 py-3 border-t border-white/10 flex flex-wrap items-center gap-3">
-          {/* Guest-facing actions */}
           <div className="flex flex-wrap gap-2">
             <button
               onClick={goReceipt}
@@ -666,7 +735,6 @@ function BookingDetailDrawer({
             </button>
           </div>
 
-          {/* Host actions */}
           <div className="flex flex-wrap gap-2 ml-auto">
             {isConfirmable && onConfirm && (
               <button

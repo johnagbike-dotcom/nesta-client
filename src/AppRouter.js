@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { ToastProvider } from "./components/Toast";
 import { InboxProvider } from "./context/InboxContext";
 import ReserveSuccessPage from "./pages/ReserveSuccessPage";
+import SearchBrowse from "./pages/SearchBrowse";
 // Legal / info pages
 import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
@@ -75,7 +76,7 @@ import PhoneSignin from "./auth/PhoneSignin";
 import ResetPassword from "./auth/ResetPassword";
 import MfaSetup from "./auth/MfaSetup";
 import AuthActionHandler from "./auth/AuthActionHandler";
-
+import MfaVerifyPage from "./auth/MfaVerifyPage";
 // Guards
 import {
   RequireAuth,
@@ -132,6 +133,9 @@ export default function AppRouter() {
               <Route path="/reset" element={<ResetPassword />} />
               <Route path="/mfa-setup" element={<MfaSetup />} />
               <Route path="/action" element={<AuthActionHandler />} />
+              <Route path="/mfa" element={<MfaVerifyPage />} />
+              <Route path="/search" element={<SearchBrowse />} />
+
 
               {/* ---------- Logged-in guest space ---------- */}
               <Route

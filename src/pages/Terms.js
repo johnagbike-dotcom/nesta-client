@@ -6,7 +6,7 @@ export default function Terms() {
   const year = new Date().getFullYear();
 
   return (
-    <main className="min-h-screen bg-[#05070a] pt-20 pb-20 px-4 text-white">
+    <main className="min-h-screen bg-[#05070a] pt-[calc(var(--topbar-h,88px)+24px)] pb-20 px-4 text-white">
       <div className="max-w-4xl mx-auto space-y-10">
         {/* HEADER */}
         <section className="rounded-3xl border border-white/10 bg-[#0a0e14] px-6 py-10 shadow-[0_20px_80px_rgba(0,0,0,0.55)]">

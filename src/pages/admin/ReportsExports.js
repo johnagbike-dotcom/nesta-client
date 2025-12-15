@@ -1,15 +1,31 @@
 // src/pages/admin/ReportsExports.js
 import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { collection, getDocs, orderBy, query } from "firebase/firestore";
+import axios from "axios";
+import { getAuth } from "firebase/auth";
 import { db } from "../../firebase";
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
 import DateRangeBar from "../../components/DateRangeBar";
 import { withRangeParams } from "../../lib/api";
 
-/* ------------------------------ API base ------------------------------ */
+/* ------------------------------ API base (auth) ------------------------------ */
 const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, "");
+
+const api = axios.create({
+  baseURL: API_BASE,
+  timeout: 20000,
+});
+
+// Attach Firebase ID token automatically
+api.interceptors.request.use(async (config) => {
+  const user = getAuth().currentUser;
+  if (user) {
+    const token = await user.getIdToken();
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 /* ------------------------------ UI bits ------------------------------- */
 const Card = ({ title, children }) => (
@@ -40,6 +56,7 @@ const demoBookings = [
     createdAt: { toDate: () => new Date() },
   },
 ];
+
 const demoPayouts = [
   {
     id: "demo-po-1",
@@ -51,39 +68,79 @@ const demoPayouts = [
   },
 ];
 
+/* ------------------------------ download helper ------------------------------ */
+function pickFilenameFromDisposition(disposition, fallback) {
+  try {
+    if (!disposition) return fallback;
+    // supports: attachment; filename="abc.csv"
+    const m = /filename\*?=(?:UTF-8'')?"?([^"]+)"?/i.exec(disposition);
+    if (!m?.[1]) return fallback;
+    return decodeURIComponent(m[1]).replace(/[/\\]/g, "_");
+  } catch {
+    return fallback;
+  }
+}
+
+async function downloadCsvAuthed(href, fallbackName = "export.csv") {
+  // href can be "/admin/users/export.csv?from=...&to=..."
+  const res = await api.get(href, { responseType: "blob" });
+
+  const disposition = res.headers?.["content-disposition"] || res.headers?.["Content-Disposition"];
+  const filename = pickFilenameFromDisposition(disposition, fallbackName);
+
+  const blob = new Blob([res.data], { type: "text/csv;charset=utf-8" });
+  const url = window.URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  window.URL.revokeObjectURL(url);
+}
+
 /* -------------------------------- Page -------------------------------- */
 export default function ReportsExports() {
-  const navigate = useNavigate();
-
   const [range, setRange] = useState({ from: "", to: "" });
 
   const [bookings, setBookings] = useState([]);
   const [payouts, setPayouts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [downloading, setDownloading] = useState("");
   const [err, setErr] = useState("");
 
-  // Export links (server streams CSV) — range-aware
+  // Export endpoints (range-aware)
   const usersCsvHref = useMemo(() => withRangeParams("/admin/users/export.csv", range), [range]);
   const listingsCsvHref = useMemo(() => withRangeParams("/admin/listings/export.csv", range), [range]);
   const bookingsCsvHref = useMemo(() => withRangeParams("/admin/bookings/export.csv", range), [range]);
   const kycCsvHref = useMemo(() => withRangeParams("/admin/kyc/export.csv", range), [range]);
+  const payoutsCsvHref = useMemo(() => withRangeParams("/admin/payouts/export.csv", range), [range]); // optional (if route exists)
 
   const refresh = async () => {
     setErr("");
     setLoading(true);
+
     try {
       let b = [];
       let p = [];
+
       try {
         const qb = query(collection(db, "bookings"), orderBy("createdAt", "desc"));
         const sb = await getDocs(qb);
         sb.forEach((d) => b.push({ id: d.id, ...d.data() }));
-      } catch {}
+      } catch {
+        // ignore
+      }
+
       try {
         const qp = query(collection(db, "payouts"), orderBy("createdAt", "desc"));
         const sp = await getDocs(qp);
         sp.forEach((d) => p.push({ id: d.id, ...d.data() }));
-      } catch {}
+      } catch {
+        // ignore
+      }
 
       if (b.length === 0) b = demoBookings;
       if (p.length === 0) p = demoPayouts;
@@ -109,20 +166,19 @@ export default function ReportsExports() {
     () => bookings.reduce((s, r) => s + Number(r.totalAmount || r.amount || 0), 0),
     [bookings]
   );
-  const payoutTotal = useMemo(
-    () => payouts.reduce((s, r) => s + Number(r.amount || 0), 0),
-    [payouts]
-  );
 
-  const openHref = (href) => {
+  const payoutTotal = useMemo(() => payouts.reduce((s, r) => s + Number(r.amount || 0), 0), [payouts]);
+
+  const doDownload = async (href, name) => {
+    setDownloading(name);
+    setErr("");
     try {
-      const a = document.createElement("a");
-      a.href = href.startsWith("http") ? href : `${API_BASE}${href}`;
-      a.target = "_blank";
-      a.rel = "noreferrer";
-      a.click();
-    } catch {
-      window.location.href = href;
+      await downloadCsvAuthed(href, name);
+    } catch (e) {
+      console.error("CSV download failed:", e?.response?.data || e.message);
+      setErr("CSV download failed. (Check admin auth / route wiring)");
+    } finally {
+      setDownloading("");
     }
   };
 
@@ -188,8 +244,13 @@ export default function ReportsExports() {
             <div className="muted" style={{ marginBottom: 10, color: "#cbd5e1" }}>
               Directory of all accounts.
             </div>
-            <LuxeBtn kind="gold" onClick={() => openHref(usersCsvHref)}>
-              Export Users CSV
+            <LuxeBtn
+              kind="gold"
+              onClick={() => doDownload(usersCsvHref, `users-${Date.now()}.csv`)}
+              disabled={!!downloading}
+              title="Download CSV"
+            >
+              {downloading ? "Preparing…" : "Export Users CSV"}
             </LuxeBtn>
           </Card>
 
@@ -197,8 +258,13 @@ export default function ReportsExports() {
             <div className="muted" style={{ marginBottom: 10, color: "#cbd5e1" }}>
               Inventory, status, and premium flags.
             </div>
-            <LuxeBtn kind="gold" onClick={() => openHref(listingsCsvHref)}>
-              Export Listings CSV
+            <LuxeBtn
+              kind="gold"
+              onClick={() => doDownload(listingsCsvHref, `listings-${Date.now()}.csv`)}
+              disabled={!!downloading}
+              title="Download CSV"
+            >
+              {downloading ? "Preparing…" : "Export Listings CSV"}
             </LuxeBtn>
           </Card>
 
@@ -206,8 +272,13 @@ export default function ReportsExports() {
             <div className="muted" style={{ marginBottom: 10, color: "#cbd5e1" }}>
               Payments, references, and states.
             </div>
-            <LuxeBtn kind="gold" onClick={() => openHref(bookingsCsvHref)}>
-              Export Bookings CSV
+            <LuxeBtn
+              kind="gold"
+              onClick={() => doDownload(bookingsCsvHref, `bookings-${Date.now()}.csv`)}
+              disabled={!!downloading}
+              title="Download CSV"
+            >
+              {downloading ? "Preparing…" : "Export Bookings CSV"}
             </LuxeBtn>
           </Card>
 
@@ -215,8 +286,28 @@ export default function ReportsExports() {
             <div className="muted" style={{ marginBottom: 10, color: "#cbd5e1" }}>
               Verification workflow data.
             </div>
-            <LuxeBtn kind="gold" onClick={() => openHref(kycCsvHref)}>
-              Export KYC CSV
+            <LuxeBtn
+              kind="gold"
+              onClick={() => doDownload(kycCsvHref, `kyc-${Date.now()}.csv`)}
+              disabled={!!downloading}
+              title="Download CSV"
+            >
+              {downloading ? "Preparing…" : "Export KYC CSV"}
+            </LuxeBtn>
+          </Card>
+
+          {/* Optional: Payouts export if your route exists */}
+          <Card title="Payouts">
+            <div className="muted" style={{ marginBottom: 10, color: "#cbd5e1" }}>
+              Settlement ledger for hosts/partners.
+            </div>
+            <LuxeBtn
+              kind="gold"
+              onClick={() => doDownload(payoutsCsvHref, `payouts-${Date.now()}.csv`)}
+              disabled={!!downloading}
+              title="Download CSV"
+            >
+              {downloading ? "Preparing…" : "Export Payouts CSV"}
             </LuxeBtn>
           </Card>
         </div>
@@ -239,18 +330,10 @@ export default function ReportsExports() {
           ) : (
             <>
               <div style={{ padding: "8px 16px", color: "#cbd5e1" }}>
-                Rows: {bookings.length.toLocaleString()} • Total: ₦
-                {bookingTotal.toLocaleString()}
+                Rows: {bookings.length.toLocaleString()} • Total: ₦{bookingTotal.toLocaleString()}
               </div>
               <div style={{ overflowX: "auto" }}>
-                <table
-                  style={{
-                    width: "100%",
-                    borderCollapse: "separate",
-                    borderSpacing: 0,
-                    minWidth: 760,
-                  }}
-                >
+                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 760 }}>
                   <thead>
                     <tr style={thRow}>
                       {["ID", "Listing", "Guest", "Nights", "Total", "Status"].map((h) => (
@@ -269,12 +352,8 @@ export default function ReportsExports() {
                         <td style={{ padding: "10px 16px" }}>{r.listingTitle || r.listingId || "—"}</td>
                         <td style={{ padding: "10px 16px" }}>{r.guestEmail || "—"}</td>
                         <td style={{ padding: "10px 16px" }}>{Number(r.nights || 0)}</td>
-                        <td style={{ padding: "10px 16px" }}>
-                          ₦{Number(r.totalAmount || r.amount || 0).toLocaleString()}
-                        </td>
-                        <td style={{ padding: "10px 16px", textTransform: "capitalize" }}>
-                          {r.status || ""}
-                        </td>
+                        <td style={{ padding: "10px 16px" }}>₦{Number(r.totalAmount || r.amount || 0).toLocaleString()}</td>
+                        <td style={{ padding: "10px 16px", textTransform: "capitalize" }}>{r.status || ""}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -302,18 +381,10 @@ export default function ReportsExports() {
           ) : (
             <>
               <div style={{ padding: "8px 16px", color: "#cbd5e1" }}>
-                Rows: {payouts.length.toLocaleString()} • Total: ₦
-                {payoutTotal.toLocaleString()}
+                Rows: {payouts.length.toLocaleString()} • Total: ₦{payoutTotal.toLocaleString()}
               </div>
               <div style={{ overflowX: "auto" }}>
-                <table
-                  style={{
-                    width: "100%",
-                    borderCollapse: "separate",
-                    borderSpacing: 0,
-                    minWidth: 720,
-                  }}
-                >
+                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 720 }}>
                   <thead>
                     <tr style={thRow}>
                       {["ID", "Payee", "Type", "Amount", "Status"].map((h) => (
@@ -330,15 +401,9 @@ export default function ReportsExports() {
                           {r.id}
                         </td>
                         <td style={{ padding: "10px 16px" }}>{r.payeeEmail || "—"}</td>
-                        <td style={{ padding: "10px 16px", textTransform: "capitalize" }}>
-                          {r.payeeType || "—"}
-                        </td>
-                        <td style={{ padding: "10px 16px" }}>
-                          ₦{Number(r.amount || 0).toLocaleString()}
-                        </td>
-                        <td style={{ padding: "10px 16px", textTransform: "capitalize" }}>
-                          {r.status || ""}
-                        </td>
+                        <td style={{ padding: "10px 16px", textTransform: "capitalize" }}>{r.payeeType || "—"}</td>
+                        <td style={{ padding: "10px 16px" }}>₦{Number(r.amount || 0).toLocaleString()}</td>
+                        <td style={{ padding: "10px 16px", textTransform: "capitalize" }}>{r.status || ""}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -346,6 +411,10 @@ export default function ReportsExports() {
               </div>
             </>
           )}
+        </div>
+
+        <div style={{ marginTop: 18, color: "#94a3b8", fontSize: 12 }}>
+          Export downloads are authenticated (admin-only) and range-aware.
         </div>
       </div>
     </main>

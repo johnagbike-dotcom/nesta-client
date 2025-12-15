@@ -2,7 +2,17 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { getAuth } from "firebase/auth";
 
+api.interceptors.request.use(async (config) => {
+  const u = getAuth().currentUser;
+  if (u) {
+    const token = await u.getIdToken();
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 /* ------------------------------ axios base ------------------------------ */
 const api = axios.create({
   baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),

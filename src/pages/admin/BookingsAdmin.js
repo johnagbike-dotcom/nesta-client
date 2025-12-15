@@ -8,22 +8,27 @@ import AdminLayout from "../../layouts/AdminLayout";
 
 // Firestore helpers (for resolving chat UIDs)
 import { db } from "../../firebase";
-import {
-  collection,
-  getDocs,
-  query as fsQuery,
-  where,
-  limit as fsLimit,
-} from "firebase/firestore";
+import { collection, getDocs, query as fsQuery, where, limit as fsLimit } from "firebase/firestore";
+
+// ✅ attach Firebase token to requests
+import { getAuth } from "firebase/auth";
 
 /* axios base */
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
-    /\/$/,
-    ""
-  ),
-  withCredentials: false,
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
   timeout: 15000,
+});
+
+api.interceptors.request.use(async (config) => {
+  const auth = getAuth();
+  const user = auth.currentUser;
+
+  if (user) {
+    const token = await user.getIdToken();
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+
+  return config;
 });
 
 /* helpers */
@@ -104,9 +109,7 @@ const ActionBtn = ({ kind = "ghost", children, onClick, disabled }) => {
       }}
       onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
       onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
-      onMouseEnter={(e) =>
-        !disabled && (e.currentTarget.style.filter = "brightness(1.05)")
-      }
+      onMouseEnter={(e) => !disabled && (e.currentTarget.style.filter = "brightness(1.05)")}
       onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
     >
       {children}
@@ -160,10 +163,18 @@ export default function BookingsAdmin() {
       const norm = list.map((b) => {
         const id = b.id || b._id || b.bookingId || b.reference || b.ref;
         const status = String(b.status || "pending").toLowerCase();
+
         const hasCancelReq =
-          b.cancellationRequested === true || status === "cancel_req";
+          b.cancellationRequested === true ||
+          status === "cancel_req" ||
+          status === "cancel-requested";
+
         const hasDateChange =
-          b.dateChangeRequested === true || status === "date_change";
+          b.dateChangeRequested === true ||
+          status === "date_change" ||
+          status === "date-change";
+
+        const amount = Number(b.amountN ?? b.amount ?? b.totalAmount ?? b.total ?? 0);
 
         return {
           id,
@@ -179,7 +190,7 @@ export default function BookingsAdmin() {
             b.providerEmail ||
             b.host ||
             null,
-          amount: Number(b.amount || b.total || 0),
+          amount,
           status,
           gateway: b.gateway || b.paymentGateway || "success",
           ref: String(b.reference || b.ref || id || "-"),
@@ -251,9 +262,7 @@ export default function BookingsAdmin() {
 
   const refundBooking = async (id) => {
     try {
-      await api.post(`/bookings/${encodeURIComponent(id)}/refund`, {
-        note: "admin_refund",
-      });
+      await api.post(`/bookings/${encodeURIComponent(id)}/refund`, { note: "admin_refund" });
       return true;
     } catch (e) {
       console.error("Refund API failed:", e);
@@ -268,12 +277,9 @@ export default function BookingsAdmin() {
     ];
     for (const fn of fns) {
       try {
-        const path = fn.length === 1 ? fn(id) : fn(id, status);
-        if (path.endsWith("/status")) {
-          await api.patch(path, { status });
-        } else {
-          await api.post(path);
-        }
+        const p = fn.length === 1 ? fn(id) : fn(id, status);
+        if (p.endsWith("/status")) await api.patch(p, { status });
+        else await api.post(p);
         return true;
       } catch {
         // try next
@@ -291,12 +297,7 @@ export default function BookingsAdmin() {
     setRows(
       rows.map((r) =>
         r.id === row.id
-          ? {
-              ...r,
-              status: toStatus,
-              cancellationRequested: false,
-              dateChangeRequested: false,
-            }
+          ? { ...r, status: toStatus, cancellationRequested: false, dateChangeRequested: false }
           : r
       )
     );
@@ -318,9 +319,7 @@ export default function BookingsAdmin() {
   async function findUserUidByEmail(email) {
     if (!email) return null;
     try {
-      const qSnap = await getDocs(
-        fsQuery(collection(db, "users"), where("email", "==", email), fsLimit(1))
-      );
+      const qSnap = await getDocs(fsQuery(collection(db, "users"), where("email", "==", email), fsLimit(1)));
       if (!qSnap.empty) return qSnap.docs[0].id;
     } catch (e) {
       console.warn("Email lookup failed:", e);
@@ -407,22 +406,8 @@ export default function BookingsAdmin() {
   };
 
   return (
-    <AdminLayout
-      title="Bookings overview"
-      subtitle="Latest guest reservations across the platform."
-    >
-      {/* filters + search + tools */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        {/* tabs */}
+    <AdminLayout title="Bookings overview" subtitle="Latest guest reservations across the platform.">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {[
             { k: "all", label: "All", count: counts.all },
@@ -445,10 +430,7 @@ export default function BookingsAdmin() {
                 padding: "8px 14px",
                 borderRadius: 999,
                 border: "1px solid rgba(255,255,255,.06)",
-                background:
-                  tab === t.k
-                    ? "linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c)"
-                    : "rgba(255,255,255,.02)",
+                background: tab === t.k ? "linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c)" : "rgba(255,255,255,.02)",
                 color: tab === t.k ? "#201807" : "#e2e8f0",
                 fontWeight: 800,
                 fontSize: 13,
@@ -475,18 +457,8 @@ export default function BookingsAdmin() {
           ))}
         </div>
 
-        {/* right tools */}
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <span
-            style={{
-              background: "rgba(15,23,42,.25)",
-              border: "1px solid rgba(255,255,255,.04)",
-              borderRadius: 999,
-              padding: "6px 14px",
-              color: "#e2e8f0",
-              fontSize: 13,
-            }}
-          >
+          <span style={{ background: "rgba(15,23,42,.25)", border: "1px solid rgba(255,255,255,.04)", borderRadius: 999, padding: "6px 14px", color: "#e2e8f0", fontSize: 13 }}>
             Total loaded: {rows.length}
           </span>
 
@@ -539,29 +511,8 @@ export default function BookingsAdmin() {
         </div>
       </div>
 
-      {/* table */}
-      <div
-        style={{
-          borderRadius: 18,
-          border: "1px solid rgba(255,255,255,.03)",
-          background: "radial-gradient(circle at top, rgba(15,23,42,.65), rgba(2,6,23,1))",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1.4fr .9fr .7fr .7fr .7fr",
-            gap: 8,
-            padding: "12px 16px",
-            borderBottom: "1px solid rgba(255,255,255,.03)",
-            color: "rgba(226,232,240,.6)",
-            fontWeight: 600,
-            fontSize: 12,
-            textTransform: "uppercase",
-            letterSpacing: ".02em",
-          }}
-        >
+      <div style={{ borderRadius: 18, border: "1px solid rgba(255,255,255,.03)", background: "radial-gradient(circle at top, rgba(15,23,42,.65), rgba(2,6,23,1))", overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr .9fr .7fr .7fr .7fr", gap: 8, padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,.03)", color: "rgba(226,232,240,.6)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", letterSpacing: ".02em" }}>
           <div>Listing</div>
           <div>Dates</div>
           <div>Amount</div>
@@ -575,24 +526,10 @@ export default function BookingsAdmin() {
           <div style={{ padding: 18, color: "#94a3b8" }}>No bookings found.</div>
         ) : (
           pageItems.map((r) => {
-            const tone = r.cancellationRequested
-              ? "cancel-requested"
-              : r.dateChangeRequested
-              ? "date-change"
-              : r.status;
+            const tone = r.cancellationRequested ? "cancel-requested" : r.dateChangeRequested ? "date-change" : r.status;
 
             return (
-              <div
-                key={r.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1.4fr .9fr .7fr .7fr .7fr",
-                  gap: 8,
-                  padding: "14px 16px",
-                  borderBottom: "1px solid rgba(255,255,255,.015)",
-                  alignItems: "center",
-                }}
-              >
+              <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1.4fr .9fr .7fr .7fr .7fr", gap: 8, padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,.015)", alignItems: "center" }}>
                 <div>
                   <div style={{ fontWeight: 700, color: "#fff" }}>{r.listing}</div>
                   <div style={{ fontSize: 12, color: "rgba(226,232,240,.6)", marginTop: 2 }}>
@@ -602,13 +539,7 @@ export default function BookingsAdmin() {
                   </div>
                   <div style={{ marginTop: 6 }}>
                     <Chip
-                      label={
-                        r.cancellationRequested
-                          ? "cancel req"
-                          : r.dateChangeRequested
-                          ? "date change"
-                          : r.status
-                      }
+                      label={r.cancellationRequested ? "cancel req" : r.dateChangeRequested ? "date change" : r.status}
                       tone={tone}
                     />
                   </div>
@@ -634,27 +565,15 @@ export default function BookingsAdmin() {
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   {r.status === "confirmed" ? (
                     <>
-                      <ActionBtn
-                        kind="cancel"
-                        disabled={busyId === r.id}
-                        onClick={() => doAction(r, "cancelled")}
-                      >
+                      <ActionBtn kind="cancel" disabled={busyId === r.id} onClick={() => doAction(r, "cancelled")}>
                         Mark cancelled
                       </ActionBtn>
-                      <ActionBtn
-                        kind="cancel"
-                        disabled={busyId === r.id}
-                        onClick={() => doAction(r, "refunded")}
-                      >
+                      <ActionBtn kind="cancel" disabled={busyId === r.id} onClick={() => doAction(r, "refunded")}>
                         Refund
                       </ActionBtn>
                     </>
                   ) : (
-                    <ActionBtn
-                      kind="confirm"
-                      disabled={busyId === r.id}
-                      onClick={() => doAction(r, "confirmed")}
-                    >
+                    <ActionBtn kind="confirm" disabled={busyId === r.id} onClick={() => doAction(r, "confirmed")}>
                       Mark confirmed
                     </ActionBtn>
                   )}
@@ -672,22 +591,34 @@ export default function BookingsAdmin() {
         )}
       </div>
 
-      {/* pagination */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          marginTop: 16,
-          alignItems: "center",
-          gap: 16,
-          flexWrap: "wrap",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16, alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <div style={{ color: "#94a3b8", fontSize: 13 }}>
-          Showing {(page - 1) * perPage + 1} – {Math.min(page * perPage, total)} of {total} results
+          Showing {total === 0 ? 0 : (page - 1) * perPage + 1} – {Math.min(page * perPage, total)} of {total} results
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <select
+            value={perPage}
+            onChange={(e) => {
+              setPerPage(Number(e.target.value));
+              setPage(1);
+            }}
+            style={{
+              background: "rgba(255,255,255,.03)",
+              border: "1px solid rgba(255,255,255,.05)",
+              color: "#fff",
+              padding: "6px 14px",
+              borderRadius: 999,
+              cursor: "pointer",
+            }}
+          >
+            {[10, 20, 50].map((n) => (
+              <option key={n} value={n}>
+                {n} / page
+              </option>
+            ))}
+          </select>
+
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}

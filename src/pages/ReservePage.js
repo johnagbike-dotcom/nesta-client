@@ -44,7 +44,7 @@ const ngn = (n) => `₦${Number(n || 0).toLocaleString()}`;
 function Stepper({ step }) {
   const steps = [
     { id: 1, label: "Dates & guests" },
-    { id: 2, label: "Guest details" },
+    { id: 2, label: "Confirm details" },
     { id: 3, label: "Payment" },
   ];
   return (
@@ -95,6 +95,8 @@ export default function ReservePage() {
           title: state.title ?? "Listing",
           pricePerNight: Number(state.price ?? 0),
           ownerId: state.hostId ?? null,
+          city: state.city || "",
+          area: state.area || "",
         }
       : null
   );
@@ -113,7 +115,7 @@ export default function ReservePage() {
             id: snap.id,
             title: d.title || "Listing",
             pricePerNight: Number(d.pricePerNight || d.price || 0),
-            ownerId: d.ownerId || null,
+            ownerId: d.ownerId || d.ownerUid || null,
             city: d.city || "",
             area: d.area || "",
           });
@@ -136,9 +138,6 @@ export default function ReservePage() {
   const [guests, setGuests] = useState(1);
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
-  const [idType, setIdType] = useState("passport");
-  const [idLast4, setIdLast4] = useState("");
-  const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [holdInfo, setHoldInfo] = useState(null);
 
@@ -156,22 +155,13 @@ export default function ReservePage() {
   const total = useMemo(() => {
     if (!listing) return 0;
     const perNight = Number(listing.pricePerNight || 0);
-    return Math.max(Number(perNight) * nights * Number(guests || 0), 0);
+    return Math.max(perNight * nights * Number(guests || 0), 0);
   }, [listing, nights, guests]);
 
   const canGoToStep2 = Boolean(listing && guests > 0 && datesValid && nights > 0);
-  const canGoToStep3 = Boolean(idLast4.length === 4 && consent && canGoToStep2);
+  const canGoToStep3 = Boolean(canGoToStep2);
 
-  const canPay =
-    Boolean(
-      user &&
-        listing &&
-        datesValid &&
-        total > 0 &&
-        guests > 0 &&
-        consent &&
-        idLast4.length === 4
-    );
+  const canPay = Boolean(user && listing && datesValid && total > 0 && guests > 0);
 
   // Guard – non-guests
   if (user && !isGuest) {
@@ -198,21 +188,6 @@ export default function ReservePage() {
             >
               ← Back
             </button>
-            {role === "partner" || role === "verified_partner" ? (
-              <button
-                className="px-4 py-2 rounded-full bg-white/10 border border-white/20 text-xs md:text-sm hover:bg-white/15"
-                onClick={() => nav("/partner")}
-              >
-                Go to Partner dashboard
-              </button>
-            ) : role === "host" ? (
-              <button
-                className="px-4 py-2 rounded-full bg-white/10 border border-white/20 text-xs md:text-sm hover:bg-white/15"
-                onClick={() => nav("/host")}
-              >
-                Go to Host dashboard
-              </button>
-            ) : null}
           </div>
         </div>
       </main>
@@ -232,18 +207,17 @@ export default function ReservePage() {
       return null;
     }
     try {
+      // NOTE: ID is intentionally NOT collected here (luxury best practice: don't block purchase)
       const { id, expiresAt } = await ensurePendingHoldFS({
         listing,
         user,
         guests,
         nights,
         amountN: total,
-        idType,
-        idLast4,
-        consent,
         checkIn,
         checkOut,
         ttlMinutes: 90,
+        idCheck: null, // explicit: handled at check-in stage
       });
       setHoldInfo({ id, expiresAt });
       return id;
@@ -254,18 +228,49 @@ export default function ReservePage() {
     }
   }
 
+  async function routeAfterPayment(bookingId) {
+    try {
+      // If check-in verification is missing, send to check-in gate first
+      const snap = await getDoc(doc(db, "bookings", bookingId));
+      const b = snap.exists() ? snap.data() : null;
+      const hasId =
+        !!b?.idCheck?.consent && String(b?.idCheck?.last4 || "").length === 4;
+
+      if (!hasId) {
+        toast("Almost done — complete ID check-in to unlock your guide.", "info");
+        nav(`/checkin/${bookingId}`, { replace: true });
+        return;
+      }
+
+      nav("/reserve/success", {
+        replace: true,
+        state: { bookingId, listing },
+      });
+    } catch (e) {
+      console.error(e);
+      // Fallback: still show success page (guest can complete ID later in check-in)
+      nav("/reserve/success", {
+        replace: true,
+        state: { bookingId, listing },
+      });
+    }
+  }
+
   // Paystack gateway
   async function onPaystack() {
     const bookingId = await ensureHold();
     if (!bookingId) return;
+
     const key = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY;
     if (!window.PaystackPop || !key) {
       toast("Paystack script/key missing.", "error");
       return;
     }
+
     const amountKobo = Math.max(100, Math.floor(Number(total || 0) * 100));
     const ref = `NESTA_${bookingId}_${Date.now()}`;
     setBusy(true);
+
     const handler = window.PaystackPop.setup({
       key,
       email: user?.email || "guest@example.com",
@@ -277,13 +282,10 @@ export default function ReservePage() {
           provider: "paystack",
           reference: response?.reference || ref,
         })
-          .then(() => {
+          .then(async () => {
             setBusy(false);
             toast("Payment complete! 🎉", "success");
-            nav("/reserve/success", {
-              replace: true,
-              state: { bookingId, listing },
-            });
+            await routeAfterPayment(bookingId);
           })
           .catch((e) => {
             console.error(e);
@@ -300,6 +302,7 @@ export default function ReservePage() {
           });
       },
     });
+
     if (handler?.openIframe) handler.openIframe();
   }
 
@@ -333,8 +336,7 @@ export default function ReservePage() {
             Complete your reservation
           </h1>
           <p className="text-sm text-white/70 max-w-xl mt-1">
-            Lock in your stay with secure payment. Hosts are notified instantly
-            once your booking is confirmed.
+            Fast checkout first. ID check-in happens after confirmation to protect both guests and hosts.
           </p>
         </div>
 
@@ -359,8 +361,7 @@ export default function ReservePage() {
                     {listing?.title || "Listing"}
                   </h2>
                   <p className="text-xs text-gray-400 mt-1">
-                    Secure booking on Nesta • host sees your request as soon as
-                    payment is successful.
+                    Secure booking on Nesta • contact details remain hidden until booking rules allow.
                   </p>
                 </>
               )}
@@ -421,57 +422,26 @@ export default function ReservePage() {
                         : "bg-white/5 text-white/35 cursor-not-allowed"
                     }`}
                   >
-                    Next: guest details →
+                    Next →
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Step 2: Guest details / ID */}
+            {/* Step 2: Confirm details (no ID here) */}
             {step === 2 && (
               <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
                 <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
-                  Step 2 · Guest details
+                  Step 2 · Confirm details
                 </h3>
 
-                <p className="text-xs text-gray-400">
-                  For security, we capture a quick ID reference. The host only
-                  sees a masked version.
-                </p>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Field label="ID Type">
-                    <select
-                      value={idType}
-                      onChange={(e) => setIdType(e.target.value)}
-                      className="w-full bg-transparent outline-none text-white text-sm"
-                    >
-                      <option value="passport">Passport</option>
-                      <option value="nin">NIN</option>
-                      <option value="bvn">BVN</option>
-                    </select>
-                  </Field>
-                  <Field label="Last 4 digits">
-                    <Input
-                      type="text"
-                      maxLength={4}
-                      value={idLast4}
-                      onChange={(e) =>
-                        setIdLast4(e.target.value.replace(/\D/g, ""))
-                      }
-                    />
-                  </Field>
+                <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
+                  <p className="text-white/90 font-semibold">Privacy & security</p>
+                  <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                    Nesta keeps contact details hidden and encourages all communication in-app.
+                    After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
+                  </p>
                 </div>
-
-                <label className="flex items-center gap-2 mt-1 text-xs text-gray-200">
-                  <input
-                    type="checkbox"
-                    checked={consent}
-                    onChange={(e) => setConsent(e.target.checked)}
-                  />
-                  I consent to Nesta using this ID reference to protect both
-                  guest and host.
-                </label>
 
                 <div className="flex justify-between items-center mt-3">
                   <button
@@ -534,7 +504,7 @@ export default function ReservePage() {
                   onClick={() => setStep(2)}
                   className="mt-3 px-3 py-1.5 rounded-full text-xs bg-white/5 border border-white/15 hover:bg-white/10"
                 >
-                  ← Back to details
+                  ← Back
                 </button>
               </div>
             )}
@@ -543,9 +513,7 @@ export default function ReservePage() {
           {/* RIGHT – summary card */}
           <aside className="space-y-4">
             <div className="rounded-3xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,.8)]">
-              <h3
-                className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70"
-              >
+              <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">
                 Booking summary
               </h3>
               {listing ? (
@@ -585,22 +553,22 @@ export default function ReservePage() {
                 stores your full card details.
               </p>
               <p>
-                If payment fails or is cancelled, your temporary reservation
-                hold will automatically expire and the host will not see it as a
-                confirmed booking.
+                After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
               </p>
             </div>
           </aside>
         </div>
-      </div>
-      {/* Secure Checkout Strip */}
-<div className="mt-10 border-t border-white/5 pt-6">
-  <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
-    <span className="text-lg">🔒</span>
-    <span>Secure checkout · Powered by Paystack · Encrypted payment processing</span>
-  </div>
-</div>
 
+        {/* Secure Checkout Strip */}
+        <div className="mt-10 border-t border-white/5 pt-6">
+          <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
+            <span className="text-lg">🔒</span>
+            <span>
+              Secure checkout · Powered by Paystack · Encrypted payment processing
+            </span>
+          </div>
+        </div>
+      </div>
     </main>
   );
 }

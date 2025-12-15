@@ -359,12 +359,10 @@ export default function BookingDetailsPage() {
               </button>
 
               <button
-                onClick={() =>
-                  nav(`/receipt/${data.id || id}`, { state: { booking: data } })
-                }
+                onClick={() => nav(`/checkin/${data.id || id}`, { state: { booking: data } })}
                 className="px-4 py-2 rounded-full bg-white/5 border border-white/12 text-xs md:text-sm hover:bg-white/10"
               >
-                View receipt
+                Check-in guide / verification
               </button>
 
               {canCancel && (

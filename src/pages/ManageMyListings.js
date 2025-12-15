@@ -41,25 +41,11 @@ export default function ManageMyListings() {
 
         const colRef = collection(db, "listings");
 
-        // 🔑 host vs partner logic:
-        //  - Hosts are matched on ownerId
-        //  - Partners are matched on partnerUid (or partnerId fallback)
-        let qref;
-
-        if (isPartner) {
-          qref = query(
-            colRef,
-            where("partnerUid", "==", user.uid),
-            orderBy("createdAt", "desc")
-          );
-        } else {
-          // default to host-style ownership
-          qref = query(
-            colRef,
-            where("ownerId", "==", user.uid),
-            orderBy("createdAt", "desc")
-          );
-        }
+        // Hosts matched on ownerId
+        // Partners matched on partnerUid (or partnerId fallback if you add it later)
+        const qref = isPartner
+          ? query(colRef, where("partnerUid", "==", user.uid), orderBy("createdAt", "desc"))
+          : query(colRef, where("ownerId", "==", user.uid), orderBy("createdAt", "desc"));
 
         const snap = await getDocs(qref);
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -116,7 +102,10 @@ export default function ManageMyListings() {
       : "Your Managed Listings";
 
   return (
-    <main className="container mx-auto px-4 py-6 text-white">
+    <main
+      className="container mx-auto px-4 py-6 text-white"
+      style={{ paddingTop: 96 }} // ✅ fixes fixed header overlap
+    >
       <button
         className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
         onClick={() => navigate(-1)}
@@ -124,12 +113,8 @@ export default function ManageMyListings() {
         ← Back
       </button>
 
-      <h1 className="mt-4 text-2xl md:text-3xl font-extrabold">
-        {heading}
-      </h1>
-      <p className="text-white/70 mt-1">
-        Search, filter, and update your managed inventory.
-      </p>
+      <h1 className="mt-4 text-2xl md:text-3xl font-extrabold">{heading}</h1>
+      <p className="text-white/70 mt-1">Search, filter, and update your managed inventory.</p>
 
       {err && (
         <div className="mt-4 rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-red-200">
@@ -169,14 +154,10 @@ export default function ManageMyListings() {
       {/* list */}
       <div className="mt-5">
         {loading ? (
-          <div className="rounded-xl border border-white/10 bg-white/5 p-5">
-            Loading…
-          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-5">Loading…</div>
         ) : filtered.length === 0 ? (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-center">
-            <p className="mb-3 text-white/80">
-              No listings match your filters.
-            </p>
+            <p className="mb-3 text-white/80">No listings match your filters.</p>
             <Link
               to="/post/new"
               className="inline-block px-5 py-2 rounded-xl bg-amber-500 text-black font-semibold hover:bg-amber-600"
@@ -201,14 +182,13 @@ export default function ManageMyListings() {
                       {l.status || "active"}
                     </span>
                   </div>
+
                   <div className="text-white/70 mt-1">
                     {l.city || "—"} • {l.area || "—"}
                     {typeof l.pricePerNight === "number" ? (
                       <>
                         {" "}
-                        • ₦
-                        {Number(l.pricePerNight).toLocaleString()}
-                        /night
+                        • ₦{Number(l.pricePerNight).toLocaleString()}/night
                       </>
                     ) : null}
                   </div>

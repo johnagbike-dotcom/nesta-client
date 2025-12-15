@@ -7,6 +7,9 @@ import { useAuth } from "../auth/AuthContext";
 import "../styles/polish.css";
 import ListingMap from "../components/ListingMap";
 
+// ✅ shared featured logic
+import { isFeaturedActive } from "../utils/featured";
+
 const nf = new Intl.NumberFormat("en-NG");
 
 export default function ListingDetails() {
@@ -25,12 +28,15 @@ export default function ListingDetails() {
 
   useEffect(() => {
     let alive = true;
+
     (async () => {
       try {
         setLoading(true);
         setErr("");
+
         const snap = await getDoc(doc(db, "listings", id));
         if (!alive) return;
+
         if (!snap.exists()) {
           setErr("Listing not found.");
           setListing(null);
@@ -47,6 +53,7 @@ export default function ListingDetails() {
         if (alive) setLoading(false);
       }
     })();
+
     return () => {
       alive = false;
     };
@@ -56,15 +63,9 @@ export default function ListingDetails() {
 
   const images = useMemo(() => {
     if (!listing) return [];
-    if (Array.isArray(listing.images) && listing.images.length) {
-      return listing.images;
-    }
-    if (Array.isArray(listing.imageUrls) && listing.imageUrls.length) {
-      return listing.imageUrls;
-    }
-    if (Array.isArray(listing.photos) && listing.photos.length) {
-      return listing.photos;
-    }
+    if (Array.isArray(listing.images) && listing.images.length) return listing.images;
+    if (Array.isArray(listing.imageUrls) && listing.imageUrls.length) return listing.imageUrls;
+    if (Array.isArray(listing.photos) && listing.photos.length) return listing.photos;
     return [];
   }, [listing]);
 
@@ -72,19 +73,18 @@ export default function ListingDetails() {
 
   useEffect(() => {
     if (lightboxIndex === null) return;
+
     const handler = (e) => {
       if (e.key === "Escape") {
         setLightboxIndex(null);
         return;
       }
       if (!images.length) return;
-      if (e.key === "ArrowRight") {
-        setLightboxIndex((prev) => (prev + 1) % images.length);
-      }
-      if (e.key === "ArrowLeft") {
-        setLightboxIndex((prev) => (prev - 1 + images.length) % images.length);
-      }
+
+      if (e.key === "ArrowRight") setLightboxIndex((prev) => (prev + 1) % images.length);
+      if (e.key === "ArrowLeft") setLightboxIndex((prev) => (prev - 1 + images.length) % images.length);
     };
+
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [lightboxIndex, images]);
@@ -94,10 +94,12 @@ export default function ListingDetails() {
   const chatUid = useMemo(() => {
     if (!listing) return null;
     return (
-      listing.ownerId ||
-      listing.hostId ||
       listing.partnerUid ||
       listing.partnerId ||
+      listing.hostId ||
+      listing.hostUid ||
+      listing.ownerId ||
+      listing.ownerID ||
       null
     );
   }, [listing]);
@@ -107,22 +109,32 @@ export default function ListingDetails() {
     const uid = user.uid;
     return (
       listing.ownerId === uid ||
+      listing.ownerID === uid ||
       listing.hostId === uid ||
+      listing.hostUid === uid ||
       listing.partnerUid === uid ||
       listing.partnerId === uid
     );
   }, [user, listing]);
 
+  /* ───────────────── featured badge (luxury rule) ───────────────── */
+
+  const nowMs = Date.now();
+
+  const featuredActive = useMemo(() => {
+    return isFeaturedActive(listing, nowMs);
+  }, [listing, nowMs]);
+
   /* ───────────────── actions ───────────────── */
 
   const goReserve = useCallback(() => {
     if (!listing) return;
+
     const baseState = {
       id: listing.id,
       title: listing.title || "Listing",
       price: listing.pricePerNight || listing.price || 0,
-      hostId:
-        listing.ownerId || listing.hostId || listing.partnerUid || null,
+      hostId: listing.partnerUid || listing.hostId || listing.hostUid || listing.ownerId || null,
     };
 
     if (!user) {
@@ -142,10 +154,7 @@ export default function ListingDetails() {
   const goChat = useCallback(() => {
     if (!listing || !chatUid) return;
 
-    const listingMeta = {
-      id: listing.id,
-      title: listing.title || "Listing",
-    };
+    const listingMeta = { id: listing.id, title: listing.title || "Listing" };
 
     if (!user) {
       nav("/login", {
@@ -159,13 +168,7 @@ export default function ListingDetails() {
       return;
     }
 
-    nav("/chat", {
-      state: {
-        partnerUid: chatUid,
-        listing: listingMeta,
-        from: "listing",
-      },
-    });
+    nav("/chat", { state: { partnerUid: chatUid, listing: listingMeta, from: "listing" } });
   }, [listing, chatUid, user, nav]);
 
   /* ───────────────── loading / error ───────────────── */
@@ -189,8 +192,7 @@ export default function ListingDetails() {
           <h1
             className="text-xl font-bold mb-2"
             style={{
-              fontFamily:
-                'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+              fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
             }}
           >
             Listing
@@ -225,9 +227,7 @@ export default function ListingDetails() {
               >
                 ← Back
               </button>
-              <span className="hidden sm:inline text-xs text-white/40 truncate">
-                ID: {listing.id}
-              </span>
+              <span className="hidden sm:inline text-xs text-white/40 truncate">ID: {listing.id}</span>
             </div>
 
             {isOwner && (
@@ -242,14 +242,9 @@ export default function ListingDetails() {
 
           {/* hero / gallery */}
           <div className="grid gap-3 grid-cols-1 lg:grid-cols-[1.1fr,0.9fr]">
-            {/* main hero */}
             <div className="rounded-3xl overflow-hidden border border-white/10 bg-black/30 min-h-[220px] shadow-[0_24px_70px_rgba(0,0,0,.75)]">
               {hero ? (
-                <button
-                  type="button"
-                  onClick={() => images.length && setLightboxIndex(0)}
-                  className="block w-full h-full"
-                >
+                <button type="button" onClick={() => images.length && setLightboxIndex(0)} className="block w-full h-full">
                   <img
                     src={hero}
                     alt={listing.title || "Listing"}
@@ -258,13 +253,10 @@ export default function ListingDetails() {
                   />
                 </button>
               ) : (
-                <div className="h-full min-h-[220px] grid place-items-center text-gray-500">
-                  No photo
-                </div>
+                <div className="h-full min-h-[220px] grid place-items-center text-gray-500">No photo</div>
               )}
             </div>
 
-            {/* thumbnails */}
             <div className="grid grid-cols-2 gap-3">
               {images.slice(1, 5).map((img, idx) => (
                 <button
@@ -273,12 +265,7 @@ export default function ListingDetails() {
                   onClick={() => setLightboxIndex(idx + 1)}
                   className="rounded-2xl overflow-hidden border border-white/10 bg-black/20 h-28"
                 >
-                  <img
-                    src={img}
-                    alt="Listing"
-                    className="w-full h-full object-cover cursor-zoom-in"
-                    loading="lazy"
-                  />
+                  <img src={img} alt="Listing" className="w-full h-full object-cover cursor-zoom-in" loading="lazy" />
                 </button>
               ))}
               {images.length === 0 && (
@@ -295,8 +282,7 @@ export default function ListingDetails() {
               <h1
                 className="text-3xl md:text-[32px] font-extrabold tracking-tight"
                 style={{
-                  fontFamily:
-                    'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                  fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
                 }}
               >
                 {listing.title || "Luxury apartment"}
@@ -304,7 +290,9 @@ export default function ListingDetails() {
               <p className="text-gray-300 mt-1 text-sm md:text-base">
                 {listing.area || "—"}, {listing.city || "Nigeria"}
               </p>
-              {listing.sponsored ? (
+
+              {/* ✅ Featured badge ONLY if active + not expired */}
+              {featuredActive ? (
                 <span className="inline-flex px-2 py-1 mt-2 rounded-full bg-amber-400/10 border border-amber-200/40 text-amber-100 text-xs">
                   Featured
                 </span>
@@ -339,8 +327,7 @@ export default function ListingDetails() {
                 <h2
                   className="text-lg font-semibold mb-2"
                   style={{
-                    fontFamily:
-                      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                    fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
                   }}
                 >
                   About this stay
@@ -355,23 +342,14 @@ export default function ListingDetails() {
                 <h2
                   className="text-lg font-semibold mb-2"
                   style={{
-                    fontFamily:
-                      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                    fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
                   }}
                 >
                   Amenities
                 </h2>
                 <div className="flex flex-wrap gap-2">
-                  {(listing.amenities || [
-                    "WiFi",
-                    "Air conditioning",
-                    "24/7 power",
-                    "Smart TV",
-                  ]).map((a, idx) => (
-                    <span
-                      key={idx}
-                      className="text-xs px-3 py-1.5 rounded-full bg-black/25 border border-white/10 text-gray-100"
-                    >
+                  {(listing.amenities || ["WiFi", "Air conditioning", "24/7 power", "Smart TV"]).map((a, idx) => (
+                    <span key={idx} className="text-xs px-3 py-1.5 rounded-full bg-black/25 border border-white/10 text-gray-100">
                       {a}
                     </span>
                   ))}
@@ -383,8 +361,7 @@ export default function ListingDetails() {
                 <h2
                   className="text-lg font-semibold"
                   style={{
-                    fontFamily:
-                      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                    fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
                   }}
                 >
                   Location
@@ -395,38 +372,21 @@ export default function ListingDetails() {
                     {listing.area || "—"}, {listing.city || "Nigeria"}
                   </div>
                 </div>
-                <ListingMap
-                  lat={
-                    typeof listing.lat === "number"
-                      ? listing.lat
-                      : null
-                  }
-                  lng={
-                    typeof listing.lng === "number"
-                      ? listing.lng
-                      : null
-                  }
-                />
-                <p className="text-[11px] text-white/50 mt-1">
-                  Exact details are shared securely with confirmed guests only.
-                </p>
+                <ListingMap lat={typeof listing.lat === "number" ? listing.lat : null} lng={typeof listing.lng === "number" ? listing.lng : null} />
+                <p className="text-[11px] text-white/50 mt-1">Exact details are shared securely with confirmed guests only.</p>
               </div>
 
               <div className="rounded-2xl bg-white/5 border border-white/10 p-4 md:p-5">
                 <h2
                   className="text-lg font-semibold mb-2"
                   style={{
-                    fontFamily:
-                      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                    fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
                   }}
                 >
                   House notes
                 </h2>
                 <p className="text-gray-200 text-sm leading-relaxed">
-                  Respect the property, neighbours, and building rules. Exact
-                  check-in details are shared securely after confirmation.
-                  Smoking, events, and extra guests may require approval from
-                  the host.
+                  Respect the property, neighbours, and building rules. Exact check-in details are shared securely after confirmation. Smoking, events, and extra guests may require approval from the host.
                 </p>
               </div>
             </div>
@@ -435,30 +395,23 @@ export default function ListingDetails() {
             <div className="space-y-5">
               <div className="rounded-2xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_18px_50px_rgba(0,0,0,.75)]">
                 <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs text-gray-300 uppercase tracking-[0.14em]">
-                    From
-                  </div>
+                  <div className="text-xs text-gray-300 uppercase tracking-[0.14em]">From</div>
                   <div className="text-xs text-gray-400">Per night</div>
                 </div>
                 <div
                   className="text-3xl md:text-[32px] font-extrabold text-amber-300"
                   style={{
-                    fontFamily:
-                      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                    fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
                   }}
                 >
                   ₦{nf.format(price)}
                 </div>
-                <p className="text-xs text-gray-500 mt-1">
-                  Secured on Nesta • payment via seamless checkout
-                </p>
+                <p className="text-xs text-gray-500 mt-1">Secured on Nesta • payment via seamless checkout</p>
 
                 <div className="mt-4 flex flex-col gap-2">
                   {isOwner ? (
                     <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 px-3 py-3 text-xs text-amber-100">
-                      Booking buttons are hidden because you’re signed in as a{" "}
-                      <span className="font-semibold">Host / Partner</span>.
-                      Guests will see reserve and chat actions here.
+                      Booking buttons are hidden because you’re signed in as a <span className="font-semibold">Host / Partner</span>. Guests will see reserve and chat actions here.
                     </div>
                   ) : (
                     <>
@@ -476,9 +429,7 @@ export default function ListingDetails() {
                           Chat with host
                         </button>
                       ) : (
-                        <p className="text-xs text-gray-500 text-center">
-                          Host chat not available for this listing.
-                        </p>
+                        <p className="text-xs text-gray-500 text-center">Host chat not available for this listing.</p>
                       )}
                     </>
                   )}
@@ -490,9 +441,7 @@ export default function ListingDetails() {
                   Hosted / managed by
                 </h2>
                 <p className="text-gray-200 text-sm">
-                  {listing.hostDisplayName ||
-                    listing.ownerName ||
-                    "Verified Nesta host / partner"}
+                  {listing.hostDisplayName || listing.ownerName || "Verified Nesta host / partner"}
                 </p>
                 <p className="text-xs text-gray-400 mt-1 leading-relaxed">
                   {chatUid
@@ -511,10 +460,7 @@ export default function ListingDetails() {
           className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center px-4"
           onClick={() => setLightboxIndex(null)}
         >
-          <div
-            className="relative max-w-5xl w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="relative max-w-5xl w-full" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               onClick={() => setLightboxIndex(null)}
@@ -536,11 +482,7 @@ export default function ListingDetails() {
               <div className="flex items-center justify-between mt-3 text-sm text-white/70">
                 <button
                   type="button"
-                  onClick={() =>
-                    setLightboxIndex(
-                      (prev) => (prev - 1 + images.length) % images.length
-                    )
-                  }
+                  onClick={() => setLightboxIndex((prev) => (prev - 1 + images.length) % images.length)}
                   className="px-3 py-1 rounded-full bg-white/10 border border-white/20 hover:bg-white/20"
                 >
                   ← Previous
@@ -550,9 +492,7 @@ export default function ListingDetails() {
                 </div>
                 <button
                   type="button"
-                  onClick={() =>
-                    setLightboxIndex((prev) => (prev + 1) % images.length)
-                  }
+                  onClick={() => setLightboxIndex((prev) => (prev + 1) % images.length)}
                   className="px-3 py-1 rounded-full bg-white/10 border border-white/20 hover:bg-white/20"
                 >
                   Next →

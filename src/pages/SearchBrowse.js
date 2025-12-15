@@ -1,18 +1,12 @@
 // src/pages/SearchBrowse.js
-import React, {
-  useEffect,
-  useMemo,
-  useState,
-  useRef,
-  useCallback,
-} from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   collection,
   getDocs,
   limit,
   orderBy,
-  query,
+  query as fsQuery,
   where,
   startAfter,
 } from "firebase/firestore";
@@ -22,55 +16,23 @@ import FilterBar from "../components/FilterBar";
 /* ---------------------- Inline styles & utilities ---------------------- */
 const ShimmerAndFadeStyle = () => (
   <style>{`
-/* --- Shimmer for skeletons --- */
-@keyframes shimmer {
-  0%   { background-position: -1000px 0; }
-  100% { background-position: 1000px 0; }
-}
-.shimmer {
-  background: linear-gradient(90deg,
-    rgba(255,255,255,0.06) 25%,
-    rgba(255,255,255,0.12) 37%,
-    rgba(255,255,255,0.06) 63%
-  );
+@keyframes shimmer { 0%{background-position:-1000px 0} 100%{background-position:1000px 0} }
+.shimmer{
+  background: linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.12) 37%, rgba(255,255,255,0.06) 63%);
   background-size: 1000px 100%;
   animation: shimmer 1.6s linear infinite;
 }
+@keyframes fadeInUp { from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:translateY(0)} }
+.fade-in{ opacity:0; animation: fadeInUp .36s ease-out forwards; will-change: opacity, transform; }
+.focus-outline:focus-visible{ outline:2px solid #facc15; outline-offset:2px; border-radius:14px; }
 
-/* --- Fade-in handoff (staggered) --- */
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.fade-in {
-  opacity: 0;
-  animation: fadeInUp .36s ease-out forwards;
-  will-change: opacity, transform;
-}
-
-/* --- Accessible focus ring helper when using custom elements --- */
-.focus-outline:focus-visible {
-  outline: 2px solid #facc15;
-  outline-offset: 2px;
-  border-radius: 14px;
-}
-
-/* --- Toast styles --- */
-.toast-wrap {
-  position: fixed;
-  left: 50%;
-  bottom: 20px;
-  transform: translateX(-50%);
-  display: grid;
-  gap: 8px;
-  z-index: 60;
-}
-.toast {
-  background: rgba(17, 24, 39, .85);
-  color: #e5e7eb;
-  border: 1px solid rgba(250, 204, 21, .35);
-  padding: 10px 14px;
-  border-radius: 12px;
+.toast-wrap{ position:fixed; left:50%; bottom:20px; transform:translateX(-50%); display:grid; gap:8px; z-index:60; }
+.toast{
+  background: rgba(17,24,39,.85);
+  color:#e5e7eb;
+  border:1px solid rgba(250,204,21,.35);
+  padding:10px 14px;
+  border-radius:12px;
   box-shadow: 0 12px 40px rgba(0,0,0,.25);
   max-width: 90vw;
 }
@@ -84,12 +46,9 @@ function ToastHub() {
     function onToast(e) {
       const detail = e?.detail || {};
       const id = Math.random().toString(36).slice(2);
-      const t = { id, msg: String(detail.msg || "Done"), type: detail.type || "info" };
+      const t = { id, msg: String(detail.msg || "Done") };
       setToasts((prev) => [...prev, t]);
-      // auto-dismiss
-      setTimeout(() => {
-        setToasts((prev) => prev.filter((x) => x.id !== id));
-      }, detail.timeoutMs || 2500);
+      setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), detail.timeoutMs || 2500);
     }
     window.addEventListener("toast", onToast);
     return () => window.removeEventListener("toast", onToast);
@@ -108,12 +67,22 @@ function ToastHub() {
 
 /* ------------------------ Listing Card (accessible) ------------------------ */
 function ListingCard({ l, onView, onReserve, onFav, isFaved, tabIndex = 0 }) {
-  const img = Array.isArray(l.photos) && l.photos[0] ? l.photos[0] : null;
+  const img =
+    Array.isArray(l.photos) && l.photos[0]
+      ? l.photos[0]
+      : Array.isArray(l.imageUrls) && l.imageUrls[0]
+      ? l.imageUrls[0]
+      : null;
+
   const rating = Number(l.rating || 4.8).toFixed(1);
-  const price = Number(l.pricePerNight || 0).toLocaleString();
+  const price = Number(l.pricePerNight || l.price || 0).toLocaleString("en-NG");
 
   const onKey = (e) => {
     if (e.key === "Enter") onView?.();
+    if (e.key === " ") {
+      e.preventDefault();
+      onView?.();
+    }
   };
 
   return (
@@ -127,7 +96,6 @@ function ListingCard({ l, onView, onReserve, onFav, isFaved, tabIndex = 0 }) {
       onKeyDown={onKey}
       onClick={onView}
     >
-      {/* Image */}
       <div className="aspect-[16/11] bg-black/30 overflow-hidden">
         {img ? (
           <img
@@ -143,7 +111,6 @@ function ListingCard({ l, onView, onReserve, onFav, isFaved, tabIndex = 0 }) {
         )}
       </div>
 
-      {/* Body */}
       <div className="p-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">
           <h3 className="text-white font-semibold leading-snug line-clamp-2">
@@ -153,25 +120,26 @@ function ListingCard({ l, onView, onReserve, onFav, isFaved, tabIndex = 0 }) {
             ★ {rating}
           </span>
         </div>
+
         <div className="mt-1 text-sm text-white/70">
-          {(l.city ? `${String(l.city).trim()}` : "")}
+          {l.city ? String(l.city).trim() : ""}
           {l.area ? ` • ${String(l.area).trim()}` : ""}
         </div>
+
         <div className="mt-2 text-white font-semibold">
           ₦{price} <span className="text-white/60 font-normal">/ night</span>
         </div>
+
         <div className="mt-3 flex items-center gap-2">
           <button
             onClick={onView}
             className="px-3 py-1.5 rounded-xl text-sm border border-white/15 bg-white/10 hover:bg-white/15"
-            aria-label="View details"
           >
             View
           </button>
           <button
             onClick={onReserve}
             className="px-3 py-1.5 rounded-xl text-sm bg-amber-500 hover:bg-amber-600 text-black font-semibold"
-            aria-label="Reserve"
           >
             Reserve
           </button>
@@ -180,9 +148,7 @@ function ListingCard({ l, onView, onReserve, onFav, isFaved, tabIndex = 0 }) {
             className={`ml-auto px-3 py-1.5 rounded-xl text-sm border border-white/10 hover:bg-white/10 ${
               isFaved ? "text-amber-300 border-amber-300/40" : "text-white/80"
             }`}
-            title={isFaved ? "Remove from favourites" : "Add to favourites"}
             aria-pressed={isFaved ? "true" : "false"}
-            aria-label={isFaved ? "Remove from favourites" : "Add to favourites"}
           >
             {isFaved ? "✓ Favourited" : "❤ Favourite"}
           </button>
@@ -192,7 +158,6 @@ function ListingCard({ l, onView, onReserve, onFav, isFaved, tabIndex = 0 }) {
   );
 }
 
-/* ---------------- Shimmer Skeleton (same footprint) ---------------- */
 function SkeletonCard() {
   return (
     <div className="rounded-2xl overflow-hidden border border-white/10 bg-white/5">
@@ -212,6 +177,7 @@ function SkeletonCard() {
 }
 
 const PAGE_LIMIT = 40;
+const FAV_LS_KEY = "nesta:favs:v1";
 
 export default function SearchBrowse() {
   const [params] = useSearchParams();
@@ -226,139 +192,161 @@ export default function SearchBrowse() {
   const [listings, setListings] = useState([]);
   const [error, setError] = useState(null);
   const [indexUrl, setIndexUrl] = useState(null);
+
   const [lastDoc, setLastDoc] = useState(null);
   const [hasMore, setHasMore] = useState(false);
 
-  // for fade-in: remember what we have already shown
-  const [seenIds, setSeenIds] = useState(() => new Set());
+  const seenIdsRef = useRef(new Set());
 
-  // simple local favourites (wire to backend later)
-  const [favs, setFavs] = useState(() => new Set());
+  const [favs, setFavs] = useState(() => {
+    try {
+      const raw = localStorage.getItem(FAV_LS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch {
+      return new Set();
+    }
+  });
 
-  // infinite scroll sentinel
+  useEffect(() => {
+    try {
+      localStorage.setItem(FAV_LS_KEY, JSON.stringify(Array.from(favs)));
+    } catch {}
+  }, [favs]);
+
   const sentinelRef = useRef(null);
   const ioRef = useRef(null);
   const isLoadingMoreRef = useRef(false);
 
   const col = useMemo(() => collection(db, "listings"), []);
-
   const gridCls =
     "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6";
 
-  /* -------------------------- Firestore fetch -------------------------- */
+  const clientMatch = useCallback(
+    (r) => {
+      // Case-insensitive city match (works even if Firestore data is "Makurdi")
+      if (city) {
+        const c = (r.city || "").toString().trim().toLowerCase();
+        if (c !== city.toLowerCase()) return false;
+      }
+      if (q) {
+        const needle = q.toLowerCase();
+        const title = (r.title || "").toString().toLowerCase();
+        const cityStr = (r.city || "").toString().toLowerCase();
+        const area = (r.area || "").toString().toLowerCase();
+        if (!(title.includes(needle) || cityStr.includes(needle) || area.includes(needle)))
+          return false;
+      }
+      return true;
+    },
+    [q, city]
+  );
+
+  const buildBaseQuery = useCallback(
+    (after = null) => {
+      const parts = [];
+
+      // price filters can be indexed nicely
+      if (Number.isFinite(min)) parts.push(where("pricePerNight", ">=", min));
+      if (Number.isFinite(max)) parts.push(where("pricePerNight", "<=", max));
+
+      // order: price if filtering by price; else updatedAt (fallback to createdAt client-side)
+      const order =
+        Number.isFinite(min) || Number.isFinite(max)
+          ? orderBy("pricePerNight", "asc")
+          : orderBy("updatedAt", "desc");
+
+      let qx = fsQuery(col, ...parts, order, limit(PAGE_LIMIT));
+      if (after) qx = fsQuery(col, ...parts, order, startAfter(after), limit(PAGE_LIMIT));
+      return qx;
+    },
+    [col, min, max]
+  );
+
+  const normalizeRows = (docs) => {
+    let rows = docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // client-side filter (q + city case-insensitive)
+    rows = rows.filter(clientMatch);
+
+    // stable sort when not using price ordering
+    if (!(Number.isFinite(min) || Number.isFinite(max))) {
+      rows.sort((a, b) => {
+        const at = toMillis(a?.updatedAt || a?.createdAt);
+        const bt = toMillis(b?.updatedAt || b?.createdAt);
+        return bt - at;
+      });
+    }
+
+    return rows;
+  };
+
+  /* -------------------------- Firestore fetch (first page) -------------------------- */
   useEffect(() => {
     let mounted = true;
-    setLastDoc(null); // reset pagination on filter change
-    setSeenIds(new Set()); // reset fade-in memory when filters change
 
-    async function run(firstPage = true, afterDoc = null) {
+    // reset paging + fade memory on filter changes
+    setLastDoc(null);
+    setHasMore(false);
+    seenIdsRef.current = new Set();
+
+    async function run() {
       setLoading(true);
       setError(null);
       setIndexUrl(null);
       try {
-        const parts = [];
-        if (city) parts.push(where("city", "==", city));
-        if (Number.isFinite(min)) parts.push(where("pricePerNight", ">=", min));
-        if (Number.isFinite(max)) parts.push(where("pricePerNight", "<=", max));
-
-        const order =
-          Number.isFinite(min) || Number.isFinite(max)
-            ? orderBy("pricePerNight", "asc")
-            : orderBy("updatedAt", "desc");
-
-        let baseQ = query(col, ...parts, order, limit(PAGE_LIMIT));
-        if (!firstPage && afterDoc) {
-          baseQ = query(col, ...parts, order, startAfter(afterDoc), limit(PAGE_LIMIT));
-        }
-
-        const snap = await getDocs(baseQ);
-        let rows = snap.docs.map((d) => ({ id: d.id, ...d.data(), _snap: d }));
-
-        if (q) {
-          const needle = q.toLowerCase();
-          rows = rows.filter((r) => {
-            const title = (r.title || "").toString().toLowerCase();
-            const cityStr = (r.city || "").toString().toLowerCase();
-            const area = (r.area || "").toString().toLowerCase();
-            return title.includes(needle) || cityStr.includes(needle) || area.includes(needle);
-          });
-        }
-
-        if (!(Number.isFinite(min) || Number.isFinite(max))) {
-          rows.sort((a, b) => {
-            const at = toMillis(a?.updatedAt || a?.createdAt);
-            const bt = toMillis(b?.updatedAt || b?.createdAt);
-            return bt - at;
-          });
-        }
-
+        const snap = await getDocs(buildBaseQuery(null));
         if (!mounted) return;
+
+        const rows = normalizeRows(snap.docs);
+        setListings(rows);
 
         const nextLast = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
         setLastDoc(nextLast);
-        setHasMore(Boolean(nextLast));
 
-        setListings((prev) => (firstPage ? rows : [...prev, ...rows]));
-        setLoading(false);
+        // only “hasMore” if Firestore returned a full page
+        setHasMore(snap.docs.length === PAGE_LIMIT);
       } catch (err) {
         console.error("[Search] load failed:", err);
         if (!mounted) return;
         const m = (err?.message || "").match(/https:\/\/console\.firebase\.google\.com\/[^\s)]+/);
         if (m && m[0]) setIndexUrl(m[0]);
         setError("Couldn't load listings.");
-        setLoading(false);
+      } finally {
+        if (mounted) setLoading(false);
       }
     }
 
-    run(true, null);
+    run();
     return () => {
       mounted = false;
     };
-  }, [city, q, min, max, col]);
+  }, [buildBaseQuery, normalizeRows, q, city, min, max]); // include filters (intentional)
 
-  /* -------------------------- Load more (manual) -------------------------- */
+  /* -------------------------- Load more -------------------------- */
   const loadMore = useCallback(async () => {
     if (!hasMore || !lastDoc || isLoadingMoreRef.current) return;
     isLoadingMoreRef.current = true;
-    try {
-      const parts = [];
-      if (city) parts.push(where("city", "==", city));
-      if (Number.isFinite(min)) parts.push(where("pricePerNight", ">=", min));
-      if (Number.isFinite(max)) parts.push(where("pricePerNight", "<=", max));
-      const order =
-        Number.isFinite(min) || Number.isFinite(max)
-          ? orderBy("pricePerNight", "asc")
-          : orderBy("updatedAt", "desc");
-      const qMore = query(col, ...parts, order, startAfter(lastDoc), limit(PAGE_LIMIT));
-      const snap = await getDocs(qMore);
-      let rows = snap.docs.map((d) => ({ id: d.id, ...d.data(), _snap: d }));
 
-      if (q) {
-        const needle = q.toLowerCase();
-        rows = rows.filter((r) => {
-          const title = (r.title || "").toLowerCase();
-          const cityStr = (r.city || "").toLowerCase();
-          const area = (r.area || "").toLowerCase();
-          return title.includes(needle) || cityStr.includes(needle) || area.includes(needle);
-        });
-      }
-      if (!(Number.isFinite(min) || Number.isFinite(max))) {
-        rows.sort((a, b) => {
-          const at = toMillis(a?.updatedAt || a?.createdAt);
-          const bt = toMillis(b?.updatedAt || b?.createdAt);
-          return bt - at;
-        });
-      }
+    try {
+      const snap = await getDocs(buildBaseQuery(lastDoc));
+      const rows = normalizeRows(snap.docs);
+
       const nextLast = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
       setLastDoc(nextLast);
-      setHasMore(Boolean(nextLast));
-      setListings((prev) => [...prev, ...rows]);
+      setHasMore(snap.docs.length === PAGE_LIMIT);
+
+      setListings((prev) => {
+        const seen = new Set(prev.map((x) => x.id));
+        const merged = [...prev, ...rows.filter((x) => !seen.has(x.id))];
+        return merged;
+      });
     } catch (err) {
       console.error("Load more failed:", err);
     } finally {
       isLoadingMoreRef.current = false;
     }
-  }, [city, min, max, col, hasMore, lastDoc, q]);
+  }, [hasMore, lastDoc, buildBaseQuery, normalizeRows]);
 
   /* ---------------------- IntersectionObserver hook-up ---------------------- */
   useEffect(() => {
@@ -379,12 +367,11 @@ export default function SearchBrowse() {
     ioRef.current = new IntersectionObserver(
       (entries) => {
         const first = entries[0];
-        if (first && first.isIntersecting) {
-          loadMore();
-        }
+        if (first && first.isIntersecting) loadMore();
       },
       { rootMargin: "400px 0px" }
     );
+
     ioRef.current.observe(sentinelRef.current);
 
     return () => {
@@ -403,18 +390,10 @@ export default function SearchBrowse() {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
-        try {
-          window.dispatchEvent(
-            new CustomEvent("toast", { detail: { type: "info", msg: "Removed from favourites" } })
-          );
-        } catch {}
+        window.dispatchEvent(new CustomEvent("toast", { detail: { msg: "Removed from favourites" } }));
       } else {
         next.add(id);
-        try {
-          window.dispatchEvent(
-            new CustomEvent("toast", { detail: { type: "info", msg: "Added to favourites" } })
-          );
-        } catch {}
+        window.dispatchEvent(new CustomEvent("toast", { detail: { msg: "Added to favourites" } }));
       }
       return next;
     });
@@ -423,29 +402,25 @@ export default function SearchBrowse() {
   const filterChips = [
     { label: "Search", value: q || "Any" },
     { label: "City", value: city || "Any" },
-    {
-      label: "Min ₦",
-      value: Number.isFinite(min) ? min.toLocaleString() : "Any",
-    },
-    {
-      label: "Max ₦",
-      value: Number.isFinite(max) ? max.toLocaleString() : "Any",
-    },
+    { label: "Min ₦", value: Number.isFinite(min) ? min.toLocaleString("en-NG") : "Any" },
+    { label: "Max ₦", value: Number.isFinite(max) ? max.toLocaleString("en-NG") : "Any" },
   ];
 
-  /* -------------------------- Render -------------------------- */
+  // animate only *new* cards without state updates during render
+  const getAnimDelay = (id, index) => {
+    if (!seenIdsRef.current.has(id)) {
+      seenIdsRef.current.add(id);
+      return `${(index % 12) * 40}ms`;
+    }
+    return "0ms";
+  };
+
   return (
-    <main
-      className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white"
-    >
+    <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white">
       <ShimmerAndFadeStyle />
       <ToastHub />
 
-      <div
-        className="max-w-6xl mx-auto"
-        style={{ marginTop: 80, padding: "0 16px 32px" }}
-      >
-        {/* Header row */}
+      <div className="max-w-6xl mx-auto" style={{ marginTop: 80, padding: "0 16px 32px" }}>
         <div className="flex flex-col gap-4 mb-4">
           <div className="flex items-center justify-between gap-3">
             <button onClick={() => window.history.back()} className="btn" style={btnGhost}>
@@ -472,18 +447,15 @@ export default function SearchBrowse() {
               Explore signature stays
             </h1>
             <p className="text-sm text-white/70 max-w-xl">
-              Refine your search to find curated apartments, townhouses, and villas across
-              Nesta’s verified homes.
+              Refine your search to find curated apartments, townhouses, and villas across Nesta’s verified homes.
             </p>
           </div>
         </div>
 
-        {/* Filter bar */}
         <div className="rounded-2xl border border-white/10 bg-black/30 backdrop-blur-sm p-3 mb-3">
           <FilterBar />
         </div>
 
-        {/* Filter summary chips */}
         <div className="flex flex-wrap items-center gap-2 mb-4">
           {filterChips.map((chip) => (
             <span
@@ -499,7 +471,6 @@ export default function SearchBrowse() {
           </button>
         </div>
 
-        {/* Loading -> shimmer skeleton grid */}
         {loading && (
           <div className={gridCls} aria-busy="true" aria-live="polite">
             {Array.from({ length: 8 }).map((_, i) => (
@@ -508,13 +479,12 @@ export default function SearchBrowse() {
           </div>
         )}
 
-        {/* Error */}
         {!loading && error && (
           <div style={alertError} role="alert">
             {error}{" "}
             {indexUrl ? (
               <>
-                If the console shows an index URL, click it or{" "}
+                If the console shows an index URL,{" "}
                 <a href={indexUrl} target="_blank" rel="noreferrer" style={link}>
                   open this link
                 </a>{" "}
@@ -526,50 +496,29 @@ export default function SearchBrowse() {
           </div>
         )}
 
-        {/* Empty */}
         {!loading && !error && listings.length === 0 && (
           <Muted>No listings match your current filters.</Muted>
         )}
 
-        {/* Results */}
         {!loading && !error && listings.length > 0 && (
           <>
             <div className={gridCls}>
-              {listings.map((l, i) => {
-                // mark as seen for fade-in stagger
-                if (!seenIds.has(l.id)) {
-                  setTimeout(() => {
-                    setSeenIds((prev) => {
-                      if (prev.has(l.id)) return prev;
-                      const next = new Set(prev);
-                      next.add(l.id);
-                      return next;
-                    });
-                  }, 0);
-                }
-                const delayMs = (i % 12) * 40; // gentle stagger
-                return (
-                  <div
-                    key={l.id}
-                    className="fade-in"
-                    style={{ animationDelay: `${delayMs}ms` }}
-                  >
-                    <ListingCard
-                      l={l}
-                      onView={() => nav(`/listing/${l.id}`)}
-                      onReserve={() => nav(`/listing/${l.id}?tab=reserve`)}
-                      onFav={(e) => {
-                        e?.stopPropagation?.();
-                        toggleFav(l.id);
-                      }}
-                      isFaved={favs.has(l.id)}
-                    />
-                  </div>
-                );
-              })}
+              {listings.map((l, i) => (
+                <div key={l.id} className="fade-in" style={{ animationDelay: getAnimDelay(l.id, i) }}>
+                  <ListingCard
+                    l={l}
+                    onView={() => nav(`/listing/${l.id}`)}
+                    onReserve={() => nav(`/listing/${l.id}?tab=reserve`)}
+                    onFav={(e) => {
+                      e?.stopPropagation?.();
+                      toggleFav(l.id);
+                    }}
+                    isFaved={favs.has(l.id)}
+                  />
+                </div>
+              ))}
             </div>
 
-            {/* Infinite scroll sentinel + accessible fallback button */}
             <div ref={sentinelRef} aria-hidden="true" />
             {hasMore && (
               <div style={{ display: "grid", placeItems: "center", marginTop: 16 }}>
@@ -593,23 +542,6 @@ function toMillis(ts) {
   if (ts instanceof Date) return ts.getTime();
   return 0;
 }
-function fmtTime(ts) {
-  const ms = toMillis(ts);
-  if (!ms) return "—";
-  try {
-    return new Date(ms).toLocaleString();
-  } catch {
-    return "—";
-  }
-}
-function safe(v) {
-  return typeof v === "string" ? v : "";
-}
-function cap(s) {
-  if (!s) return "";
-  const t = String(s);
-  return t.charAt(0).toUpperCase() + t.slice(1);
-}
 
 /* -------------------------- legacy inline bits kept -------------------------- */
 const alertError = {
@@ -620,11 +552,7 @@ const alertError = {
   borderRadius: 14,
   margin: "8px 0 16px",
 };
-const link = {
-  color: "#facc15",
-  textDecoration: "underline",
-  fontWeight: 700,
-};
+const link = { color: "#facc15", textDecoration: "underline", fontWeight: 700 };
 const linkReset = {
   color: "#facc15",
   marginLeft: 8,
@@ -646,14 +574,7 @@ const btnGhost = {
 
 function Muted({ children }) {
   return (
-    <div
-      style={{
-        color: "#9aa4b2",
-        padding: "20px 0",
-        textAlign: "center",
-        fontSize: 14,
-      }}
-    >
+    <div style={{ color: "#9aa4b2", padding: "20px 0", textAlign: "center", fontSize: 14 }}>
       {children}
     </div>
   );

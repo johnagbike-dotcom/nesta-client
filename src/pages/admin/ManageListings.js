@@ -19,6 +19,7 @@ const chip = {
     const map = {
       active:   { bg: "rgba(16,185,129,.22)",  text: "#a7f3d0", ring: "rgba(16,185,129,.35)" },
       inactive: { bg: "rgba(148,163,184,.22)", text: "#e2e8f0", ring: "rgba(148,163,184,.35)" },
+      review:   { bg: "rgba(245,158,11,.18)",  text: "#fde68a", ring: "rgba(245,158,11,.32)" },
       grade:    { bg: "rgba(59,130,246,.20)",  text: "#dbeafe", ring: "rgba(59,130,246,.35)" },
     };
     const c = map[tone] || map.inactive;
@@ -44,16 +45,19 @@ const chip = {
 
 /* ───────────────────────────── Modal ───────────────────────────── */
 function GradeModal({ open, onClose, listing, onSave }) {
-  const [grade, setGrade] = useState("Not graded");
+  const [grade, setGrade] = useState("Standard");
   const [note, setNote] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    setGrade(listing?.grade || "Not graded");
-    setNote(listing?.qualityNote || "");
+    // Admin routes default grade to "Standard" if missing
+    setGrade(listing?.grade || "Standard");
+    setNote(listing?.gradeNote || listing?.qualityNote || "");
   }, [open, listing]);
 
   if (!open) return null;
+
+  const grades = ["Elite", "Premium", "Standard", "Needs Improvement", "Rejected"];
 
   return (
     <div
@@ -88,6 +92,7 @@ function GradeModal({ open, onClose, listing, onSave }) {
         >
           Grade Listing — {listing?.title || "Listing"}
         </div>
+
         <div style={{ padding: 16, display: "grid", gap: 12 }}>
           <label style={{ fontSize: 13, opacity: 0.9 }}>Grade</label>
           <select
@@ -103,13 +108,15 @@ function GradeModal({ open, onClose, listing, onSave }) {
               fontWeight: 700,
             }}
           >
-            {["Not graded", "B", "A", "Elite"].map((g) => (
-              <option key={g}>{g}</option>
+            {grades.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
             ))}
           </select>
 
           <label style={{ fontSize: 13, opacity: 0.9, marginTop: 8 }}>
-            Quality note
+            Grade note
           </label>
           <textarea
             value={note}
@@ -126,16 +133,11 @@ function GradeModal({ open, onClose, listing, onSave }) {
             }}
           />
 
-          <div
-            style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}
-          >
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}>
             <LuxeBtn kind="slate" onClick={onClose}>
               Cancel
             </LuxeBtn>
-            <LuxeBtn
-              kind="gold"
-              onClick={() => onSave({ grade, qualityNote: note })}
-            >
+            <LuxeBtn kind="gold" onClick={() => onSave({ grade, note })}>
               Save Grade
             </LuxeBtn>
           </div>
@@ -170,39 +172,36 @@ export default function ManageListings() {
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [busyId, setBusyId] = useState(null);
 
+  // Filters
   const [q, setQ] = useState("");
   const [city, setCity] = useState("Any city");
-  const [status, setStatus] = useState("Any status"); // active | inactive
-  const [grade, setGrade] = useState("Any grade"); // Not graded | B | A | Elite
+  const [status, setStatus] = useState("Any status"); // active | inactive | review
+  const [grade, setGrade] = useState("Any grade"); // Elite | Premium | Standard | Needs Improvement | Rejected
   const [onlyFeatured, setOnlyFeatured] = useState(false);
 
   const [gradeOpen, setGradeOpen] = useState(false);
   const [gradeRow, setGradeRow] = useState(null);
 
-  /* load listings (resilient endpoints) */
+  /* load listings (admin endpoint, server supports filters) */
   const load = async () => {
     setLoading(true);
     try {
-      const candidates = ["/admin/listings", "/listings", "/host/listings"];
-      let out = [];
-      for (const ep of candidates) {
-        try {
-          const res = await api.get(ep);
-          const arr = toArray(res.data);
-          if (Array.isArray(res.data) && res.data.length === 0) {
-            out = [];
-            break;
-          }
-          if (arr.length || Array.isArray(res.data)) {
-            out = arr.length ? arr : res.data;
-            break;
-          }
-        } catch {
-          /* try next */
-        }
-      }
-      setRows(Array.isArray(out) ? out : []);
+      const params = {};
+      if (q.trim()) params.q = q.trim();
+      if (city !== "Any city") params.city = city;
+      if (status !== "Any status") params.status = status; // active/inactive/review
+      if (grade !== "Any grade") params.grade = grade;
+      if (onlyFeatured) params.featured = true;
+
+      const res = await api.get("/admin/listings", { params });
+      const arr = toArray(res.data);
+      setRows(arr);
+    } catch (e) {
+      console.error("ManageListings load failed:", e?.response?.data || e.message);
+      tErr("Failed to load listings.");
+      setRows([]);
     } finally {
       setLoading(false);
     }
@@ -210,9 +209,10 @@ export default function ManageListings() {
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* computed filters (client side) */
+  // Client-side fallback filtering (keeps UI responsive while typing)
   const filtered = useMemo(() => {
     let list = rows.slice();
 
@@ -220,28 +220,22 @@ export default function ManageListings() {
 
     if (city !== "Any city") {
       const k = city.toLowerCase();
-      list = list.filter((r) =>
-        `${r.city || ""} ${r.area || ""}`.toLowerCase().includes(k)
-      );
+      list = list.filter((r) => `${r.city || ""} ${r.area || ""}`.toLowerCase().includes(k));
     }
 
     if (status !== "Any status") {
-      const want = status === "active" ? "active" : "inactive";
-      list = list.filter(
-        (r) => String(r.status || "active").toLowerCase() === want
-      );
+      const want = String(status).toLowerCase();
+      list = list.filter((r) => String(r.status || "active").toLowerCase() === want);
     }
 
     if (grade !== "Any grade") {
-      list = list.filter((r) => String(r.grade || "Not graded") === grade);
+      list = list.filter((r) => String(r.grade || "Standard") === grade);
     }
 
     const kw = q.trim().toLowerCase();
     if (kw) {
       list = list.filter((r) =>
-        `${r.title || ""} ${r.city || ""} ${r.area || ""} ${r.hostEmail || ""} ${
-          r.id || ""
-        }`
+        `${r.title || ""} ${r.city || ""} ${r.area || ""} ${r.hostEmail || ""} ${r.id || ""}`
           .toLowerCase()
           .includes(kw)
       );
@@ -253,64 +247,45 @@ export default function ManageListings() {
   /* ───────────────────────── actions ───────────────────────── */
   const toggleFeature = async (row, makeFeatured) => {
     const id = row.id || row._id || row.publicId;
+    if (!id) return;
+
+    setBusyId(id);
     const prev = rows.slice();
-    setRows(
-      rows.map((r) =>
-        (r.id || r._id) === id ? { ...r, featured: !!makeFeatured } : r
-      )
-    );
 
-    const candidates = [
-      (x) => `/admin/listings/${x}/feature`,
-      (x) => `/listings/${x}/feature`,
-      (x) => `/admin/listings/${x}`,
-    ];
+    setRows(rows.map((r) => ((r.id || r._id) === id ? { ...r, featured: !!makeFeatured } : r)));
 
-    let ok = false;
-    for (const f of candidates) {
-      try {
-        const url = f(id);
-        await api.patch(url, { featured: !!makeFeatured });
-        ok = true;
-        break;
-      } catch {}
-    }
-
-    if (!ok) {
+    try {
+      // ✅ adminRoutes.js uses PATCH /admin/listings/:id with { featured }
+      await api.patch(`/admin/listings/${id}`, { featured: !!makeFeatured });
+      tOk(makeFeatured ? "Listing is now featured." : "Listing unfeatured.");
+    } catch (e) {
+      console.error("toggleFeature failed:", e?.response?.data || e.message);
       setRows(prev);
       tErr("Failed to update feature state.");
-    } else {
-      tOk(makeFeatured ? "Listing is now featured." : "Listing unfeatured.");
+    } finally {
+      setBusyId(null);
     }
   };
 
   const setStatusFn = async (row, next) => {
     const id = row.id || row._id || row.publicId;
+    if (!id) return;
+
+    setBusyId(id);
     const prev = rows.slice();
-    setRows(
-      rows.map((r) => ((r.id || r._id) === id ? { ...r, status: next } : r))
-    );
 
-    const candidates = [
-      (x) => `/admin/listings/${x}/status`,
-      (x) => `/listings/${x}/status`,
-      (x) => `/admin/listings/${x}`,
-    ];
-    let ok = false;
-    for (const f of candidates) {
-      try {
-        const url = f(id);
-        await api.patch(url, { status: next });
-        ok = true;
-        break;
-      } catch {}
-    }
+    setRows(rows.map((r) => ((r.id || r._id) === id ? { ...r, status: next } : r)));
 
-    if (!ok) {
+    try {
+      // ✅ adminRoutes.js uses PATCH /admin/listings/:id with { status }
+      await api.patch(`/admin/listings/${id}`, { status: next });
+      tOk(`Listing status updated to ${next}.`);
+    } catch (e) {
+      console.error("setStatusFn failed:", e?.response?.data || e.message);
       setRows(prev);
       tErr("Failed to update status.");
-    } else {
-      tOk(`Listing status updated to ${next}.`);
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -318,44 +293,34 @@ export default function ManageListings() {
     setGradeRow(row);
     setGradeOpen(true);
   };
+
   const closeGrade = () => {
     setGradeOpen(false);
     setGradeRow(null);
   };
 
-  const saveGrade = async ({ grade, qualityNote }) => {
+  const saveGrade = async ({ grade, note }) => {
     if (!gradeRow) return;
     const id = gradeRow.id || gradeRow._id || gradeRow.publicId;
+    if (!id) return;
 
+    setBusyId(id);
     const prev = rows.slice();
-    setRows(
-      rows.map((r) =>
-        (r.id || r._id) === id ? { ...r, grade, qualityNote } : r
-      )
-    );
 
-    const endpoints = [
-      (x) => `/admin/listings/${x}/quality`,
-      (x) => `/listings/${x}/quality`,
-      (x) => `/admin/listings/${x}`,
-    ];
-    let ok = false;
-    for (const fn of endpoints) {
-      try {
-        const url = fn(id);
-        await api.patch(url, { grade, qualityNote });
-        ok = true;
-        break;
-      } catch {}
-    }
+    setRows(rows.map((r) => ((r.id || r._id) === id ? { ...r, grade, gradeNote: note } : r)));
 
-    if (!ok) {
+    try {
+      // ✅ adminRoutes.js uses PATCH /admin/listings/:id/grade with { grade, note }
+      await api.patch(`/admin/listings/${id}/grade`, { grade, note });
+      tOk("Grade & note updated.");
+      closeGrade();
+    } catch (e) {
+      console.error("saveGrade failed:", e?.response?.data || e.message);
       setRows(prev);
       tErr("Failed to save grade.");
-    } else {
-      tOk("Grade & quality note updated.");
+    } finally {
+      setBusyId(null);
     }
-    closeGrade();
   };
 
   const openListing = (row) => {
@@ -364,44 +329,40 @@ export default function ManageListings() {
     navigate(`/listing/${id}`);
   };
 
+  // Local CSV export (works regardless of backend)
   const exportCSV = () => {
     try {
-      const header = [
-        "id",
-        "title",
-        "city",
-        "area",
-        "price",
-        "status",
-        "featured",
-        "grade",
-        "updatedAt",
-      ];
+      const header = ["id", "title", "city", "area", "pricePerNight", "status", "featured", "grade", "gradeNote", "updatedAt"];
       const body = filtered.map((r) => [
         r.id || r._id || "",
         (r.title || "").replaceAll('"', '""'),
         r.city || "",
         r.area || "",
-        r.pricePerNight || r.price || 0,
+        Number(r.pricePerNight || r.price || 0),
         r.status || "",
         r.featured ? "yes" : "no",
-        r.grade || "Not graded",
+        r.grade || "Standard",
+        (r.gradeNote || r.qualityNote || "").replaceAll('"', '""'),
         r.updatedAt ? dayjs(r.updatedAt).format("YYYY-MM-DD HH:mm") : "",
       ]);
+
       const lines = [header, ...body]
         .map((cols) => cols.map((c) => `"${String(c)}"`).join(","))
         .join("\n");
+
       const blob = new Blob([lines], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "listings.csv";
+      a.download = `listings-${dayjs().format("YYYYMMDD-HHmm")}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+
       tOk("CSV exported.");
-    } catch {
+    } catch (e) {
+      console.error("exportCSV failed:", e);
       tErr("Export failed.");
     }
   };
@@ -429,7 +390,7 @@ export default function ManageListings() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 150px 150px 150px 180px 120px",
+          gridTemplateColumns: "1fr 150px 150px 200px 180px 120px",
           gap: 12,
           alignItems: "center",
           marginBottom: 12,
@@ -438,7 +399,7 @@ export default function ManageListings() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search title, city, host email…"
+          placeholder="Search title, city…"
           style={{
             height: 44,
             borderRadius: 12,
@@ -448,6 +409,7 @@ export default function ManageListings() {
             padding: "0 12px",
           }}
         />
+
         <select
           value={city}
           onChange={(e) => setCity(e.target.value)}
@@ -460,13 +422,13 @@ export default function ManageListings() {
             padding: "0 10px",
           }}
         >
-          {[
-            "Any city",
-            ...Array.from(new Set(rows.map((r) => r.city).filter(Boolean))),
-          ].map((c) => (
-            <option key={c}>{c}</option>
+          {["Any city", ...Array.from(new Set(rows.map((r) => r.city).filter(Boolean)))].map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
           ))}
         </select>
+
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
@@ -479,10 +441,13 @@ export default function ManageListings() {
             padding: "0 10px",
           }}
         >
-          {["Any status", "active", "inactive"].map((s) => (
-            <option key={s}>{s}</option>
+          {["Any status", "active", "inactive", "review"].map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
           ))}
         </select>
+
         <select
           value={grade}
           onChange={(e) => setGrade(e.target.value)}
@@ -495,29 +460,26 @@ export default function ManageListings() {
             padding: "0 10px",
           }}
         >
-          {["Any grade", "Not graded", "B", "A", "Elite"].map((g) => (
-            <option key={g}>{g}</option>
+          {["Any grade", "Elite", "Premium", "Standard", "Needs Improvement", "Rejected"].map((g) => (
+            <option key={g} value={g}>
+              {g}
+            </option>
           ))}
         </select>
 
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            color: "#cfd3da",
-            fontWeight: 700,
-          }}
-        >
+        <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#cfd3da", fontWeight: 700 }}>
           <input
             type="checkbox"
             checked={onlyFeatured}
             onChange={(e) => setOnlyFeatured(e.target.checked)}
+            disabled={busyId !== null}
           />
           Featured only
         </label>
 
-        <div />{/* spacer to keep grid tidy */}
+        <LuxeBtn kind="cobalt" small onClick={load} disabled={loading}>
+          Apply
+        </LuxeBtn>
       </div>
 
       {/* Table */}
@@ -530,49 +492,16 @@ export default function ManageListings() {
           overflow: "hidden",
         }}
       >
-        <div
-          style={{
-            padding: "14px 16px",
-            fontWeight: 800,
-            fontSize: 18,
-            borderBottom: "1px solid rgba(255,255,255,.08)",
-          }}
-        >
+        <div style={{ padding: "14px 16px", fontWeight: 800, fontSize: 18, borderBottom: "1px solid rgba(255,255,255,.08)" }}>
           Listings
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              minWidth: 1100,
-            }}
-          >
+          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 1100 }}>
             <thead>
-              <tr
-                style={{
-                  background: "rgba(255,255,255,.02)",
-                  color: "#aeb6c2",
-                  textAlign: "left",
-                }}
-              >
-                {[
-                  "Title",
-                  "City / Area",
-                  "Type",
-                  "Nightly",
-                  "Status",
-                  "Featured",
-                  "Grade",
-                  "Updated",
-                  "Actions",
-                ].map((h) => (
-                  <th
-                    key={h}
-                    style={{ padding: "14px 16px", whiteSpace: "nowrap" }}
-                  >
+              <tr style={{ background: "rgba(255,255,255,.02)", color: "#aeb6c2", textAlign: "left" }}>
+                {["Title", "City / Area", "Type", "Nightly", "Status", "Featured", "Grade", "Updated", "Actions"].map((h) => (
+                  <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
                     {h}
                   </th>
                 ))}
@@ -600,90 +529,74 @@ export default function ManageListings() {
                 filtered.map((r) => {
                   const id = r.id || r._id || r.publicId;
                   const statusChip = String(r.status || "active").toLowerCase();
-                  const updated = r.updatedAt
-                    ? dayjs(r.updatedAt).format("YYYY-MM-DD")
-                    : "-";
+                  const updated = r.updatedAt ? dayjs(r.updatedAt).format("YYYY-MM-DD") : "-";
+                  const rowBusy = busyId === id;
+
                   return (
                     <tr key={id || Math.random()}>
                       <td style={{ padding: "12px 16px" }}>
                         <div style={{ fontWeight: 800 }}>{r.title || "-"}</div>
-                        <div style={{ opacity: 0.7, fontSize: 12 }}>
-                          ID: {id || "-"}
-                        </div>
+                        <div style={{ opacity: 0.7, fontSize: 12 }}>ID: {id || "-"}</div>
                       </td>
-                      <td style={{ padding: "12px 16px" }}>
-                        {(r.city || "-") + (r.area ? ` / ${r.area}` : "")}
-                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>{(r.city || "-") + (r.area ? ` / ${r.area}` : "")}</td>
+
                       <td style={{ padding: "12px 16px" }}>{r.type || "-"}</td>
-                      <td style={{ padding: "12px 16px" }}>
-                        {money(r.pricePerNight || r.price || 0)}
+
+                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap", fontWeight: 800 }}>
+                        {money(Number(r.pricePerNight || r.price || 0))}
                       </td>
+
                       <td style={{ padding: "12px 16px" }}>
                         <span style={chip.pill(statusChip)}>{statusChip}</span>
                       </td>
-                      <td style={{ padding: "12px 16px" }}>
+
+                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap" }}>
                         <input
                           type="checkbox"
                           checked={!!r.featured}
+                          disabled={rowBusy}
                           onChange={(e) => toggleFeature(r, e.target.checked)}
                         />
-                        <span style={{ marginLeft: 8, color: "#cfd3da" }}>
-                          {r.featured ? "Featured" : "—"}
-                        </span>
+                        <span style={{ marginLeft: 8, color: "#cfd3da" }}>{r.featured ? "Featured" : "—"}</span>
                       </td>
+
                       <td style={{ padding: "12px 16px" }}>
-                        <span style={chip.pill("grade")}>
-                          {r.grade || "Not graded"}
-                        </span>
+                        <span style={chip.pill("grade")}>{r.grade || "Standard"}</span>
                       </td>
+
                       <td style={{ padding: "12px 16px" }}>{updated}</td>
+
                       <td
                         style={{
                           padding: "12px 16px",
                           position: "sticky",
                           right: 0,
-                          background:
-                            "linear-gradient(90deg, rgba(0,0,0,.10), rgba(0,0,0,.30))",
+                          background: "linear-gradient(90deg, rgba(0,0,0,.10), rgba(0,0,0,.30))",
                           backdropFilter: "blur(2px)",
                         }}
                       >
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <LuxeBtn kind="gold" small onClick={() => openGrade(r)}>
+                          <LuxeBtn kind="gold" small disabled={rowBusy} onClick={() => openGrade(r)}>
                             Grade
                           </LuxeBtn>
 
                           {statusChip === "active" ? (
-                            <LuxeBtn
-                              kind="ruby"
-                              small
-                              onClick={() => setStatusFn(r, "inactive")}
-                            >
+                            <LuxeBtn kind="ruby" small disabled={rowBusy} onClick={() => setStatusFn(r, "inactive")}>
                               Deactivate
                             </LuxeBtn>
                           ) : (
-                            <LuxeBtn
-                              kind="emerald"
-                              small
-                              onClick={() => setStatusFn(r, "active")}
-                            >
+                            <LuxeBtn kind="emerald" small disabled={rowBusy} onClick={() => setStatusFn(r, "active")}>
                               Activate
                             </LuxeBtn>
                           )}
 
                           {r.featured ? (
-                            <LuxeBtn
-                              kind="slate"
-                              small
-                              onClick={() => toggleFeature(r, false)}
-                            >
+                            <LuxeBtn kind="slate" small disabled={rowBusy} onClick={() => toggleFeature(r, false)}>
                               Unfeature
                             </LuxeBtn>
                           ) : (
-                            <LuxeBtn
-                              kind="sky"
-                              small
-                              onClick={() => toggleFeature(r, true)}
-                            >
+                            <LuxeBtn kind="sky" small disabled={rowBusy} onClick={() => toggleFeature(r, true)}>
                               Feature
                             </LuxeBtn>
                           )}
@@ -702,12 +615,7 @@ export default function ManageListings() {
       </div>
 
       {/* modal */}
-      <GradeModal
-        open={gradeOpen}
-        listing={gradeRow}
-        onClose={closeGrade}
-        onSave={saveGrade}
-      />
+      <GradeModal open={gradeOpen} listing={gradeRow} onClose={closeGrade} onSave={saveGrade} />
     </div>
   );
 }

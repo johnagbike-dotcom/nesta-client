@@ -5,24 +5,28 @@ import { Link } from "react-router-dom";
 export default function AdminIndex() {
   return (
     <main className="container mx-auto max-w-5xl px-4 py-10">
-      <h1 className="text-4xl font-extrabold text-yellow-400 mb-2">Admin Dashboard</h1>
+      <h1 className="text-4xl font-extrabold text-yellow-400 mb-2">
+        Admin Control Centre
+      </h1>
       <p className="text-gray-300 mb-8">
-        Review activity, manage users & listings, and configure platform settings.
+        Monitor activity, manage listings & users, and configure the Nesta platform.
       </p>
 
       <div className="grid gap-6 md:grid-cols-2">
         {/* Listings & Bookings */}
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
-          <h2 className="text-xl font-semibold text-white mb-3">Listings &amp; Bookings</h2>
+          <h2 className="text-xl font-semibold text-white mb-3">
+            Listings &amp; Bookings
+          </h2>
           <ul className="space-y-2 text-gray-200">
             <li>
-              <Link className="hover:underline" to="/admin/listings">
+              <Link to="/admin/listings" className="hover:underline">
                 Listings admin
               </Link>
-              <span className="ml-2 text-xs text-gray-400">approve, flag, or remove</span>
+              <span className="ml-2 text-xs text-gray-400">approve, flag, remove</span>
             </li>
             <li>
-              <Link className="hover:underline" to="/admin/bookings">
+              <Link to="/admin/bookings-admin" className="hover:underline">
                 Bookings admin
               </Link>
               <span className="ml-2 text-xs text-gray-400">refunds, disputes, status</span>
@@ -32,19 +36,21 @@ export default function AdminIndex() {
 
         {/* Configuration */}
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
-          <h2 className="text-xl font-semibold text-white mb-3">Configuration</h2>
+          <h2 className="text-xl font-semibold text-white mb-3">
+            Configuration
+          </h2>
           <ul className="space-y-2 text-gray-200">
             <li>
-              <Link className="hover:underline" to="/admin/settings">
+              <Link to="/admin/settings" className="hover:underline">
                 Settings
               </Link>
-              <span className="ml-2 text-xs text-gray-400">fees, payout rules, theme</span>
+              <span className="ml-2 text-xs text-gray-400">platform rules & switches</span>
             </li>
             <li>
-              <Link className="hover:underline" to="/admin/feature-requests">
+              <Link to="/admin/feature-requests" className="hover:underline">
                 Feature requests
               </Link>
-              <span className="ml-2 text-xs text-gray-400">triage roadmap ideas</span>
+              <span className="ml-2 text-xs text-gray-400">spotlight & premium</span>
             </li>
           </ul>
         </section>
@@ -54,37 +60,29 @@ export default function AdminIndex() {
           <h2 className="text-xl font-semibold text-white mb-3">Users</h2>
           <ul className="space-y-2 text-gray-200">
             <li>
-              {/* ✅ route matches AdminRouter: manage-users */}
-              <Link className="hover:underline" to="/admin/manage-users">
+              <Link to="/admin/manage-users" className="hover:underline">
                 User directory
               </Link>
               <span className="ml-2 text-xs text-gray-400">roles, KYC, flags</span>
             </li>
-            <li>
-              {/* For now this also goes to manage-users; later we can deep–link ?role=partner */}
-              <Link className="hover:underline" to="/admin/manage-users">
-                Verified partners
-              </Link>
-              <span className="ml-2 text-xs text-gray-400">applications &amp; reviews</span>
-            </li>
           </ul>
         </section>
 
-        {/* Money */}
+        {/* Financials */}
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h2 className="text-xl font-semibold text-white mb-3">Financials</h2>
           <ul className="space-y-2 text-gray-200">
             <li>
-              <Link className="hover:underline" to="/admin/payouts">
+              <Link to="/admin/payouts" className="hover:underline">
                 Payouts
               </Link>
-              <span className="ml-2 text-xs text-gray-400">hosts &amp; partners</span>
+              <span className="ml-2 text-xs text-gray-400">hosts & partners</span>
             </li>
             <li>
-              <Link className="hover:underline" to="/admin/reports">
+              <Link to="/admin/reports" className="hover:underline">
                 Reports &amp; exports
               </Link>
-              <span className="ml-2 text-xs text-gray-400">CSV, monthly summaries</span>
+              <span className="ml-2 text-xs text-gray-400">CSV & analytics</span>
             </li>
           </ul>
         </section>

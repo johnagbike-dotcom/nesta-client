@@ -21,8 +21,10 @@ import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
 import ListingMap from "../components/ListingMap";
 
-/* ───────────────────────── helpers ───────────────────────── */
+/* ───────────────────────── config ───────────────────────── */
 const PAYSTACK_PUBLIC_KEY = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "";
+
+/* ───────────────────────── helpers ───────────────────────── */
 
 function normalizeRole(raw) {
   const r = String(raw || "").toLowerCase();
@@ -41,7 +43,6 @@ function canEditListing(user, profile, listing) {
 
   const uid = user.uid;
 
-  // include all possible owner fields, especially partnerUid
   const ownerCandidates = [
     listing.ownerUid,
     listing.ownerId,
@@ -58,37 +59,22 @@ function canEditListing(user, profile, listing) {
   return ownerCandidates.includes(uid);
 }
 
-const amenitiesOptions = [
-  "Wi-Fi",
-  "Air conditioning",
-  "Parking",
-  "Swimming pool",
-  "24/7 security",
-  "Generator / Inverter",
-  "Housekeeping",
-  "Smart TV",
-];
+function pickPhotos(data) {
+  if (!data) return [];
+  const a =
+    (Array.isArray(data.photos) && data.photos) ||
+    (Array.isArray(data.images) && data.images) ||
+    (Array.isArray(data.imageUrls) && data.imageUrls) ||
+    [];
+  return a.filter(Boolean);
+}
 
-// feature plans
+/* ───────────────────────── plans ───────────────────────── */
+
 const FEATURE_PLANS = {
-  spotlight: {
-    key: "spotlight",
-    label: "Spotlight · 24 hours",
-    price: 20000,
-    tagline: "Great for last-minute boosts",
-  },
-  premium: {
-    key: "premium",
-    label: "Premium · 7 days",
-    price: 70000,
-    tagline: "Week-long visibility in peak areas",
-  },
-  signature: {
-    key: "signature",
-    label: "Signature · 30 days",
-    price: 250000,
-    tagline: "Flagship placement for serious hosts",
-  },
+  spotlight: { key: "spotlight", label: "Spotlight · 24 hours", price: 20000, durationDays: 1, tagline: "Great for last-minute boosts" },
+  premium: { key: "premium", label: "Premium · 7 days", price: 70000, durationDays: 7, tagline: "Week-long visibility in peak areas" },
+  signature: { key: "signature", label: "Signature · 30 days", price: 250000, durationDays: 30, tagline: "Flagship placement for serious hosts" },
 };
 
 function Section({ title, children }) {
@@ -102,40 +88,26 @@ function Section({ title, children }) {
 
 /* ───────────────────────── Feature plan modal ───────────────────────── */
 
-function FeaturePlanModal({
-  open,
-  onClose,
-  onConfirm,
-  initialPlanKey = "spotlight",
-}) {
+function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotlight" }) {
   const [choice, setChoice] = useState(initialPlanKey || "spotlight");
 
   useEffect(() => {
-    if (open) {
-      setChoice(initialPlanKey || "spotlight");
-    }
+    if (open) setChoice(initialPlanKey || "spotlight");
   }, [open, initialPlanKey]);
 
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4" onClick={onClose}>
       <div
         className="w-full max-w-xl rounded-2xl border border-white/15 bg-gradient-to-b from-white/10 to-black/70 shadow-2xl p-5 md:p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-3 mb-4">
           <div className="flex-1">
-            <h3 className="text-lg font-semibold text-white">
-              Boost this listing in the Nesta carousel
-            </h3>
+            <h3 className="text-lg font-semibold text-white">Boost this listing in the Nesta carousel</h3>
             <p className="text-xs text-white/60 mt-1">
-              Choose a spotlight plan. Our team will review your request and
-              share payment details. Once payment is confirmed, your stay joins
-              the homepage Featured carousel.
+              Choose a spotlight plan. Admin reviews first. After approval, you’ll pay securely and admin activates your placement.
             </p>
           </div>
         </div>
@@ -155,21 +127,11 @@ function FeaturePlanModal({
                 }`}
               >
                 <div className="text-[11px] uppercase tracking-[0.18em] text-white/60 mb-1">
-                  {plan.key === "spotlight"
-                    ? "Entry"
-                    : plan.key === "premium"
-                    ? "Popular"
-                    : "Flagship"}
+                  {plan.key === "spotlight" ? "Entry" : plan.key === "premium" ? "Popular" : "Flagship"}
                 </div>
-                <div className="text-sm font-semibold text-white mb-1">
-                  {plan.label}
-                </div>
-                <div className="text-[11px] text-white/60 mb-2">
-                  {plan.tagline}
-                </div>
-                <div className="mt-auto text-xs font-semibold text-amber-300">
-                  ₦{plan.price.toLocaleString()}
-                </div>
+                <div className="text-sm font-semibold text-white mb-1">{plan.label}</div>
+                <div className="text-[11px] text-white/60 mb-2">{plan.tagline}</div>
+                <div className="mt-auto text-xs font-semibold text-amber-300">₦{plan.price.toLocaleString()}</div>
               </button>
             );
           })}
@@ -188,12 +150,9 @@ function FeaturePlanModal({
             onClick={() => onConfirm(choice)}
             className="px-4 py-2 rounded-xl border border-amber-400/60 bg-amber-500/80 text-sm font-semibold text-black hover:bg-amber-400"
           >
-            Continue with this plan
+            Submit request
           </button>
-          <div className="md:ml-auto text-[11px] text-white/55">
-            You’ll be charged safely via Nesta after an admin accepts your
-            request.
-          </div>
+          <div className="md:ml-auto text-[11px] text-white/55">Admin approves → you pay → admin activates.</div>
         </div>
       </div>
     </div>
@@ -207,7 +166,9 @@ export default function EditListing() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
+
   const role = normalizeRole(profile?.role || profile?.type);
+  const isAdmin = profile?.isAdmin === true || role === "admin";
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -222,6 +183,7 @@ export default function EditListing() {
     neighbourhood: "",
     address: "",
     nightlyRate: "",
+    pricePerNight: "",
     type: "apartment",
     bedrooms: "",
     bathrooms: "",
@@ -235,20 +197,17 @@ export default function EditListing() {
     lat: null,
     lng: null,
   });
+
   const [newPhotos, setNewPhotos] = useState([]);
 
-  // live feature request for this listing
+  // live feature request (latest)
   const [featureReq, setFeatureReq] = useState(null);
-
-  // plan modal
   const [planModalOpen, setPlanModalOpen] = useState(false);
 
-  const isAdmin = profile?.isAdmin === true || role === "admin";
   const canEdit = canEditListing(user, profile, listing);
   const canSave = canEdit && !busy && !!form.title && !!form.city;
 
   /* ───────────────────────── load listing ───────────────────────── */
-
   useEffect(() => {
     if (!id) return;
 
@@ -262,6 +221,8 @@ export default function EditListing() {
           return;
         }
         const data = snap.data();
+        const photos = pickPhotos(data);
+
         setListing({ id: snap.id, ...data });
 
         setForm({
@@ -271,15 +232,16 @@ export default function EditListing() {
           area: data.area || "",
           neighbourhood: data.neighbourhood || "",
           address: data.address || "",
-          nightlyRate: data.nightlyRate || "",
+          nightlyRate: data.nightlyRate ?? data.pricePerNight ?? "",
+          pricePerNight: data.pricePerNight ?? data.nightlyRate ?? "",
           type: data.type || "apartment",
           bedrooms: data.bedrooms || "",
           bathrooms: data.bathrooms || "",
           maxGuests: data.maxGuests || "",
           amenities: Array.isArray(data.amenities) ? data.amenities : [],
-          photos: Array.isArray(data.photos) ? data.photos : [],
+          photos,
           instantBook: !!data.instantBook,
-          ownerUid: data.ownerUid || "",
+          ownerUid: data.ownerUid || data.ownerId || "",
           partnerUid: data.partnerUid || "",
           sponsored: !!data.sponsored,
           lat: typeof data.lat === "number" ? data.lat : null,
@@ -297,7 +259,6 @@ export default function EditListing() {
   }, [id, navigate]);
 
   /* ───────────────────────── live feature request ───────────────────────── */
-
   useEffect(() => {
     if (!id) return;
 
@@ -328,21 +289,23 @@ export default function EditListing() {
 
   /* ───────────────────────── helpers ───────────────────────── */
 
-  const updateField = (key, value) =>
-    setForm((f) => ({
-      ...f,
-      [key]: value,
-    }));
+  const updateField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+
+  const amenitiesOptions = [
+    "Wi-Fi",
+    "Air conditioning",
+    "Parking",
+    "Swimming pool",
+    "24/7 security",
+    "Generator / Inverter",
+    "Housekeeping",
+    "Smart TV",
+  ];
 
   const toggleAmenity = (amenity) =>
     setForm((f) => {
       const has = f.amenities.includes(amenity);
-      return {
-        ...f,
-        amenities: has
-          ? f.amenities.filter((x) => x !== amenity)
-          : [...f.amenities, amenity],
-      };
+      return { ...f, amenities: has ? f.amenities.filter((x) => x !== amenity) : [...f.amenities, amenity] };
     });
 
   const handleFileChange = (e) => {
@@ -355,10 +318,7 @@ export default function EditListing() {
     if (!newPhotos.length) return [];
     const uploaded = [];
     for (const file of newPhotos) {
-      const storageRef = ref(
-        storage,
-        `listingPhotos/${id}/${Date.now()}-${file.name}`
-      );
+      const storageRef = ref(storage, `listingPhotos/${id}/${Date.now()}-${file.name}`);
       await uploadBytes(storageRef, file);
       const url = await getDownloadURL(storageRef);
       uploaded.push(url);
@@ -375,26 +335,43 @@ export default function EditListing() {
     setBusy(true);
     try {
       const photoUrls = await uploadNewPhotos();
+      const mergedPhotos = [...(form.photos || []), ...photoUrls].filter(Boolean);
+
+      const nightly = Number(form.nightlyRate || form.pricePerNight || 0);
+
       const payload = {
-        title: form.title.trim(),
-        description: form.description.trim(),
-        city: form.city.trim(),
-        area: form.area.trim(),
-        neighbourhood: form.neighbourhood.trim(),
-        address: form.address.trim(),
-        nightlyRate: Number(form.nightlyRate) || "",
+        title: String(form.title || "").trim(),
+        description: String(form.description || "").trim(),
+        city: String(form.city || "").trim(),
+        area: String(form.area || "").trim(),
+        neighbourhood: String(form.neighbourhood || "").trim(),
+        address: String(form.address || "").trim(),
+
+        // Pricing consistency
+        nightlyRate: nightly || "",
+        pricePerNight: nightly || "",
+
         type: form.type,
         bedrooms: Number(form.bedrooms) || "",
         bathrooms: Number(form.bathrooms) || "",
         maxGuests: Number(form.maxGuests) || "",
         amenities: form.amenities,
-        photos: [...form.photos, ...photoUrls],
+
+        // Images compatibility
+        photos: mergedPhotos,
+        images: mergedPhotos,
+        imageUrls: mergedPhotos,
+        primaryImageUrl: mergedPhotos[0] || listing?.primaryImageUrl || null,
+
         instantBook: !!form.instantBook,
+
         ownerUid: form.ownerUid || listing?.ownerUid || user?.uid || "",
         partnerUid: form.partnerUid || listing?.partnerUid || "",
+
         sponsored: !!form.sponsored,
         lat: typeof form.lat === "number" ? form.lat : null,
         lng: typeof form.lng === "number" ? form.lng : null,
+
         updatedAt: serverTimestamp(),
       };
 
@@ -421,16 +398,15 @@ export default function EditListing() {
     }
   };
 
-  /* ───────────────────────── featured workflow ───────────────────────── */
+  /* ───────────────────────── featured workflow (luxury standard) ───────────────────────── */
 
-  const featureStatus = featureReq?.status || null;
+  const featureStatus = String(featureReq?.status || "").toLowerCase();
 
   const planLabel = useMemo(() => {
     if (!featureReq) return null;
     if (featureReq.planLabel) return featureReq.planLabel;
-    if (featureReq.planKey && FEATURE_PLANS[featureReq.planKey]) {
-      return FEATURE_PLANS[featureReq.planKey].label;
-    }
+    const k = featureReq.planId || featureReq.planKey;
+    if (k && FEATURE_PLANS[k]) return FEATURE_PLANS[k].label;
     return "Custom plan";
   }, [featureReq]);
 
@@ -444,72 +420,76 @@ export default function EditListing() {
     if (!featureReq) {
       return {
         requestSummary: "No featured request yet.",
-        requestHelpText:
-          "Boost visibility by appearing in the homepage Featured carousel.",
+        requestHelpText: "Boost visibility by appearing in the homepage Featured carousel.",
         requestButtonLabel: "Request Featured",
         requestButtonDisabled: false,
         showPayNowAction: false,
       };
     }
 
-    switch (featureStatus) {
-      case "pending":
-        return {
-          requestSummary: `Featured request: Pending — ${planLabel}`,
-          requestHelpText:
-            "Our team is reviewing your request. Once accepted, we’ll move it to 'Awaiting payment'.",
-          requestButtonLabel: "Request pending",
-          requestButtonDisabled: true,
-          showPayNowAction: false,
-        };
-      case "awaiting-payment":
-        return {
-          requestSummary: `Featured request: Awaiting payment — ${planLabel}`,
-          requestHelpText:
-            "Your request has been accepted. Complete payment to activate your spotlight placement.",
-          requestButtonLabel: "Pay now",
-          requestButtonDisabled: false,
-          showPayNowAction: true,
-        };
-      case "active":
-        return {
-          requestSummary: `Featured placement active — ${planLabel}`,
-          requestHelpText:
-            "Your property is currently rotating in the homepage Featured carousel.",
-          requestButtonLabel: "Currently featured",
-          requestButtonDisabled: true,
-          showPayNowAction: false,
-        };
-      case "rejected":
-        return {
-          requestSummary: `Featured request: Rejected — ${planLabel}`,
-          requestHelpText:
-            featureReq.adminNote ||
-            "You can submit a new request if you’d like to try another date or plan.",
-          requestButtonLabel: "Request again",
-          requestButtonDisabled: false,
-          showPayNowAction: false,
-        };
-      default:
-        return {
-          requestSummary: "No featured request yet.",
-          requestHelpText:
-            "Boost visibility by appearing in the homepage Featured carousel.",
-          requestButtonLabel: "Request Featured",
-          requestButtonDisabled: false,
-          showPayNowAction: false,
-        };
+    if (featureStatus === "pending") {
+      return {
+        requestSummary: `Featured request: Pending — ${planLabel}`,
+        requestHelpText: "Admin is reviewing your request. After approval, it becomes ‘Awaiting payment’.",
+        requestButtonLabel: "Request pending",
+        requestButtonDisabled: true,
+        showPayNowAction: false,
+      };
     }
+
+    if (featureStatus === "awaiting-payment") {
+      return {
+        requestSummary: `Featured request: Awaiting payment — ${planLabel}`,
+        requestHelpText: "Admin approved and locked your plan. Complete payment to proceed.",
+        requestButtonLabel: "Pay now",
+        requestButtonDisabled: false,
+        showPayNowAction: true,
+      };
+    }
+
+    if (featureStatus === "paid" || featureStatus === "paid-needs-review") {
+      return {
+        requestSummary: `Payment received — ${planLabel}`,
+        requestHelpText: "Payment is recorded. Admin will activate your placement after final checks.",
+        requestButtonLabel: "Paid (awaiting activation)",
+        requestButtonDisabled: true,
+        showPayNowAction: false,
+      };
+    }
+
+    if (featureStatus === "active") {
+      return {
+        requestSummary: `Featured placement active — ${planLabel}`,
+        requestHelpText: "Your property is currently eligible for the homepage Featured carousel.",
+        requestButtonLabel: "Currently featured",
+        requestButtonDisabled: true,
+        showPayNowAction: false,
+      };
+    }
+
+    if (featureStatus === "rejected") {
+      return {
+        requestSummary: `Featured request: Rejected — ${planLabel}`,
+        requestHelpText: featureReq?.adminNote || "You can submit a new request when ready.",
+        requestButtonLabel: "Request again",
+        requestButtonDisabled: false,
+        showPayNowAction: false,
+      };
+    }
+
+    // fallback
+    return {
+      requestSummary: "No featured request yet.",
+      requestHelpText: "Boost visibility by appearing in the homepage Featured carousel.",
+      requestButtonLabel: "Request Featured",
+      requestButtonDisabled: false,
+      showPayNowAction: false,
+    };
   }, [featureReq, featureStatus, planLabel]);
 
   const handleOpenPlanModal = () => {
-    if (
-      featureReq &&
-      ["pending", "awaiting-payment", "active"].includes(featureStatus)
-    ) {
-      window.alert(
-        "You already have a featured request in progress for this listing."
-      );
+    if (featureReq && ["pending", "awaiting-payment", "paid", "paid-needs-review", "active"].includes(featureStatus)) {
+      window.alert("You already have a featured request in progress for this listing.");
       return;
     }
     setPlanModalOpen(true);
@@ -521,39 +501,45 @@ export default function EditListing() {
       return;
     }
 
-    const plan =
-      FEATURE_PLANS[planKey] ||
-      FEATURE_PLANS.spotlight || {
-        key: "custom",
-        label: "Custom plan",
-        price: null,
-      };
+    const plan = FEATURE_PLANS[planKey] || FEATURE_PLANS.spotlight;
 
     const primaryImageUrl =
-      (Array.isArray(listing.photos) && listing.photos[0]) ||
       (Array.isArray(form.photos) && form.photos[0]) ||
+      (Array.isArray(listing.photos) && listing.photos[0]) ||
+      listing.primaryImageUrl ||
       null;
 
     setFeatureBusy(true);
     try {
       await addDoc(collection(db, "featureRequests"), {
+        kind: "listing-feature",
+        type: "featured-carousel",
+
         listingId: id,
         listingTitle: form.title || listing.title || "",
-        hostUid: listing.ownerUid || user.uid,
+
+        hostUid: listing.ownerUid || listing.ownerId || user.uid,
         hostEmail: user.email || profile?.email || "",
-        type: "featured-carousel",
-        planKey: plan.key,
-        planLabel: plan.label,
-        planPrice: plan.price, // store price
-        price: plan.price, // fallback field
-        primaryImageUrl,
+        requesterRole: profile?.role || "",
+
+        // start pending; admin will approve -> awaiting-payment and lock terms if needed
         status: "pending",
+        archived: false,
+
+        // initial terms (admin may override/lock)
+        planId: plan.key,
+        planLabel: plan.label,
+        price: plan.price,
+        durationDays: plan.durationDays,
+
+        primaryImageUrl,
+
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
 
       setPlanModalOpen(false);
-      window.alert("Request sent. An admin will review shortly.");
+      window.alert("Request sent. Admin will review shortly.");
     } catch (e) {
       console.error(e);
       window.alert("Could not send request. Please try again later.");
@@ -562,173 +548,113 @@ export default function EditListing() {
     }
   };
 
-  const handlePayNow = () => {
+  const ensurePaystackScript = () =>
+    new Promise((resolve, reject) => {
+      if (window.PaystackPop) return resolve();
+      const script = document.createElement("script");
+      script.src = "https://js.paystack.co/v1/inline.js";
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Paystack failed to load"));
+      document.body.appendChild(script);
+    });
+
+  const handlePayNow = async () => {
     try {
       if (!featureReq) {
         window.alert("No featured request found for this listing.");
         return;
       }
+      if (String(featureReq.status || "").toLowerCase() !== "awaiting-payment") {
+        window.alert("This request is not approved for payment yet.");
+        return;
+      }
 
-      // Derive a safe price
-      const fallbackPlan =
-        FEATURE_PLANS[featureReq.planKey || ""] || FEATURE_PLANS.spotlight;
-
-      const effectivePrice =
-        featureReq.planPrice ??
-        featureReq.price ??
-        fallbackPlan?.price ??
-        null;
-
-      const amountNaira = Number(effectivePrice);
-
+      const amountNaira = Number(featureReq.price ?? featureReq.planPrice ?? 0);
       if (!amountNaira || Number.isNaN(amountNaira) || amountNaira <= 0) {
-        window.alert(
-          "This plan does not have a valid price configured yet. Please contact Nesta support."
-        );
+        window.alert("This plan does not have a valid locked price. Admin must approve and set price.");
         return;
       }
 
       if (!PAYSTACK_PUBLIC_KEY) {
-        window.alert(
-          "Paystack public key is missing. Please set REACT_APP_PAYSTACK_PUBLIC_KEY in your .env file."
-        );
+        window.alert("Missing Paystack public key. Set REACT_APP_PAYSTACK_PUBLIC_KEY in your .env file.");
         return;
       }
 
-      const amountKobo = amountNaira * 100;
+      await ensurePaystackScript();
 
-      const launchCheckout = () => {
-        if (
-          !window.PaystackPop ||
-          typeof window.PaystackPop.setup !== "function"
-        ) {
-          window.alert(
-            "Paystack could not be initialised. Please check your connection and try again."
-          );
-          return;
-        }
+      const amountKobo = Math.round(amountNaira * 100);
+      const featureRequestId = featureReq.id;
 
-        const handler = window.PaystackPop.setup({
-          key: PAYSTACK_PUBLIC_KEY,
-          email:
-            (featureReq.hostEmail || user?.email || "").trim() ||
-            "guest@nestaapp.ng",
-          amount: amountKobo,
-          currency: "NGN",
-          ref: featureReq.id, // use the featureRequest doc id
-          metadata: {
-            custom_fields: [
-              {
-                display_name: "Listing",
-                variable_name: "listing_title",
-                value: listing?.title || form.title || "",
-              },
-              {
-                display_name: "Listing ID",
-                variable_name: "listing_id",
-                value: listing?.id || id,
-              },
-              {
-                display_name: "Plan",
-                variable_name: "feature_plan",
-                value: planLabel || featureReq.planKey || "custom",
-              },
-            ],
-          },
-          callback: (response) => {
-            // Firestore updates in a safe async block
-            (async () => {
-              try {
-                await updateDoc(doc(db, "featureRequests", featureReq.id), {
-                  status: "active",
-                  paid: true,
-                  paymentRef: response.reference,
-                  paidVia: "paystack-inline",
-                  paidAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                });
+      const handler = window.PaystackPop.setup({
+        key: PAYSTACK_PUBLIC_KEY,
+        email: (featureReq.hostEmail || user?.email || "").trim() || "host@nestaapp.ng",
+        amount: amountKobo,
+        currency: "NGN",
 
-                await updateDoc(doc(db, "listings", id), {
-                  sponsored: true,
-                  featured: true, // used by the homepage carousel
-                  updatedAt: serverTimestamp(),
-                });
+        // reference is used as your idempotency key in webhook
+        ref: featureRequestId,
 
-                window.alert(
-                  "Payment successful. Your listing will now appear in the Featured carousel."
-                );
-              } catch (err) {
-                console.error(
-                  "[Paystack callback] Firestore update failed:",
-                  err
-                );
-                window.alert(
-                  "Payment succeeded, but we could not update your listing automatically.\nPlease contact Nesta support with this reference: " +
-                    response.reference
-                );
-              }
-            })();
-          },
-          onClose: () => {
-            // optional: notify on close
-            // window.alert("Payment window closed.");
-          },
-        });
+        metadata: {
+          type: "featured",
+          featureRequestId,
+          listingId: id,
+          planId: featureReq.planId || featureReq.planKey || "custom",
+          planLabel: featureReq.planLabel || "",
+        },
 
-        handler.openIframe();
-      };
+        callback: (response) => {
+          // IMPORTANT: do NOT activate listing here.
+          // Webhook will mark PAID; admin activates after QC.
+          (async () => {
+            try {
+              await updateDoc(doc(db, "featureRequests", featureRequestId), {
+                paymentAttemptRef: response.reference,
+                paymentAttemptedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+                // do not set paid:true here; webhook is source of truth
+              });
 
-      // Ensure Paystack script is present
-      if (!window.PaystackPop) {
-        const script = document.createElement("script");
-        script.src = "https://js.paystack.co/v1/inline.js";
-        script.async = true;
-        script.onload = launchCheckout;
-        script.onerror = () => {
-          window.alert(
-            "Could not load Paystack at the moment. Please check your connection and try again."
-          );
-        };
-        document.body.appendChild(script);
-      } else {
-        launchCheckout();
-      }
+              window.alert(
+                "✅ Payment submitted.\n\nYour payment will be confirmed automatically (webhook). Once confirmed, admin will activate your carousel placement."
+              );
+            } catch (err) {
+              console.error("[Paystack callback] update failed:", err);
+              window.alert(
+                "Payment succeeded, but we could not record your attempt automatically.\nPlease contact Nesta support with this reference: " +
+                  response.reference
+              );
+            }
+          })();
+        },
+
+        onClose: () => {
+          // optional: no alert
+        },
+      });
+
+      handler.openIframe();
     } catch (err) {
-      console.error("[handlePayNow] unexpected error:", err);
-      window.alert(
-        "Something went wrong while starting the payment. Please refresh the page and try again."
-      );
+      console.error("[handlePayNow] error:", err);
+      window.alert("Could not start payment. Please refresh and try again.");
     }
   };
 
   /* ───────────────────────── render guards ───────────────────────── */
 
   if (loading) {
-    return (
-      <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">
-        Loading listing…
-      </main>
-    );
+    return <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">Loading listing…</main>;
   }
 
   if (!listing) {
-    return (
-      <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">
-        Listing not found.
-      </main>
-    );
+    return <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">Listing not found.</main>;
   }
 
   if (!canEdit) {
     return (
       <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">
-        <h2 className="text-xl font-semibold mb-2">
-          You don't have permission to edit this listing.
-        </h2>
-        <p className="text-white/60">
-          Only the listing owner or a Nesta admin can make changes to this
-          property.
-        </p>
+        <h2 className="text-xl font-semibold mb-2">You don't have permission to edit this listing.</h2>
+        <p className="text-white/60">Only the listing owner or a Nesta admin can make changes.</p>
       </main>
     );
   }
@@ -745,12 +671,12 @@ export default function EditListing() {
           >
             ← Back
           </button>
+
           <div>
             <div className="text-sm text-white/60">Edit listing</div>
-            <h1 className="text-2xl font-semibold">
-              {form.title || "Untitled"}
-            </h1>
+            <h1 className="text-2xl font-semibold">{form.title || "Untitled"}</h1>
           </div>
+
           <div className="ml-auto flex gap-3">
             <button
               type="button"
@@ -772,15 +698,11 @@ export default function EditListing() {
           </div>
         </header>
 
-        {/* FORM */}
         <form onSubmit={handleSave} className="space-y-6">
-          {/* BASICS */}
           <Section title="Basics">
             <div className="grid md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Title
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Title</label>
                 <input
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
                   value={form.title}
@@ -788,10 +710,9 @@ export default function EditListing() {
                   placeholder="Designer studio in Lekki"
                 />
               </div>
+
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Type
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Type</label>
                 <select
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
                   value={form.type}
@@ -807,9 +728,7 @@ export default function EditListing() {
             </div>
 
             <div className="mt-4">
-              <label className="block text-sm text-white/70 mb-1">
-                Description
-              </label>
+              <label className="block text-sm text-white/70 mb-1">Description</label>
               <textarea
                 className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm min-h-[80px]"
                 value={form.description}
@@ -819,13 +738,10 @@ export default function EditListing() {
             </div>
           </Section>
 
-          {/* LOCATION */}
           <Section title="Location">
             <div className="grid md:grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  City
-                </label>
+                <label className="block text-sm text-white/70 mb-1">City</label>
                 <input
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
                   value={form.city}
@@ -833,6 +749,7 @@ export default function EditListing() {
                   placeholder="Lagos, Abuja, Port Harcourt…"
                 />
               </div>
+
               <div>
                 <label className="block text-sm text-white/70 mb-1">Area</label>
                 <input
@@ -842,16 +759,13 @@ export default function EditListing() {
                   placeholder="Ikoyi, Lekki, Maitama…"
                 />
               </div>
+
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Neighbourhood (optional)
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Neighbourhood (optional)</label>
                 <input
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
                   value={form.neighbourhood}
-                  onChange={(e) =>
-                    updateField("neighbourhood", e.target.value)
-                  }
+                  onChange={(e) => updateField("neighbourhood", e.target.value)}
                   placeholder="Close to Landmark, Eko Atlantic…"
                 />
               </div>
@@ -859,75 +773,44 @@ export default function EditListing() {
 
             <div className="mt-4 grid md:grid-cols-2 gap-4 items-start">
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Street address (optional)
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Street address (optional)</label>
                 <input
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
                   value={form.address}
                   onChange={(e) => updateField("address", e.target.value)}
-                  placeholder="Estate / street name shown only to confirmed guests"
+                  placeholder="Shown only to confirmed guests"
                 />
+
                 <div className="mt-3 grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs text-white/60 mb-1">
-                      Latitude
-                    </label>
+                    <label className="block text-xs text-white/60 mb-1">Latitude</label>
                     <input
                       className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs"
                       value={form.lat ?? ""}
-                      onChange={(e) =>
-                        updateField(
-                          "lat",
-                          e.target.value === ""
-                            ? null
-                            : Number(e.target.value)
-                        )
-                      }
+                      onChange={(e) => updateField("lat", e.target.value === "" ? null : Number(e.target.value))}
                       placeholder="Click map or paste"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-white/60 mb-1">
-                      Longitude
-                    </label>
+                    <label className="block text-xs text-white/60 mb-1">Longitude</label>
                     <input
                       className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs"
                       value={form.lng ?? ""}
-                      onChange={(e) =>
-                        updateField(
-                          "lng",
-                          e.target.value === ""
-                            ? null
-                            : Number(e.target.value)
-                        )
-                      }
+                      onChange={(e) => updateField("lng", e.target.value === "" ? null : Number(e.target.value))}
                       placeholder="Click map or paste"
                     />
                   </div>
                 </div>
+
                 <p className="mt-2 text-[11px] text-white/50">
-                  Guests will only see a nearby area map before booking. Exact
-                  details are shared securely after confirmation.
+                  Guests only see a nearby area map before booking. Exact details are shared securely after confirmation.
                 </p>
               </div>
 
               <div className="mt-1">
                 <ListingMap
-                  lat={
-                    typeof form.lat === "number"
-                      ? form.lat
-                      : typeof listing.lat === "number"
-                      ? listing.lat
-                      : null
-                  }
-                  lng={
-                    typeof form.lng === "number"
-                      ? form.lng
-                      : typeof listing.lng === "number"
-                      ? listing.lng
-                      : null
-                  }
+                  lat={typeof form.lat === "number" ? form.lat : typeof listing.lat === "number" ? listing.lat : null}
+                  lng={typeof form.lng === "number" ? form.lng : typeof listing.lng === "number" ? listing.lng : null}
                   editable
                   onChange={(pos) => {
                     updateField("lat", pos.lat);
@@ -938,24 +821,23 @@ export default function EditListing() {
             </div>
           </Section>
 
-          {/* PRICING & CAPACITY */}
           <Section title="Pricing & capacity">
             <div className="grid md:grid-cols-4 gap-4">
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Nightly rate (₦)
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Nightly rate (₦)</label>
                 <input
                   type="number"
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
                   value={form.nightlyRate}
-                  onChange={(e) => updateField("nightlyRate", e.target.value)}
+                  onChange={(e) => {
+                    updateField("nightlyRate", e.target.value);
+                    updateField("pricePerNight", e.target.value);
+                  }}
                 />
               </div>
+
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Bedrooms
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Bedrooms</label>
                 <input
                   type="number"
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
@@ -963,10 +845,9 @@ export default function EditListing() {
                   onChange={(e) => updateField("bedrooms", e.target.value)}
                 />
               </div>
+
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Bathrooms
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Bathrooms</label>
                 <input
                   type="number"
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
@@ -974,10 +855,9 @@ export default function EditListing() {
                   onChange={(e) => updateField("bathrooms", e.target.value)}
                 />
               </div>
+
               <div>
-                <label className="block text-sm text-white/70 mb-1">
-                  Max guests
-                </label>
+                <label className="block text-sm text-white/70 mb-1">Max guests</label>
                 <input
                   type="number"
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
@@ -988,7 +868,6 @@ export default function EditListing() {
             </div>
           </Section>
 
-          {/* AMENITIES */}
           <Section title="Amenities">
             <div className="flex flex-wrap gap-2">
               {amenitiesOptions.map((a) => {
@@ -1011,45 +890,27 @@ export default function EditListing() {
             </div>
           </Section>
 
-          {/* PHOTOS */}
           <Section title="Photos">
             <div className="grid md:grid-cols-4 gap-3 mb-4">
-              {form.photos.map((url, idx) => (
-                <div
-                  key={idx}
-                  className="relative rounded-xl overflow-hidden border border-white/10 bg-white/5 aspect-video"
-                >
-                  {/* eslint-disable-next-line jsx-a11y/img-redundant-alt */}
-                  <img
-                    src={url}
-                    alt={`Photo ${idx + 1}`}
-                    className="w-full h-full object-cover"
-                  />
+              {(form.photos || []).map((url, idx) => (
+                <div key={idx} className="relative rounded-xl overflow-hidden border border-white/10 bg-white/5 aspect-video">
+                  <img src={url} alt={`Photo ${idx + 1}`} className="w-full h-full object-cover" />
                 </div>
               ))}
-              {form.photos.length === 0 && (
+
+              {(form.photos || []).length === 0 && (
                 <div className="text-sm text-white/60">
-                  No photos yet. Upload at least one high-quality image for best
-                  results.
+                  No photos yet. Upload at least one high-quality image for best results.
                 </div>
               )}
             </div>
 
-            <input
-              type="file"
-              multiple
-              accept="image/*"
-              onChange={handleFileChange}
-              className="text-sm"
-            />
+            <input type="file" multiple accept="image/*" onChange={handleFileChange} className="text-sm" />
             {newPhotos.length > 0 && (
-              <div className="text-xs text-white/60 mt-1">
-                {newPhotos.length} new photo(s) will be uploaded on save.
-              </div>
+              <div className="text-xs text-white/60 mt-1">{newPhotos.length} new photo(s) will upload on save.</div>
             )}
           </Section>
 
-          {/* BOOKING OPTIONS */}
           <Section title="Booking options">
             <label className="inline-flex items-center gap-2 text-sm text-white/80">
               <input
@@ -1057,52 +918,18 @@ export default function EditListing() {
                 checked={form.instantBook}
                 onChange={(e) => updateField("instantBook", e.target.checked)}
               />
-              <span>Enable instant booking (no manual approval required)</span>
+              <span>Enable instant booking</span>
             </label>
           </Section>
 
-          {/* META & FEATURED */}
-          <Section title="Meta">
-            <div className="grid md:grid-cols-3 gap-4">
-              <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm">
-                <div className="text-white/70">Listing ID</div>
-                <div className="text-white mt-1 break-all">{listing.id}</div>
-              </div>
-              <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm">
-                <div className="text-white/70">Owner UID</div>
-                <div className="text-white mt-1">
-                  {form.ownerUid || listing.ownerUid || "—"}
-                </div>
-              </div>
-              <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm">
-                <div className="text-white/70">Partner UID</div>
-                <div className="text-white mt-1">
-                  {form.partnerUid || listing.partnerUid || "—"}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-xl bg-white/5 border border-white/10 p-3 text-sm flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-white/70">Featured (carousel)</div>
-                  <div className="text-white mt-1">
-                    {form.sponsored || listing.sponsored
-                      ? "Yes — currently featured"
-                      : "No — not currently featured"}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-2 text-xs text-amber-200">
-                {requestSummary}
-              </div>
+          <Section title="Featured (carousel)">
+            <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm flex flex-col gap-2">
+              <div className="text-xs text-amber-200">{requestSummary}</div>
               <div className="text-xs text-white/60">{requestHelpText}</div>
             </div>
           </Section>
         </form>
 
-        {/* FOOTER ACTIONS */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <button
             disabled={busy || !canSave}
@@ -1119,16 +946,10 @@ export default function EditListing() {
             disabled={featureBusy || requestButtonDisabled}
             onClick={showPayNowAction ? handlePayNow : handleOpenPlanModal}
             className={`px-5 py-3 rounded-xl border border-amber-400/50 bg-amber-500/10 hover:bg-amber-500/20 text-sm font-semibold ${
-              featureBusy || requestButtonDisabled
-                ? "opacity-60 cursor-not-allowed"
-                : ""
+              featureBusy || requestButtonDisabled ? "opacity-60 cursor-not-allowed" : ""
             }`}
           >
-            {featureBusy
-              ? "Sending request…"
-              : showPayNowAction
-              ? "Pay now"
-              : requestButtonLabel}
+            {featureBusy ? "Working…" : showPayNowAction ? "Pay now" : requestButtonLabel}
           </button>
 
           <div className="ml-auto text-sm text-white/60">
@@ -1138,7 +959,6 @@ export default function EditListing() {
         </div>
       </main>
 
-      {/* Plan chooser modal */}
       <FeaturePlanModal
         open={planModalOpen}
         onClose={() => setPlanModalOpen(false)}
