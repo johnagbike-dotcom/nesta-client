@@ -274,7 +274,7 @@ export default function Privacy() {
         </section>
 
         <section className="pt-6 border-t border-white/10 text-xs text-white/45">
-          <p>© {year} Nesta Stays — All rights reserved.</p>
+          <p>© {year} Nesta Connect Ltd — All rights reserved.</p>
         </section>
       </div>
     </main>

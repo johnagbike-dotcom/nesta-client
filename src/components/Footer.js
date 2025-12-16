@@ -165,7 +165,7 @@ export default function Footer() {
         <div className="mt-6 border-t border-white/10 pt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           {/* Left */}
           <p className="text-xs text-white/50">
-            © {year} Nesta Luxury Stays. All rights reserved.
+            © {year} Nesta Connect Limited. All rights reserved.
           </p>
 
           {/* Right – contact & CAC */}

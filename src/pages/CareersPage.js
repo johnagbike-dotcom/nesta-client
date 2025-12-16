@@ -208,7 +208,7 @@ export default function CareersPage() {
             that trust seriously.
           </p>
           <p className="mt-2">
-            Nesta Luxury Stays Ltd • {year} • Nigeria-founded, globally minded.
+            Nesta Connect Ltd • {year} • Nigeria-founded, globally minded.
           </p>
         </section>
       </div>
