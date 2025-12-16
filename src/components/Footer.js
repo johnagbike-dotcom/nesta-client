@@ -21,7 +21,7 @@ export default function Footer() {
             </p>
             <p className="text-xs text-white/50 mt-2">
               Product of{" "}
-              <span className="font-semibold">Nesta Luxury Stays Ltd</span>{" "}
+              <span className="font-semibold">Nesta Connect Limited</span>{" "}
               (CAC-registered).
             </p>
           </div>
