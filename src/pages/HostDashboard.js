@@ -478,8 +478,8 @@ export default function HostDashboard() {
             helper="After Nesta fee (est.)"
             onClick={goReservations}
           />
-        </section>
-
+          </section>
+        
         {/* KPI GRID 2 */}
         <section className="grid gap-3 md:gap-4 md:grid-cols-2 lg:grid-cols-4">
           <CardStat
@@ -507,34 +507,45 @@ export default function HostDashboard() {
         </section>
 
         {/* ACTION BAR */}
-        <section className="flex flex-wrap gap-3 items-center mt-1">
-          <button
-            type="button"
-            onClick={goManageListings}
-            className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
-          >
-            Manage your listing
-          </button>
-          <button
-            type="button"
-            onClick={goReservations}
-            className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
-          >
-            View reservations
-          </button>
-          <Link
-            to="/post/new"
-            className="px-4 py-2 rounded-xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
-          >
-            + New listing
-          </Link>
-          <div className="ml-auto text-xs text-white/60">
-            KYC:{" "}
-            <strong>
-              {kycStatusRaw || (isKycApproved ? "approved" : "pending")}
-            </strong>
-          </div>
-        </section>
+<section className="flex flex-wrap gap-3 items-center mt-1">
+  <button
+    type="button"
+    onClick={goManageListings}
+    className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+  >
+    Manage your listing
+  </button>
+
+  <button
+    type="button"
+    onClick={goReservations}
+    className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+  >
+    View reservations
+  </button>
+
+  <Link
+    to="/post/new"
+    className="px-4 py-2 rounded-xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
+  >
+    + New listing
+  </Link>
+
+  {/* ✅ WITHDRAW CTA */}
+  <button
+    type="button"
+    disabled={!isKycApproved}
+    onClick={() => navigate("/withdrawals")}
+    className={`ml-auto px-4 py-2 rounded-xl text-sm font-semibold transition ${
+      isKycApproved
+        ? "bg-amber-500 text-black hover:bg-amber-400"
+        : "bg-white/10 text-white/40 cursor-not-allowed"
+    }`}
+    title={!isKycApproved ? "Complete KYC to withdraw earnings" : undefined}
+  >
+    Withdraw earnings
+  </button>
+</section>
 
         {/* FILTERS */}
         <section className="rounded-3xl bg-[#090c12] border border-white/5 p-4 md:p-5 space-y-3">

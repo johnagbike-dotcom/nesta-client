@@ -108,10 +108,10 @@ export default function SecurityPage() {
             If you believe you have found a vulnerability or security weakness,
             please contact us at{" "}
             <a
-              href="mailto:security@nestaapp.ng"
+              href="mailto:security@nestanaija.com"
               className="text-amber-300 hover:underline"
             >
-              security@nestaapp.ng
+              security@nestanaija.com
             </a>{" "}
             with as much detail as possible.
           </p>
@@ -137,10 +137,10 @@ export default function SecurityPage() {
           <p className="text-white/60 leading-relaxed">
             For any security-related question, please email{" "}
             <a
-              href="mailto:security@nestaapp.ng"
+              href="mailto:security@nestanaija.com"
               className="text-amber-300 hover:underline"
             >
-              security@nestaapp.ng
+              security@nestanaija.com
             </a>{" "}
             or contact us via the{" "}
             <a href="/help" className="text-amber-300 hover:underline">

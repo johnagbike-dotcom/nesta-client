@@ -208,8 +208,8 @@ export default function Privacy() {
 
           <p>
             Requests can be made via{" "}
-            <a href="mailto:support@nestaapp.ng" className="underline decoration-amber-400">
-              support@nestaapp.ng
+            <a href="mailto:support@nestanaija.com" className="underline decoration-amber-400">
+              support@nestanaija.com
             </a>
             .
           </p>
@@ -268,8 +268,8 @@ export default function Privacy() {
           <h2 className="text-xl font-semibold text-white">11. Contact Us</h2>
           <p>For privacy concerns, contact:</p>
           <ul className="space-y-1 text-sm">
-            <li>• support@nestaapp.ng</li>
-            <li>• legal@nestaapp.ng</li>
+            <li>• support@nestanaija.com</li>
+            <li>• legal@nestanaija.com</li>
           </ul>
         </section>
 

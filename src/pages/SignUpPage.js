@@ -4,6 +4,7 @@ import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebase";
 import OfficialLogo from "../assets/Official-Logo.jpg";
+
 export default function SignUpPage() {
   const nav = useNavigate();
   const { state } = useLocation(); // optional { next: "/host-dashboard" }
@@ -20,16 +21,49 @@ export default function SignUpPage() {
   const nextAfterRole = useMemo(() => state?.next || "/dashboard", [state]);
 
   async function ensureUserProfile(uid, emailVal, displayName) {
-    const ref = doc(db, "users", uid);
-    const snap = await getDoc(ref);
+    const userRef = doc(db, "users", uid);
+    const pubRef = doc(db, "users_public", uid);
+
+    const snap = await getDoc(userRef);
+
+    // Minimal safe defaults so rules never break
+    const basePrivate = {
+      email: emailVal,
+      emailLower: String(emailVal || "").toLowerCase(),
+      displayName: displayName || null,
+      role: "guest",
+      isAdmin: false,
+      plan: "free",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    const basePublic = {
+      displayName: displayName || "User",
+      email: emailVal, // optional, remove if you prefer not to expose
+      role: "guest",
+      photoURL: null,
+      updatedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    };
+
     if (!snap.exists()) {
-      await setDoc(ref, {
-        email: emailVal,
-        displayName: displayName || null,
-        role: "guest",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      // create both docs
+      await setDoc(userRef, basePrivate, { merge: true });
+      await setDoc(pubRef, basePublic, { merge: true });
+    } else {
+      // ensure users_public exists + keep updatedAt fresh
+      await setDoc(
+        pubRef,
+        { displayName: displayName || "User", updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+
+      await setDoc(
+        userRef,
+        { updatedAt: serverTimestamp() },
+        { merge: true }
+      );
     }
   }
 
@@ -63,7 +97,6 @@ export default function SignUpPage() {
 
       await ensureUserProfile(cred.user.uid, cred.user.email || cleanEmail, displayName);
 
-      // keep your existing flow: role selection after signup
       nav("/role-selection", { replace: true, state: { next: nextAfterRole } });
     } catch (e2) {
       console.error(e2);
@@ -76,10 +109,9 @@ export default function SignUpPage() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#070b12] to-[#05070d] text-white px-4 py-10">
       <div className="mx-auto w-full max-w-md">
-        {/* Brand */}
         <div className="mb-6 text-center">
           <div className="mx-auto mb-3 h-14 w-14 rounded-2xl bg-white/5 border border-white/10 grid place-items-center overflow-hidden">
-          <img src={OfficialLogo} alt="Nesta" className="h-full w-full object-cover" />
+            <img src={OfficialLogo} alt="Nesta" className="h-full w-full object-cover" />
           </div>
           <h1
             className="text-3xl font-extrabold tracking-tight"
@@ -95,7 +127,6 @@ export default function SignUpPage() {
           </p>
         </div>
 
-        {/* Card */}
         <form
           onSubmit={onSubmit}
           className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 shadow-[0_24px_70px_rgba(0,0,0,.7)]"
@@ -150,9 +181,7 @@ export default function SignUpPage() {
                 {showPw ? "Hide" : "Show"}
               </button>
             </div>
-            <div className="mt-1 text-[11px] text-white/45">
-              Tip: Use 8+ characters for a stronger account.
-            </div>
+            <div className="mt-1 text-[11px] text-white/45">Tip: Use 8+ characters for a stronger account.</div>
           </label>
 
           <label className="block mb-5">

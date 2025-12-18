@@ -8,14 +8,12 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
-  where,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
@@ -23,28 +21,16 @@ import useUserProfile from "../hooks/useUserProfile";
 import "../styles/polish.css";
 import "../styles/motion.css";
 
-/* Quick replies per role */
-const QUICK_GUEST = [
-  "Hello 👋",
-  "Is this place available on my dates?",
-  "Can I get a flexible check-in?",
-  "Please share house rules.",
-];
-const QUICK_HOST = [
-  "Hi there 👋 How can I help?",
-  "Your dates are available ✅",
-  "Check-in is from 2pm; we can be flexible.",
-  "Here are the house rules:",
-];
-const QUICK_PARTNER = [
-  "Hello 👋 thanks for your interest.",
-  "We manage similar properties if you’d like options.",
-  "Corporate/long-stay rates are available.",
-  "I’ll share the application/verification steps.",
-];
+const QUICK_GUEST = ["Hello 👋", "Is this place available on my dates?", "Can I get a flexible check-in?", "Please share house rules."];
+const QUICK_HOST = ["Hi there 👋 How can I help?", "Your dates are available ✅", "Check-in is from 2pm; we can be flexible.", "Here are the house rules:"];
+const QUICK_PARTNER = ["Hello 👋 thanks for your interest.", "We manage similar properties if you’d like options.", "Corporate/long-stay rates are available.", "I’ll share the application/verification steps."];
 
-// how long we consider a user "online" after last presence update
 const ONLINE_WINDOW_MS = 60 * 1000;
+
+function stableChatId(listingId, a, b) {
+  const [x, y] = [a, b].sort();
+  return `l:${listingId}::u:${x}::v:${y}`;
+}
 
 function safeMillis(ts) {
   try {
@@ -64,96 +50,64 @@ export default function ChatPage() {
   const { profile } = useUserProfile(user?.uid);
 
   const myRole = (profile?.role || "").toLowerCase();
-  const isHost = myRole === "host" || myRole === "verified_host";
-  const isPartner = myRole === "partner" || myRole === "verified_partner";
-  const isGuest = !myRole || myRole === "guest";
-  const QUICK = isGuest ? QUICK_GUEST : isHost ? QUICK_HOST : QUICK_PARTNER;
+  const QUICK =
+    !myRole || myRole === "guest"
+      ? QUICK_GUEST
+      : myRole.includes("host")
+      ? QUICK_HOST
+      : QUICK_PARTNER;
 
   const nav = useNavigate();
   const params = useParams();
   const { state } = useLocation();
 
-  // Possible inputs
   const forcedChatId = state?.chatId || state?.threadId || null;
   const paramUid = params?.uid || null;
-
-  const bookingFromState = state?.booking || null;
-  const bookingIdFromState = state?.bookingId || null;
 
   const partnerUidFromState = state?.partnerUid || paramUid || null;
   const listingFromState = state?.listing || null; // { id, title }
 
-  // Derivations
   const [chatId, setChatId] = useState(forcedChatId || null);
   const [headerTitle, setHeaderTitle] = useState("Chat with Host/Partner");
-  const [counterUid, setCounterUid] = useState(null);
-  const [counterRole, setCounterRole] = useState(null);
-  const [listing, setListing] = useState(listingFromState || null);
+  const [counterUid, setCounterUid] = useState(partnerUidFromState);
+  const [listing, setListing] = useState(listingFromState);
 
-  // Live chat doc meta (Seen/read receipts)
   const [chatMeta, setChatMeta] = useState(null);
-
-  // Counterparty profile + presence
   const [counterProfile, setCounterProfile] = useState(null);
-  const [counterPresence, setCounterPresence] = useState({
-    typing: false,
-    updatedAt: null,
-  });
+  const [counterPresence, setCounterPresence] = useState({ typing: false, updatedAt: null });
 
-  // UI
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
 
-  // Refs
   const listRef = useRef(null);
   const otherIdRef = useRef(null);
   const typingIdleRef = useRef(null);
   const myPresenceRef = useRef(null);
   const otherPresenceRef = useRef(null);
 
-  /* ---------------- helpers ---------------- */
   const scrollToBottom = useCallback(() => {
     if (!listRef.current) return;
-    listRef.current.scrollTo({
-      top: listRef.current.scrollHeight,
-      behavior: "smooth",
-    });
+    listRef.current.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, []);
-
-  const markLocalRead = useCallback(
-    (id) => {
-      try {
-        if (!id || !user?.uid) return;
-        const key = `nesta_chat_lastread_${user.uid}_${id}`;
-        localStorage.setItem(key, Date.now().toString());
-      } catch {}
-    },
-    [user?.uid]
-  );
 
   const presenceLabel = useMemo(() => {
     if (counterPresence.typing) return "Typing…";
     const updatedAt = counterPresence.updatedAt;
     if (!updatedAt) return "Offline";
-
     const ts =
       typeof updatedAt?.toDate === "function"
         ? updatedAt.toDate().getTime()
         : typeof updatedAt === "number"
         ? updatedAt
         : 0;
-
     const now = Date.now();
-    if (ts && now - ts < ONLINE_WINDOW_MS) return "Online";
-    return "Last seen recently";
+    return ts && now - ts < ONLINE_WINDOW_MS ? "Online" : "Last seen recently";
   }, [counterPresence]);
 
-  /* ✅ IMPORTANT: hooks must be above conditional returns */
   const lastMineMsg = useMemo(() => {
     const myId = user?.uid;
-    if (!myId || !Array.isArray(messages) || messages.length === 0) return null;
-
+    if (!myId || !messages?.length) return null;
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i]?.senderId === myId) return messages[i];
     }
@@ -161,93 +115,11 @@ export default function ChatPage() {
   }, [messages, user?.uid]);
 
   const otherIdForSeen = otherIdRef.current || null;
-  const otherLastReadMs = otherIdForSeen
-    ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen])
-    : 0;
-
+  const otherLastReadMs = otherIdForSeen ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen]) : 0;
   const lastMineCreatedMs = safeMillis(lastMineMsg?.createdAt);
-  const showSeen =
-    !!lastMineMsg &&
-    otherLastReadMs > 0 &&
-    lastMineCreatedMs > 0 &&
-    otherLastReadMs >= lastMineCreatedMs;
+  const showSeen = !!lastMineMsg && otherLastReadMs > 0 && lastMineCreatedMs > 0 && otherLastReadMs >= lastMineCreatedMs;
 
-  /* -------- hydrate from booking / state (if no chatId) -------- */
-  useEffect(() => {
-    let alive = true;
-
-    async function hydrateFromState() {
-      try {
-        if (forcedChatId) return;
-
-        // CASE 1: user clicked "Chat host" from listing
-        if (partnerUidFromState && listingFromState?.id) {
-          if (alive) {
-            setCounterUid(partnerUidFromState);
-            setCounterRole("host");
-            setListing(listingFromState);
-            setHeaderTitle(listingFromState.title || "Chat with Host/Partner");
-          }
-          return;
-        }
-
-        // CASE 2: user clicked from booking
-        let booking = bookingFromState || null;
-        if (!booking && bookingIdFromState) {
-          const snap = await getDoc(doc(db, "bookings", bookingIdFromState));
-          if (snap.exists()) booking = { id: snap.id, ...snap.data() };
-        }
-        if (!booking) return;
-
-        const ownership = (booking.ownershipType || "").toLowerCase();
-        const nextCounterUid =
-          ownership === "partner"
-            ? booking.partnerUid || null
-            : booking.ownerId || booking.hostId || null;
-
-        const nextCounterRole = ownership === "partner" ? "partner" : "host";
-        const nextListing = {
-          id: booking.listingId || booking.listing?.id || null,
-          title:
-            booking.title ||
-            booking.listingTitle ||
-            booking.listing?.title ||
-            "Listing",
-        };
-
-        if (!nextCounterUid || !nextListing.id) return;
-
-        if (alive) {
-          setCounterUid(nextCounterUid);
-          setCounterRole(nextCounterRole);
-          setListing(nextListing);
-          setHeaderTitle(nextListing.title || "Chat with Host/Partner");
-        }
-      } catch (e) {
-        console.error("hydrateFromState failed:", e);
-      }
-    }
-
-    hydrateFromState();
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    forcedChatId,
-    bookingFromState,
-    bookingIdFromState,
-    partnerUidFromState,
-    listingFromState,
-  ]);
-
-  /* ---------------- create/resolve thread ---------------- */
-  const signature = useMemo(() => {
-    if (!user?.uid || !counterUid) return null;
-    const listingId = listing?.id || "";
-    return `${user.uid}|${counterUid}|${listingId}`;
-  }, [user?.uid, counterUid, listing?.id]);
-
+  // Resolve/create chat thread
   useEffect(() => {
     let cancelled = false;
 
@@ -257,36 +129,33 @@ export default function ChatPage() {
           if (!cancelled) setChatId(forcedChatId);
           return;
         }
+        if (!user?.uid || !counterUid || !listing?.id) return;
 
-        if (!user?.uid || !counterUid || !listing?.id || !signature) return;
+        const id = stableChatId(listing.id, user.uid, counterUid);
+        const ref = doc(db, "chats", id);
+        const snap = await getDoc(ref);
 
-        // 1) try to find existing chat
-        const q1 = query(collection(db, "chats"), where("signature", "==", signature));
-        const existing = await getDocs(q1);
-        if (!existing.empty) {
-          const found = existing.docs[0];
-          if (!cancelled) {
-            setChatId(found.id);
-            setHeaderTitle(found.data()?.listingTitle || headerTitle);
-          }
-          return;
+        if (!snap.exists()) {
+          await setDoc(ref, {
+            participants: [user.uid, counterUid],
+            listingId: listing.id,
+            listingTitle: listing.title || "Listing",
+            // keep optional; UI doesn’t depend on it
+            counterpartRole: "host",
+
+            archived: {},
+            pinned: {},
+            lastReadAt: {},
+            unreadFor: [],
+
+            lastMessage: null,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
         }
 
-        // 2) create a new thread
-        const created = await addDoc(collection(db, "chats"), {
-          participants: [user.uid, counterUid],
-          listingId: listing.id,
-          listingTitle: listing.title || "Listing",
-          lastMessage: "",
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          signature,
-          counterpartRole: counterRole || "host",
-          unreadFor: [],
-        });
-
         if (!cancelled) {
-          setChatId(created.id);
+          setChatId(id);
           setHeaderTitle(listing.title || "Chat with Host/Partner");
         }
       } catch (e) {
@@ -299,53 +168,42 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forcedChatId, user?.uid, counterUid, listing?.id, signature, counterRole]);
+  }, [forcedChatId, user?.uid, counterUid, listing?.id, listing?.title]);
 
-  /* -------- live chat doc + header + read receipts + presence refs -------- */
+  // Chat doc listener + presence refs + remove me from unreadFor (only if needed)
   useEffect(() => {
     if (!chatId || !user?.uid) return;
 
     const chatRef = doc(db, "chats", chatId);
-
-    const unsubChat = onSnapshot(
+    const unsub = onSnapshot(
       chatRef,
-      async (snap) => {
+      (snap) => {
         if (!snap.exists()) return;
         const d = snap.data() || {};
         setChatMeta(d);
-        setHeaderTitle(d?.listingTitle || "Chat with Host/Partner");
+        setHeaderTitle(d.listingTitle || "Chat with Host/Partner");
 
         const parts = Array.isArray(d.participants) ? d.participants : [];
         const otherId = parts.find((p) => p !== user.uid) || counterUid || null;
-
         otherIdRef.current = otherId;
 
-        if (otherId && !counterUid) setCounterUid(otherId);
-
-        // best-effort: clear unread flag
-        try {
-          await updateDoc(chatRef, { unreadFor: arrayRemove(user.uid) });
-        } catch {}
-
-        // presence refs
         myPresenceRef.current = doc(db, "chats", chatId, "presence", user.uid);
-        otherPresenceRef.current = otherId
-          ? doc(db, "chats", chatId, "presence", otherId)
-          : null;
+        otherPresenceRef.current = otherId ? doc(db, "chats", chatId, "presence", otherId) : null;
+
+        // Only update if I'm actually in unreadFor (avoids noisy writes)
+        if (Array.isArray(d.unreadFor) && d.unreadFor.includes(user.uid)) {
+          updateDoc(chatRef, { unreadFor: arrayRemove(user.uid) }).catch(() => {});
+        }
       },
       (e) => console.error("chat doc listen:", e)
     );
 
-    return () => {
-      unsubChat();
-    };
+    return () => unsub();
   }, [chatId, user?.uid, counterUid]);
 
-  /* -------- subscribe to other presence -------- */
+  // Other presence listener
   useEffect(() => {
     if (!chatId || !user?.uid) return;
-
     let unsubPresence = () => {};
 
     if (otherPresenceRef.current) {
@@ -353,10 +211,7 @@ export default function ChatPage() {
         otherPresenceRef.current,
         (ps) => {
           const data = ps.data() || {};
-          setCounterPresence({
-            typing: Boolean(data.typing),
-            updatedAt: data.updatedAt || null,
-          });
+          setCounterPresence({ typing: !!data.typing, updatedAt: data.updatedAt || null });
         },
         () => setCounterPresence({ typing: false, updatedAt: null })
       );
@@ -364,56 +219,46 @@ export default function ChatPage() {
 
     return () => {
       setCounterPresence({ typing: false, updatedAt: null });
-      if (myPresenceRef.current) {
-        setDoc(
-          myPresenceRef.current,
-          { typing: false, updatedAt: serverTimestamp() },
-          { merge: true }
-        );
-      }
       clearTimeout(typingIdleRef.current);
       unsubPresence();
     };
   }, [chatId, user?.uid]);
 
-  /* -------- fetch counterparty profile -------- */
+  // Load counter profile
   useEffect(() => {
     let alive = true;
-    async function loadCounterProfile() {
+    async function load() {
       if (!counterUid) return;
       try {
-        const snap = await getDoc(doc(db, "users", counterUid));
+        const snap = await getDoc(doc(db, "users_public", counterUid));
         if (!alive) return;
         setCounterProfile(snap.exists() ? snap.data() : null);
       } catch (e) {
         console.error("loadCounterProfile:", e);
       }
     }
-    loadCounterProfile();
+    load();
     return () => {
       alive = false;
     };
   }, [counterUid]);
 
-  /* ---------------- subscribe to messages ---------------- */
+  // Messages listener
   useEffect(() => {
     if (!chatId) return;
-    const msgsRef = collection(db, "chats", chatId, "messages");
-    const q2 = query(msgsRef, orderBy("createdAt", "asc"));
+    const qRef = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
     const unsub = onSnapshot(
-      q2,
+      qRef,
       (snap) => {
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setMessages(rows);
+        setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         setTimeout(scrollToBottom, 0);
-        markLocalRead(chatId);
       },
       (err) => console.error(err)
     );
     return () => unsub();
-  }, [chatId, scrollToBottom, markLocalRead]);
+  }, [chatId, scrollToBottom]);
 
-  /* ---------------- mark read while viewing (best-effort) ---------------- */
+  // Update lastReadAt periodically
   useEffect(() => {
     if (!chatId || !user?.uid) return;
     const t = setInterval(() => {
@@ -424,52 +269,54 @@ export default function ChatPage() {
     return () => clearInterval(t);
   }, [chatId, user?.uid]);
 
-  /* ---------------- composer ---------------- */
+  // SEND
   const onSend = useCallback(async () => {
     if (!user?.uid || !chatId) return;
     const text = message.trim();
     if (!text) return;
 
+    const otherId = otherIdRef.current || counterUid || null;
+
     try {
       setBusy(true);
 
-      const msgsRef = collection(db, "chats", chatId, "messages");
-
-      await addDoc(msgsRef, {
+      await addDoc(collection(db, "chats", chatId, "messages"), {
         text,
         senderId: user.uid,
         createdAt: serverTimestamp(),
         threadId: chatId,
       });
 
-      const otherId = otherIdRef.current;
-
       await updateDoc(doc(db, "chats", chatId), {
-        lastMessage: text,
+        lastMessage: { text, senderId: user.uid, createdAt: serverTimestamp() },
         updatedAt: serverTimestamp(),
         [`lastReadAt.${user.uid}`]: serverTimestamp(),
         ...(otherId ? { unreadFor: arrayUnion(otherId) } : {}),
       });
 
-      // stop typing presence immediately after send
-      if (myPresenceRef.current) {
-        setDoc(
-          myPresenceRef.current,
-          { typing: false, updatedAt: serverTimestamp() },
-          { merge: true }
-        );
-      }
-
       setMessage("");
       setTimeout(scrollToBottom, 0);
-      markLocalRead(chatId);
     } catch (e) {
       console.error(e);
       alert("Couldn’t send message. Please try again.");
     } finally {
       setBusy(false);
     }
-  }, [user?.uid, chatId, message, scrollToBottom, markLocalRead]);
+  }, [user?.uid, chatId, message, scrollToBottom, counterUid]);
+
+  // Typing (presence) — self-only writes (matches rules)
+  const onChangeMessage = (e) => {
+    const v = e.target.value;
+    setMessage(v);
+
+    if (!myPresenceRef.current || !user?.uid) return;
+
+    setDoc(myPresenceRef.current, { typing: true, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+    clearTimeout(typingIdleRef.current);
+    typingIdleRef.current = setTimeout(() => {
+      setDoc(myPresenceRef.current, { typing: false, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+    }, 1300);
+  };
 
   const onKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -478,32 +325,12 @@ export default function ChatPage() {
     }
   };
 
-  const onChangeMessage = (e) => {
-    const v = e.target.value;
-    setMessage(v);
-
-    if (!myPresenceRef.current) return;
-    setDoc(
-      myPresenceRef.current,
-      { typing: true, updatedAt: serverTimestamp() },
-      { merge: true }
-    );
-    clearTimeout(typingIdleRef.current);
-    typingIdleRef.current = setTimeout(() => {
-      setDoc(
-        myPresenceRef.current,
-        { typing: false, updatedAt: serverTimestamp() },
-        { merge: true }
-      );
-    }, 1300);
-  };
-
-  const quick = async (t) => {
+  const quick = (t) => {
     setMessage(t);
     setTimeout(onSend, 20);
   };
 
-  /* ---------------- guards (NOW safe) ---------------- */
+  // Guards
   if (!user) {
     return (
       <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
@@ -515,133 +342,67 @@ export default function ChatPage() {
     );
   }
 
-  if (!forcedChatId && !counterUid && !listing?.id) {
+  if (!forcedChatId && (!counterUid || !listing?.id)) {
     return (
       <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h2 className="text-2xl font-bold mb-2">Chat with Host/Partner</h2>
-          <p className="text-gray-300">
-            Open a conversation from your{" "}
-            <button
-              className="underline decoration-dotted hover:text-amber-300"
-              onClick={() => nav("/inbox")}
-            >
-              Inbox
-            </button>{" "}
-            or your{" "}
-            <button
-              className="underline decoration-dotted hover:text-amber-300"
-              onClick={() => nav("/bookings")}
-            >
-              Bookings
-            </button>
-            .
-          </p>
+          <p className="text-gray-300">Open a conversation from your Inbox or Bookings.</p>
         </div>
       </main>
     );
   }
 
-  /* ---------------- UI derivations ---------------- */
-  const counterDisplayName =
-    counterProfile?.displayName ||
-    counterProfile?.name ||
-    counterProfile?.email ||
-    "Host/Partner";
-
-  const counterDisplayRole = (() => {
-    const r = (counterProfile?.role || counterRole || "").toLowerCase();
-    if (r.includes("partner")) return "Verified partner";
-    if (r.includes("host")) return "Host";
-    if (r.includes("admin")) return "Admin";
-    return r ? r.charAt(0).toUpperCase() + r.slice(1) : null;
-  })();
-
-  const avatarUrl =
-    counterProfile?.photoURL ||
-    counterProfile?.avatarUrl ||
-    counterProfile?.avatar ||
-    null;
+  const counterDisplayName = counterProfile?.displayName || counterProfile?.name || counterProfile?.email || "Host/Partner";
+  const avatarUrl = counterProfile?.photoURL || counterProfile?.avatarUrl || counterProfile?.avatar || null;
 
   return (
     <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
       <div className="max-w-3xl mx-auto">
-        {/* Header */}
         <div className="flex items-center justify-between mb-3 motion-slide-up">
           <div className="min-w-0">
-            <h1
-              className="text-xl font-extrabold tracking-tight flex items-center gap-3"
-              style={{
-                fontFamily:
-                  'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
-              }}
-            >
-              <span className="truncate">
-                {headerTitle || "Chat with Host/Partner"}
-              </span>
+            <h1 className="text-xl font-extrabold tracking-tight flex items-center gap-3">
+              <span className="truncate">{headerTitle || "Chat with Host/Partner"}</span>
             </h1>
 
             <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
               <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-2 py-1">
                 <span className="relative inline-flex items-center justify-center w-6 h-6 rounded-full overflow-hidden border border-white/10 bg-black/30">
                   {avatarUrl ? (
-                    <img
-                      src={avatarUrl}
-                      alt={counterDisplayName}
-                      className="w-full h-full object-cover"
-                    />
+                    <img src={avatarUrl} alt={counterDisplayName} className="w-full h-full object-cover" />
                   ) : (
                     <span className="text-[10px] text-amber-200 font-bold">
                       {(counterDisplayName || "H").slice(0, 2).toUpperCase()}
                     </span>
                   )}
                 </span>
-
                 <span className="inline-flex items-center gap-1">
                   <span
                     className={`h-2 w-2 rounded-full ${
-                      counterPresence.typing
-                        ? "bg-amber-300"
-                        : presenceLabel === "Online"
-                        ? "bg-emerald-400"
-                        : "bg-gray-500"
+                      counterPresence.typing ? "bg-amber-300" : presenceLabel === "Online" ? "bg-emerald-400" : "bg-gray-500"
                     }`}
                   />
                   {presenceLabel}
                 </span>
-
-                <span className="opacity-80 truncate max-w-[160px]">
-                  • {counterDisplayName}
-                </span>
-                {counterDisplayRole ? (
-                  <span className="opacity-50">({counterDisplayRole})</span>
-                ) : null}
+                <span className="opacity-80 truncate max-w-[160px]">• {counterDisplayName}</span>
               </span>
-
               {showSeen ? <span className="text-amber-300/80">• Seen</span> : null}
             </div>
           </div>
 
-          <button
-            onClick={() => nav(-1)}
-            className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-sm"
-          >
+          <button onClick={() => nav(-1)} className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-sm">
             ← Back
           </button>
         </div>
 
-        {/* Context bubble */}
         {listing?.id ? (
           <div className="mb-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-2 text-sm flex items-center gap-3">
             <span className="text-amber-200 text-lg">🏡</span>
             <div className="flex-1 min-w-0">
               <div className="text-amber-100/90 truncate">
-                This chat is about:{" "}
-                <span className="font-semibold">{listing.title}</span>
+                This chat is about: <span className="font-semibold">{listing.title}</span>
               </div>
-              <div className="text-amber-100/50 text-xs">
-                Keep all booking info in this thread.
-              </div>
+              <div className="text-amber-100/50 text-xs">Keep all booking info in this thread.</div>
             </div>
             <button
               onClick={() => nav(`/listing/${listing.id}`)}
@@ -652,39 +413,20 @@ export default function ChatPage() {
           </div>
         ) : null}
 
-        {/* Thread */}
         <div className="rounded-2xl border border-white/10 bg-gray-900/60 overflow-hidden motion-pop">
-          {/* Messages list */}
-          <div
-            ref={listRef}
-            className="h-[460px] overflow-y-auto p-4 nesta-chat-scroll"
-            style={{ scrollBehavior: "smooth" }}
-          >
+          <div ref={listRef} className="h-[460px] overflow-y-auto p-4 nesta-chat-scroll" style={{ scrollBehavior: "smooth" }}>
             {messages.length === 0 ? (
-              <div className="text-gray-300 text-sm">
-                No messages yet. Say hello 👋
-              </div>
+              <div className="text-gray-300 text-sm">No messages yet. Say hello 👋</div>
             ) : (
               messages.map((m) => {
                 const mine = m.senderId === user.uid;
                 return (
-                  <div
-                    key={m.id}
-                    className={`mb-2 flex ${
-                      mine ? "justify-end" : "justify-start"
-                    } motion-stagger`}
-                  >
+                  <div key={m.id} className={`mb-2 flex ${mine ? "justify-end" : "justify-start"} motion-stagger`}>
                     <div className="max-w-[78%] group motion-pop">
                       <div className={`nesta-bubble ${mine ? "mine" : "theirs"}`}>
-                        <div className="whitespace-pre-wrap leading-relaxed">
-                          {m.text}
-                        </div>
+                        <div className="whitespace-pre-wrap leading-relaxed">{m.text}</div>
                       </div>
-                      <div className="nesta-stamp">
-                        {m.createdAt?.toDate
-                          ? m.createdAt.toDate().toLocaleString()
-                          : ""}
-                      </div>
+                      <div className="nesta-stamp">{m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString() : ""}</div>
                     </div>
                   </div>
                 );
@@ -692,28 +434,14 @@ export default function ChatPage() {
             )}
           </div>
 
-          {/* Composer */}
           <div className="border-t border-white/10 p-3 bg-gray-900/70">
-            {counterPresence.typing && (
-              <div className="mt-1 text-xs text-amber-300 animate-pulse">
-                Typing…
-              </div>
-            )}
+            {counterPresence.typing && <div className="mt-1 text-xs text-amber-300 animate-pulse">Typing…</div>}
 
             <div className="flex gap-2">
               <input
                 value={message}
                 onChange={onChangeMessage}
                 onKeyDown={onKeyDown}
-                onBlur={() => {
-                  if (myPresenceRef.current) {
-                    setDoc(
-                      myPresenceRef.current,
-                      { typing: false, updatedAt: serverTimestamp() },
-                      { merge: true }
-                    );
-                  }
-                }}
                 placeholder="Type a message…"
                 className="flex-1 px-3 py-2 rounded-xl bg-black/30 border border-white/10 outline-none lux-focus"
               />
@@ -731,7 +459,6 @@ export default function ChatPage() {
               </button>
             </div>
 
-            {/* Quick replies */}
             <div className="flex flex-wrap gap-2 mt-2">
               {QUICK.map((q) => (
                 <button
@@ -747,7 +474,7 @@ export default function ChatPage() {
         </div>
 
         <div className="text-xs text-gray-400 mt-3 motion-slide-up">
-          Contact details stay hidden by policy; they reveal only when your booking status and host/partner subscription permit.
+          Contact details stay hidden by policy; they reveal only when booking status and subscription permit.
         </div>
       </div>
     </main>

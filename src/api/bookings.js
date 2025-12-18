@@ -1,7 +1,10 @@
 // src/api/bookings.js
+// Luxury standard:
+// - Payment confirmation & money state changes happen on SERVER + WEBHOOKS only.
+// - Client never writes booking payment status to Firestore.
+// - Client uses Bearer Firebase ID token for all protected API calls.
 
-// ---------------- FIRESTORE ----------------
-import { db } from "../firebase";
+import { db, auth } from "../firebase";
 import {
   addDoc,
   updateDoc,
@@ -17,18 +20,29 @@ import {
   Timestamp,
 } from "firebase/firestore";
 
-// ---------------- REST BASE + FETCH ----------------
-const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000")
-  .replace(/\/+$/, "");
+/* ---------------- REST BASE + FETCH ---------------- */
+const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(
+  /\/+$/,
+  ""
+);
 
-// generic JSON fetch helper
+async function getIdToken() {
+  const u = auth.currentUser;
+  if (!u) return null;
+  // force refresh token for sensitive operations
+  return await u.getIdToken(true);
+}
+
+// generic JSON fetch helper (Bearer-token; no cookies)
 async function fetchJson(url, options = {}) {
+  const token = await getIdToken();
+
   const res = await fetch(url, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
-    credentials: "include",
     ...options,
   });
 
@@ -64,6 +78,61 @@ function toIso(v) {
   }
 }
 
+/* ============================================================================
+   LUXURY: API-FIRST FLOW (NEW, RECOMMENDED)
+   ========================================================================== */
+
+/**
+ * Create a booking hold via server (recommended).
+ * Server should:
+ * - create booking doc (or internal record)
+ * - set deterministic reference
+ * - store guestUid + listing owner/host uid
+ * - status: pending_payment
+ * Returns: { ok:true, bookingId, reference, expiresAt?, amountN? }
+ */
+export async function createBookingHoldAPI(payload) {
+  const data = await fetchJson(`${API_BASE}/api/bookings/hold`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  // allow either { ok:true, ... } or direct object
+  if (data?.ok === false) throw new Error(data?.error || "Failed to create hold");
+  return data;
+}
+
+/**
+ * Get booking from server (recommended for polling after Paystack callback).
+ * Returns: booking object
+ */
+export async function getBookingStatusAPI(bookingId) {
+  if (!bookingId) throw new Error("Missing booking id");
+  const data = await fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(bookingId)}`, {
+    method: "GET",
+  });
+
+  if (data?.ok === false) throw new Error(data?.error || "Failed to fetch booking");
+  return data?.booking ?? data; // support both shapes
+}
+
+/**
+ * Optional: client “nudge” endpoint after payment callback.
+ * NOTE: webhook is source of truth. This is for UX only.
+ * Body: { bookingId, provider, reference }
+ */
+export async function notifyPaymentReceivedAPI({ bookingId, provider, reference }) {
+  if (!bookingId) throw new Error("Missing booking id");
+  return fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(bookingId)}/payment-received`, {
+    method: "POST",
+    body: JSON.stringify({ provider, reference }),
+  });
+}
+
+/* ============================================================================
+   ADMIN / LEGACY API (kept for compatibility)
+   ========================================================================== */
+
 // Push booking snapshots into the admin JSON + payouts ledger
 export async function syncBookingToAdminLedger(bookingId, statusOverride) {
   try {
@@ -76,21 +145,13 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
     const status = (statusOverride || b.status || "confirmed").toLowerCase();
 
     const createdAt = toIso(
-      b.createdAt && b.createdAt.toDate
-        ? b.createdAt
-        : b.createdAt || b.created || null
+      b.createdAt && b.createdAt.toDate ? b.createdAt : b.createdAt || b.created || null
     );
 
     const checkIn = toIso(b.checkIn || b.startDate || null);
     const checkOut = toIso(b.checkOut || b.endDate || null);
 
-    const amount = Number(
-      b.amountN ??
-        b.total ??
-        b.totalAmount ??
-        b.grossAmount ??
-        0
-    );
+    const amount = Number(b.amountN ?? b.total ?? b.totalAmount ?? b.grossAmount ?? 0);
 
     const payload = {
       id: bookingId,
@@ -98,12 +159,7 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
       listingId: b.listingId || null,
       listingTitle: b.listingTitle || b.title || "",
       guestEmail: b.email || b.guestEmail || "",
-      hostEmail:
-        b.hostEmail ||
-        b.ownerEmail ||
-        b.hostContactEmail ||
-        b.payeeEmail ||
-        "",
+      hostEmail: b.hostEmail || b.ownerEmail || b.hostContactEmail || b.payeeEmail || "",
       nights: Number(b.nights || b.nightsCount || 1),
       totalAmount: amount,
       provider: b.provider || "paystack",
@@ -122,22 +178,20 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
   }
 }
 
-// ======================= REST (admin JSON) =======================
-
 /** Return shape: { data: Booking[] } */
 export async function listBookings(queryStr = "") {
   const q = queryStr ? `?q=${encodeURIComponent(queryStr)}` : "";
-  const data = await fetchJson(`${API_BASE}/api/bookings${q}`);
+  const data = await fetchJson(`${API_BASE}/api/bookings${q}`, { method: "GET" });
   return { data: Array.isArray(data) ? data : data?.data ?? [] };
 }
 
-/** Provide URL to download CSV */
+/** Provide URL to download CSV (if your server checks auth, use fetch instead of direct open) */
 export function exportCsvUrl(queryStr = "") {
   const q = queryStr ? `?q=${encodeURIComponent(queryStr)}` : "";
   return `${API_BASE}/api/bookings/export.csv${q}`;
 }
 
-/** Real booking via backend API (paystack) */
+/** Real booking via backend API (legacy) */
 export async function createBooking(body) {
   const payload = {
     email: body.email,
@@ -153,7 +207,7 @@ export async function createBooking(body) {
   });
 }
 
-/** Demo booking when gateway key/script is missing */
+/** Demo booking when gateway key/script is missing (legacy) */
 export async function createDemoBooking(body = {}) {
   const payload = {
     email: body.email || "test@example.com",
@@ -169,7 +223,7 @@ export async function createDemoBooking(body = {}) {
   });
 }
 
-/** Optional test booking helper */
+/** Optional test booking helper (legacy) */
 export async function createTestBooking() {
   try {
     return await fetchJson(`${API_BASE}/api/bookings/test`, { method: "POST" });
@@ -185,7 +239,7 @@ export async function createTestBooking() {
   }
 }
 
-/** Update status via server */
+/** Update status via server (legacy/admin) */
 export async function setBookingStatus(id, status) {
   if (!id) throw new Error("Missing booking id");
   return fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(id)}/status`, {
@@ -208,23 +262,26 @@ export async function deleteBooking(id) {
   });
 }
 
-// ======================= FIRESTORE FLOW =======================
+/* ============================================================================
+   FIRESTORE FLOW (EXISTING) — KEEP ONLY FOR FALLBACK / NON-MONEY UPDATES
+   ========================================================================== */
 
 /**
  * Create a PENDING booking *before* opening the payment popup.
+ * (Kept for fallback; luxury standard prefers server-created holds.)
  */
 export async function createPendingBookingFS({
-  listing,       // { id, title, city, area, pricePerNight, ownerId/hostId/partnerUid? }
-  user,          // Firebase auth user
+  listing,
+  user,
   guests = 1,
   nights = 1,
-  amountN = 0,   // total in Naira
+  amountN = 0,
   idType,
   idLast4,
   consent = false,
-  checkIn = null,   // "YYYY-MM-DD" or Date
-  checkOut = null,  // "YYYY-MM-DD" or Date
-  expiresAt = null, // Date
+  checkIn = null,
+  checkOut = null,
+  expiresAt = null,
 }) {
   const payload = {
     // listing
@@ -232,8 +289,8 @@ export async function createPendingBookingFS({
     listingTitle: listing?.title || "",
     listingCity: listing?.city || "",
     listingArea: listing?.area || "",
-    ownerId: listing?.ownerId || listing?.hostId || null, // normalized
-    hostId: listing?.hostId || listing?.ownerId || null,  // legacy
+    ownerId: listing?.ownerId || listing?.hostId || null,
+    hostId: listing?.hostId || listing?.ownerId || null,
     partnerUid: listing?.partnerUid || null,
     ownershipType: listing?.ownerId ? "host" : listing?.partnerUid ? "partner" : null,
 
@@ -249,13 +306,13 @@ export async function createPendingBookingFS({
     checkIn: checkIn ? new Date(checkIn) : null,
     checkOut: checkOut ? new Date(checkOut) : null,
 
-    // status/gateway
-    status: "pending", // -> confirmed | failed | cancelled | refunded | expired
+    // status/gateway (DO NOT set paid here)
+    status: "pending", // -> paid will be set by webhook/server
     gateway: null,
     provider: null,
     reference: null,
 
-    // lightweight ID check
+    // optional check-in ID info (kept separate later ideally)
     idCheck: {
       type: idType || null,
       last4: idLast4 || null,
@@ -276,6 +333,7 @@ export async function createPendingBookingFS({
 
 /**
  * Ensure a single pending hold (with TTL). Returns { id, expiresAt }
+ * Luxury guidance: Prefer server; Firestore fallback only.
  */
 export async function ensurePendingHoldFS({
   listing,
@@ -328,45 +386,60 @@ export async function ensurePendingHoldFS({
   return { id, expiresAt };
 }
 
-/** Confirm booking after payment */
+/**
+ * IMPORTANT: Deprecated for luxury payment flow.
+ * This no longer writes Firestore. It only "nudges" server (optional) + syncs admin view.
+ */
 export async function markBookingConfirmedFS(
   bookingId,
   { provider = "paystack", reference = "" } = {}
 ) {
-  const ref = doc(db, "bookings", bookingId);
-  await updateDoc(ref, {
-    status: "confirmed",
-    gateway: "success",
-    provider,
-    reference,
-    updatedAt: serverTimestamp(),
-  });
+  // Luxury rule: webhook settles payment; client never writes booking payment state.
+  try {
+    await notifyPaymentReceivedAPI({ bookingId, provider, reference });
+  } catch {
+    // ignore: webhook still processes payment independently
+  }
 
-  // Mirror into admin ledger JSON + payouts
-  await syncBookingToAdminLedger(bookingId, "confirmed");
+  // Optional: sync admin ledger snapshot (non-critical)
+  try {
+    await syncBookingToAdminLedger(bookingId, "paid");
+  } catch {
+    // ignore
+  }
+
+  return { ok: true };
 }
 
-/** Mark booking failed/cancelled (reason used in `gateway`) */
+/**
+ * IMPORTANT: Deprecated for luxury payment flow.
+ * Client should not write "failed/cancelled" money state.
+ * We only notify server (optional).
+ */
 export async function markBookingFailedFS(bookingId, reason = "cancelled") {
-  const ref = doc(db, "bookings", bookingId);
-  const normalized =
-    reason === "cancelled"
-      ? "cancelled"
-      : reason === "expired"
-      ? "expired"
-      : "failed";
+  try {
+    await fetchJson(
+      `${API_BASE}/api/bookings/${encodeURIComponent(bookingId)}/payment-cancelled`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      }
+    );
+  } catch {
+    // ignore
+  }
 
-  await updateDoc(ref, {
-    status: normalized,
-    gateway: reason,
-    updatedAt: serverTimestamp(),
-  });
+  // Optional: keep admin ledger in sync
+  try {
+    await syncBookingToAdminLedger(bookingId, String(reason));
+  } catch {
+    // ignore
+  }
 
-  // Keep admin ledger in sync as well
-  await syncBookingToAdminLedger(bookingId, normalized);
+  return { ok: true };
 }
 
-/** Mark confirmed booking as refunded (admin/ops/host action) */
+/** Keep for ops/admin workflows if you still use Firestore directly */
 export async function markBookingRefundedFS(bookingId, note = "manual_refund") {
   const ref = doc(db, "bookings", bookingId);
   await updateDoc(ref, {
@@ -375,11 +448,10 @@ export async function markBookingRefundedFS(bookingId, note = "manual_refund") {
     updatedAt: serverTimestamp(),
   });
 
-  // Push refund status (and negative payout) into admin ledger
   await syncBookingToAdminLedger(bookingId, "refunded");
 }
 
-/** Release a pending hold (host/partner/admin action) */
+/** Release a pending hold (ops/admin only) */
 export async function releaseHoldFS(bookingId, note = "released_by_admin") {
   const ref = doc(db, "bookings", bookingId);
   await updateDoc(ref, {
@@ -388,11 +460,10 @@ export async function releaseHoldFS(bookingId, note = "released_by_admin") {
     updatedAt: serverTimestamp(),
   });
 
-  // Treat as expired in the ledger
   await syncBookingToAdminLedger(bookingId, "expired");
 }
 
-/** Auto-expire pending bookings whose expiresAt is in the past */
+/** Auto-expire pending bookings whose expiresAt is in the past (client-side cleanup; optional) */
 export async function expireStaleBookings() {
   try {
     const snap = await getDocs(collection(db, "bookings"));
@@ -401,11 +472,7 @@ export async function expireStaleBookings() {
     snap.forEach((d) => {
       const b = d.data();
       if (b.status !== "pending") return;
-      const exp = b.expiresAt?.toDate
-        ? b.expiresAt.toDate()
-        : b.expiresAt
-        ? new Date(b.expiresAt)
-        : null;
+      const exp = b.expiresAt?.toDate ? b.expiresAt.toDate() : b.expiresAt ? new Date(b.expiresAt) : null;
       if (exp && exp.getTime() < now) {
         ops.push(
           updateDoc(doc(db, "bookings", d.id), {
@@ -422,7 +489,9 @@ export async function expireStaleBookings() {
   }
 }
 
-// ======================= HOLDS COLLECTION (optional) =======================
+/* ============================================================================
+   HOLDS COLLECTION (optional legacy)
+   ========================================================================== */
 
 export async function fetchActiveHoldsFS({ guestId, listingId, checkIn, checkOut }) {
   if (!guestId || !listingId) return [];
@@ -459,7 +528,7 @@ export async function createHoldFS({ guest, listing, nights, checkIn, checkOut }
     checkIn: checkIn || null,
     checkOut: checkOut || null,
     createdAt: serverTimestamp(),
-    expiresAt, // ms epoch; easy to compare on client
+    expiresAt,
     status: "active",
     signature,
   };

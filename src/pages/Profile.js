@@ -1,5 +1,5 @@
 // src/pages/Profile.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
@@ -23,45 +23,27 @@ function stripContactInfo(raw) {
 }
 
 export default function Profile() {
-  const { user, profile, isAdmin, loading, logout, refreshProfile } = useAuth();
+  const { user, profile, loading, logout, refreshProfile, isAdmin } = useAuth();
 
   // Local editable form state (mirrors Firestore users/{uid})
   const [form, setForm] = useState({
     email: "",
     displayName: "",
     phone: "",
-    role: "guest",
   });
+
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
 
   // Seed the form once we have a profile
   useEffect(() => {
     if (!profile) return;
-    setForm((f) => ({
-      ...f,
+    setForm({
       email: user?.email ?? profile.email ?? "",
       displayName: profile.displayName ?? "",
       phone: profile.phone ?? "",
-      role: (profile.role ?? "guest").toLowerCase(),
-    }));
+    });
   }, [profile, user]);
-
-  // Permission rules:
-  // - Everyone can edit displayName/phone.
-  // - Guests can switch to "host".
-  // - Only admins can assign "admin".
-  const roleOptions = useMemo(() => {
-    const base = ["guest", "host"];
-    return isAdmin ? [...base, "admin"] : base;
-  }, [isAdmin]);
-
-  const canChangeRole = useMemo(() => {
-    if (!profile) return false;
-    if (isAdmin) return true;
-    // Non-admins can only toggle between guest/host
-    return ["guest", "host"].includes(profile.role?.toLowerCase() ?? "guest");
-  }, [profile, isAdmin]);
 
   const onChange = (e) => {
     const { name, value } = e.target;
@@ -79,28 +61,19 @@ export default function Profile() {
       // Enforce luxury anti-leakage: no emails/phones in displayName
       const cleanDisplayName = stripContactInfo(form.displayName);
 
-      // Build the update payload respecting permissions
+      // IMPORTANT: Role is READ-ONLY here. Do not update role from Profile page.
       const payload = {
         displayName: cleanDisplayName,
         phone: form.phone?.trim() || "",
         updatedAt: serverTimestamp(),
       };
 
-      if (canChangeRole) {
-        // If non-admin, clamp role to guest/host; admins can set any option in roleOptions
-        const requested = (form.role || "guest").toLowerCase();
-        payload.role = isAdmin
-          ? requested
-          : ["guest", "host"].includes(requested)
-          ? requested
-          : "guest";
-      }
-
       await updateDoc(doc(db, "users", user.uid), payload);
       await refreshProfile();
+
       setMessage(
         cleanDisplayName !== form.displayName
-          ? "Profile updated. We’ve cleaned any contact info from your name to keep bookings on Nesta."
+          ? "Profile updated. We removed contact info from your name to keep bookings on Nesta."
           : "Profile updated."
       );
     } catch (err) {
@@ -127,12 +100,15 @@ export default function Profile() {
     );
   }
 
+  const roleLabel = (profile?.role || "guest").toString();
+  const rolePretty = roleLabel.charAt(0).toUpperCase() + roleLabel.slice(1);
+
   return (
     <div className="p-6 max-w-2xl mx-auto text-slate-200">
       <h1 className="text-2xl font-semibold mb-1">My Profile</h1>
       <p className="text-sm text-slate-400 mb-6">
-        Update your account details. Contact details are only revealed to guests
-        through Nesta after confirmed bookings and valid subscriptions.
+        Update your account details. Contact details are only revealed through Nesta
+        after confirmed bookings and valid subscriptions.
       </p>
 
       {message && (
@@ -163,9 +139,7 @@ export default function Profile() {
             className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500"
           />
           <p className="mt-1 text-xs text-slate-400">
-            For security, we automatically remove phone numbers and emails from
-            your name. Guests will only see verified contacts at the right time
-            in the booking journey.
+            For security, we automatically remove phone numbers and emails from your name.
           </p>
         </div>
 
@@ -180,36 +154,24 @@ export default function Profile() {
             className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500"
           />
           <p className="mt-1 text-xs text-slate-400">
-            This phone number is stored securely and only surfaced to verified
-            guests in line with Nesta’s booking and subscription rules.
+            Stored securely. Only surfaced in line with Nesta’s booking/subscription rules.
           </p>
         </div>
 
-        {/* Role */}
+        {/* Role (READ-ONLY) */}
         <div>
-          <label className="block text-sm mb-1">Role</label>
-          <select
-            name="role"
-            value={form.role}
-            onChange={onChange}
-            disabled={!canChangeRole}
-            className={`w-full rounded-md px-3 py-2 border ${
-              canChangeRole
-                ? "bg-slate-900/60 border-slate-700 focus:outline-none focus:ring-2 focus:ring-pink-500"
-                : "bg-slate-800/50 border-slate-700 cursor-not-allowed opacity-70"
-            }`}
-          >
-            {roleOptions.map((r) => (
-              <option key={r} value={r}>
-                {r.charAt(0).toUpperCase() + r.slice(1)}
-              </option>
-            ))}
-          </select>
-          {!canChangeRole && (
-            <p className="mt-1 text-xs text-slate-400">
-              Only administrators can change this role.
-            </p>
-          )}
+          <label className="block text-sm mb-1">Role (read-only)</label>
+          <div className="w-full rounded-md bg-slate-800/50 border border-slate-700 px-3 py-2 flex items-center gap-2">
+            <span className="text-slate-200 font-medium">{rolePretty}</span>
+            {isAdmin && (
+              <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full border border-amber-400/30 bg-amber-400/10 text-amber-200">
+                Admin view
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            Role changes happen only via role-selection / admin verification flows.
+          </p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -230,8 +192,7 @@ export default function Profile() {
           </button>
 
           <span className="ml-auto text-xs text-slate-400">
-            Current role: <strong>{profile?.role ?? "guest"}</strong>
-            {isAdmin && " (admin)"}
+            Current role: <strong>{roleLabel}</strong>
           </span>
         </div>
       </form>

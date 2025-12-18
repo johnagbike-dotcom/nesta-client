@@ -197,7 +197,7 @@ export default function BookingsPage() {
 
     try {
       // API request: mark as cancellation requested
-      const res = await fetch(`${API_BASE}/bookings/${id}/request-cancel`, {
+      const res = await fetch(`${API_BASE}/bookings/${id}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -350,24 +350,31 @@ export default function BookingsPage() {
 
                 const refundable = isRefundEligible(b);
 
-                const canRequest =
-                  refundable &&
-                  !isPast(b.checkOut) &&
-                  !["cancelled", "cancel_request", "refund_requested"].includes(
-                    s
-                  );
+// keeps your existing cancel-request detection
+const hasCancelReq =
+  (b.cancellationRequested ||
+    b.cancelRequested ||
+    s === "cancel_request" ||
+    s === "refund_requested") &&
+  !["cancelled", "refunded"].includes(s);
 
-                const canChat = ["confirmed", "paid"].includes(s);
-                const canCheckIn =
-                  !isPast(b.checkOut) &&
-                  ["confirmed", "paid"].includes(s);
+// ✅ Luxury UX: cancellation request is separate from refund eligibility
+const canRequestCancellation =
+  !isPast(b.checkOut) &&
+  ["confirmed", "paid"].includes(s) &&
+  !["cancelled", "cancel_request", "refund_requested", "refunded"].includes(s) &&
+  !hasCancelReq;
 
-                const hasCancelReq =
-                  (b.cancellationRequested ||
-                    b.cancelRequested ||
-                    s === "cancel_request" ||
-                    s === "refund_requested") &&
-                  !["cancelled", "refunded"].includes(s);
+// ✅ Refund request stays strict (policy)
+const canRequestRefund =
+  refundable &&
+  !isPast(b.checkOut) &&
+  ["confirmed", "paid"].includes(s) &&
+  !["cancelled", "cancel_request", "refund_requested", "refunded"].includes(s) &&
+  !hasCancelReq;
+
+const canChat = ["confirmed", "paid"].includes(s);
+const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
 
                 let subtitle = b.listingLocation || "";
                 if (s === "refunded") {
@@ -475,21 +482,28 @@ export default function BookingsPage() {
                           Rebook
                         </button>
 
-                        {canRequest && (
-                          <button
-                            disabled={!!cancelling[id]}
-                            onClick={() => requestCancel(b)}
-                            className={`px-3 py-2 rounded-xl border ${
-                              cancelling[id]
-                                ? "bg-amber-900/30 border-amber-400/50 text-amber-200 cursor-not-allowed"
-                                : "bg-amber-900/30 border-amber-400/60 text-amber-200 hover:bg-amber-900/50"
-                            }`}
-                          >
-                            {cancelling[id]
-                              ? "Requesting…"
-                              : "Request cancel"}
-                          </button>
-                        )}
+                        {canRequestCancellation && (
+  <button
+    disabled={!!cancelling[id]}
+    onClick={() => requestCancel(b)}
+    className={`px-3 py-2 rounded-xl border ${
+      cancelling[id]
+        ? "bg-amber-900/30 border-amber-400/50 text-amber-200 cursor-not-allowed"
+        : "bg-amber-900/30 border-amber-400/60 text-amber-200 hover:bg-amber-900/50"
+    }`}
+  >
+    {cancelling[id] ? "Requesting…" : "Request cancellation"}
+  </button>
+)}
+
+{canRequestRefund && (
+  <button
+    onClick={() => alert("Refund request flow next (we’ll wire server route).")}
+    className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-sm"
+  >
+    Request refund
+  </button>
+)}
 
                         {canChat && (
                           <button

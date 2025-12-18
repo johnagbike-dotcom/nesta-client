@@ -5,12 +5,8 @@ import { doc, getDoc } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../context/ToastContext";
-import {
-  ensurePendingHoldFS,
-  markBookingConfirmedFS,
-  markBookingFailedFS,
-} from "../api/bookings";
 import useUserProfile from "../hooks/useUserProfile";
+import { createBookingHoldAPI } from "../api/bookings";
 
 /* ---------- Tiny UI helpers ---------- */
 function Field({ label, hint, children }) {
@@ -194,8 +190,8 @@ export default function ReservePage() {
     );
   }
 
-  // Reserve helpers
-  async function ensureHold() {
+  // Reserve helpers (SERVER creates hold + reference)
+  async function ensureHoldViaServer() {
     if (!user) {
       toast("Please log in first.", "warning");
       nav("/login", { state: { from: location.pathname } });
@@ -206,60 +202,38 @@ export default function ReservePage() {
       toast("Select valid dates (check-in before check-out).", "warning");
       return null;
     }
+
     try {
-      // NOTE: ID is intentionally NOT collected here (luxury best practice: don't block purchase)
-      const { id, expiresAt } = await ensurePendingHoldFS({
-        listing,
-        user,
+      setBusy(true);
+
+      const payload = {
+        listingId: listing.id,
         guests,
         nights,
         amountN: total,
         checkIn,
         checkOut,
         ttlMinutes: 90,
-        idCheck: null, // explicit: handled at check-in stage
-      });
-      setHoldInfo({ id, expiresAt });
-      return id;
+      };
+
+      const data = await createBookingHoldAPI(payload);
+      setHoldInfo({ id: data.bookingId, expiresAt: data.expiresAt || null });
+
+      return { bookingId: data.bookingId, reference: data.reference };
     } catch (e) {
       console.error(e);
-      toast("Could not create a reservation hold.", "error");
+      toast(e?.message || "Could not create a reservation hold.", "error");
       return null;
+    } finally {
+      setBusy(false);
     }
   }
 
-  async function routeAfterPayment(bookingId) {
-    try {
-      // If check-in verification is missing, send to check-in gate first
-      const snap = await getDoc(doc(db, "bookings", bookingId));
-      const b = snap.exists() ? snap.data() : null;
-      const hasId =
-        !!b?.idCheck?.consent && String(b?.idCheck?.last4 || "").length === 4;
-
-      if (!hasId) {
-        toast("Almost done — complete ID check-in to unlock your guide.", "info");
-        nav(`/checkin/${bookingId}`, { replace: true });
-        return;
-      }
-
-      nav("/reserve/success", {
-        replace: true,
-        state: { bookingId, listing },
-      });
-    } catch (e) {
-      console.error(e);
-      // Fallback: still show success page (guest can complete ID later in check-in)
-      nav("/reserve/success", {
-        replace: true,
-        state: { bookingId, listing },
-      });
-    }
-  }
-
-  // Paystack gateway
   async function onPaystack() {
-    const bookingId = await ensureHold();
-    if (!bookingId) return;
+    const hold = await ensureHoldViaServer();
+    if (!hold) return;
+
+    const { bookingId, reference } = hold;
 
     const key = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY;
     if (!window.PaystackPop || !key) {
@@ -268,7 +242,6 @@ export default function ReservePage() {
     }
 
     const amountKobo = Math.max(100, Math.floor(Number(total || 0) * 100));
-    const ref = `NESTA_${bookingId}_${Date.now()}`;
     setBusy(true);
 
     const handler = window.PaystackPop.setup({
@@ -276,30 +249,20 @@ export default function ReservePage() {
       email: user?.email || "guest@example.com",
       amount: amountKobo,
       currency: "NGN",
-      ref,
-      callback: function (response) {
-        markBookingConfirmedFS(bookingId, {
-          provider: "paystack",
-          reference: response?.reference || ref,
-        })
-          .then(async () => {
-            setBusy(false);
-            toast("Payment complete! 🎉", "success");
-            await routeAfterPayment(bookingId);
-          })
-          .catch((e) => {
-            console.error(e);
-            setBusy(false);
-            toast("Couldn’t confirm payment.", "error");
-          });
+      ref: reference, // ✅ server-generated reference, webhook can resolve
+      callback: function () {
+        // ✅ Luxury best practice: DO NOT write Firestore here.
+        // Webhook will mark booking paid, credit wallet, create ledger.
+        setBusy(false);
+        toast("Payment received — confirming…", "info");
+        nav("/reserve/success", {
+          replace: true,
+          state: { bookingId, listing },
+        });
       },
       onClose: function () {
-        markBookingFailedFS(bookingId, "cancelled")
-          .catch(() => {})
-          .finally(() => {
-            setBusy(false);
-            toast("Payment closed.", "info");
-          });
+        setBusy(false);
+        toast("Payment closed.", "info");
       },
     });
 
@@ -367,7 +330,7 @@ export default function ReservePage() {
               )}
             </div>
 
-            {/* Step 1: Dates & guests */}
+            {/* Step 1 */}
             {step === 1 && (
               <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
                 <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
@@ -428,7 +391,7 @@ export default function ReservePage() {
               </div>
             )}
 
-            {/* Step 2: Confirm details (no ID here) */}
+            {/* Step 2 */}
             {step === 2 && (
               <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
                 <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
@@ -467,7 +430,7 @@ export default function ReservePage() {
               </div>
             )}
 
-            {/* Step 3: Payment */}
+            {/* Step 3 */}
             {step === 3 && (
               <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
                 <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
@@ -494,8 +457,7 @@ export default function ReservePage() {
 
                 {holdInfo?.expiresAt && (
                   <div className="mt-3 text-xs text-amber-300">
-                    Your provisional hold will expire at{" "}
-                    {holdInfo.expiresAt.toLocaleTimeString()}.
+                    Your provisional hold will expire soon.
                   </div>
                 )}
 
@@ -510,7 +472,7 @@ export default function ReservePage() {
             )}
           </div>
 
-          {/* RIGHT – summary card */}
+          {/* RIGHT – summary */}
           <aside className="space-y-4">
             <div className="rounded-3xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,.8)]">
               <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">
@@ -559,13 +521,10 @@ export default function ReservePage() {
           </aside>
         </div>
 
-        {/* Secure Checkout Strip */}
         <div className="mt-10 border-t border-white/5 pt-6">
           <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
             <span className="text-lg">🔒</span>
-            <span>
-              Secure checkout · Powered by Paystack · Encrypted payment processing
-            </span>
+            <span>Secure checkout · Powered by Paystack · Encrypted payment processing</span>
           </div>
         </div>
       </div>

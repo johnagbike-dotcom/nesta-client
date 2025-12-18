@@ -59,6 +59,7 @@ import HostReservationsPage from "./pages/HostReservationsPage";
 import PartnerReservationsPage from "./pages/PartnerReservationsPage";
 import CreateListing from "./pages/CreateListing";
 import EditListing from "./pages/EditListing";
+import Withdrawals from "./pages/Withdrawals";
 // unified listings page
 import ManageMyListings from "./pages/ManageMyListings";
 import SubscribePage from "./pages/SubscribePage";
@@ -391,6 +392,14 @@ export default function AppRouter() {
                     <PartnerReservationsPage />
                   </RequireAuth>
                 }
+              />
+              <Route 
+                path="/withdrawals" 
+                element={
+                  <RequireAuth>
+                    <Withdrawals />
+                  </RequireAuth>
+                } 
               />
 
               {/* ✅ Unified listings / portfolio for BOTH host & partner */}

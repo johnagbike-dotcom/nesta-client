@@ -13,7 +13,7 @@ const FAQ_SECTIONS = [
           <>
             Go to <strong>Dashboard → Your Bookings</strong> or visit{" "}
             <Link to="/bookings" className="text-amber-300 underline">
-              nestaapp.ng/bookings
+              nestanaija.com/bookings
             </Link>
             . There you can see upcoming and past stays, and in some cases request
             a date change or cancellation in line with the host’s policy.
@@ -59,10 +59,10 @@ const FAQ_SECTIONS = [
             or switch to a stronger network connection. For persistent problems,
             contact{" "}
             <a
-              href="mailto:support@nestaapp.ng"
+              href="mailto:support@nestanaija.com"
               className="text-amber-300 underline"
             >
-              support@nestaapp.ng
+              support@nestanaija.com
             </a>{" "}
             with a brief description and screenshots if possible.
           </>
@@ -129,10 +129,10 @@ const FAQ_SECTIONS = [
             the agreed policy. For urgent cases (e.g. safety or severe issues),
             contact{" "}
             <a
-              href="mailto:support@nestaapp.ng"
+              href="mailto:support@nestanaija.com"
               className="text-amber-300 underline"
             >
-              support@nestaapp.ng
+              support@nestanaija.com
             </a>{" "}
             immediately.
           </>
@@ -214,10 +214,10 @@ const FAQ_SECTIONS = [
             </Link>{" "}
             page or email{" "}
             <a
-              href="mailto:complaints@nestaapp.ng"
+              href="mailto:complaints@nestanaija.com"
               className="text-amber-300 underline"
             >
-              complaints@nestaapp.ng
+              complaints@nestanaija.com
             </a>
             . We treat these matters discreetly and seriously.
           </>
@@ -337,10 +337,10 @@ export default function HelpPage() {
             <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/70">
               We couldn’t find a match for your search. You can{" "}
               <a
-                href="mailto:support@nestaapp.ng"
+                href="mailto:support@nestanaija.com"
                 className="text-amber-300 underline"
               >
-                email support@nestaapp.ng
+                email support@nestanaija.com
               </a>{" "}
               or{" "}
               <Link to="/contact" className="text-amber-300 underline">
@@ -399,10 +399,10 @@ export default function HelpPage() {
               Contact Nesta
             </Link>
             <a
-              href="mailto:support@nestaapp.ng"
+              href="mailto:support@nestanaija.com"
               className="rounded-xl border border-amber-400/50 bg-amber-500/10 px-4 py-2 text-amber-100 hover:bg-amber-500/20"
             >
-              Email support@nestaapp.ng
+              Email support@nestanaija.com
             </a>
           </div>
         </section>

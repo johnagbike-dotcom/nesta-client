@@ -146,7 +146,7 @@ export default function CareersPage() {
                 href="mailto:careers@nestaapp.ng?subject=Careers%20expression%20of%20interest"
                 className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-amber-500 text-black text-sm font-semibold hover:bg-amber-400"
               >
-                Email careers@nestaapp.ng
+                Email careers@nestanaija.com
               </a>
             </div>
 

@@ -56,10 +56,10 @@ export default function PressPage() {
             <p>
               <span className="text-white">Email:</span>{" "}
               <a
-                href="mailto:press@nestaapp.ng"
+                href="mailto:press@nestanaija.com"
                 className="underline decoration-amber-400"
               >
-                press@nestaapp.ng
+                press@nestanaija.com
               </a>
             </p>
             <p className="mt-2">
@@ -126,9 +126,9 @@ export default function PressPage() {
 
           <a
             className="inline-block underline decoration-amber-400 text-white/70"
-            href="mailto:brand@nestaapp.ng"
+            href="mailto:brand@nestanaija.com"
           >
-            brand@nestaapp.ng
+            brand@nestanaija.com
           </a>
 
           <p className="mt-3 text-xs text-white/60">
@@ -139,7 +139,7 @@ export default function PressPage() {
 
         {/* FOOTER */}
         <section className="pt-8 border-t border-white/10 text-xs text-white/45">
-          <p>© {year} Nesta Stays — All rights reserved.</p>
+          <p>© {year} Nesta Connect Limited — All rights reserved.</p>
         </section>
       </div>
     </main>

@@ -19,18 +19,17 @@ const firebaseConfig = {
   measurementId: "G-PYS8BZYXFE"
 };
 
-// ---- init ----
-const app = initializeApp(firebaseConfig);
-// Firestore with a dev-safe cache (avoids IndexedDB issues during local dev)
-const db = initializeFirestore(app, {
+export const app = initializeApp(firebaseConfig);
+
+// IMPORTANT: create Firestore ONCE here
+export const db = initializeFirestore(app, {
   localCache:
     process.env.NODE_ENV === "production"
-      ? persistentLocalCache() // use persistent cache in prod if you want offline
-      : memoryLocalCache(),    // use memory cache in dev
+      ? persistentLocalCache()
+      : memoryLocalCache(),
 });
-// Auth & Storage
-const auth = getAuth(app);
-const storage = getStorage(app);
 
-// ---- named exports (no default) ----
-export { app, db, auth, storage, signInWithEmailAndPassword };
+export const auth = getAuth(app);
+export const storage = getStorage(app);
+
+export { signInWithEmailAndPassword };

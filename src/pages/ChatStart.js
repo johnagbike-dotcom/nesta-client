@@ -1,30 +1,52 @@
+// src/pages/ChatStart.js
 import React, { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 /**
- * Landing screen for chat from a listing card.
- * Expects (optionally) location.state = { listingId, listingTitle, hostId }
- * If present, we push these along to /chat/thread so the thread can be created/resolved there.
+ * ChatStart
+ * Supports legacy state shapes and routes users into the unified /chat page.
+ * Expected (any of these):
+ * location.state = { listingId, listingTitle, hostId }  (legacy)
+ * location.state = { listing: {id,title}, partnerUid }  (new)
  */
 export default function ChatStart() {
-  const navigate = useNavigate();
-  const location = useLocation();
+  const nav = useNavigate();
+  const { state } = useLocation();
   const { user } = useAuth();
 
-  // If we already have needed info, send the user to the thread UI immediately.
   useEffect(() => {
-    if (!user) return; // ProtectedRoute should block unauth, but extra guard is fine
+    if (!user) return;
 
-    const state = location.state || {};
-    // Always navigate to /chat/thread; that screen will resolve/create the thread
-    navigate("/chat/thread", { replace: true, state });
-  }, [user, location.state, navigate]);
+    const s = state || {};
+
+    // legacy → normalize
+    const listing =
+      s.listing ||
+      (s.listingId
+        ? { id: s.listingId, title: s.listingTitle || "Listing" }
+        : null);
+
+    const partnerUid = s.partnerUid || s.hostId || s.uid || null;
+
+    // Go to the unified chat page (ChatPage.js)
+    nav("/chat", {
+      replace: true,
+      state: {
+        ...(s || {}),
+        listing,
+        partnerUid,
+        from: s.from || "chatstart",
+      },
+    });
+  }, [user, state, nav]);
 
   return (
-    <main className="container" style={{ padding: 24 }}>
-      <h2>Chat</h2>
-      <p className="muted">Preparing your chat room…</p>
+    <main className="min-h-[60vh] px-4 py-10 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d]">
+      <div className="max-w-2xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6">
+        <h2 className="text-xl font-bold mb-2">Chat</h2>
+        <p className="text-gray-300">Preparing your conversation…</p>
+      </div>
     </main>
   );
 }

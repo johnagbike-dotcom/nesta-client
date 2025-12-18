@@ -105,8 +105,8 @@ export default function TrustPage() {
             If you encounter any issue — before, during, or after a stay — please let 
             us know immediately. Reports can be submitted through the Help page, 
             the in-app support button, or by emailing:{" "}
-            <a href="mailto:safety@nestaapp.ng" className="text-amber-300 hover:underline">
-              safety@nestaapp.ng
+            <a href="mailto:safety@nestanaija.com" className="text-amber-300 hover:underline">
+              safety@nestanaija.com
             </a>.
           </p>
         </section>

@@ -204,8 +204,8 @@ export default function Terms() {
             If you have questions about these Terms, contact us at:
           </p>
           <ul className="space-y-1 text-sm">
-            <li>• support@nestaapp.ng</li>
-            <li>• partners@nestaapp.ng</li>
+            <li>• support@nestanaija.com</li>
+            <li>• partners@nestanaija.com</li>
           </ul>
         </section>
 

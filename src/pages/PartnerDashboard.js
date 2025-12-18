@@ -307,7 +307,7 @@ export default function PartnerDashboard() {
               calm, luxury view.
             </p>
           </div>
-
+          
           {/* Right stack: verification + subscription */}
           <div className="flex flex-col items-end gap-2">
             <VerifiedRoleBadge role="Partner" verified={isKycApproved} />
@@ -411,46 +411,45 @@ export default function PartnerDashboard() {
         </section>
 
         {/* ACTION BAR */}
-        <section className="flex flex-wrap items-center gap-3 mt-2">
-          <button
-            type="button"
-            onClick={() => navigate("/manage-listings")}
-            className="px-5 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
-          >
-            Manage Inventory
-          </button>
+<section className="flex flex-wrap items-center gap-3 mt-2">
+  <button
+    type="button"
+    onClick={() => navigate("/manage-listings")}
+    className="px-5 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+  >
+    Manage Inventory
+  </button>
 
-          <button
-            type="button"
-            onClick={() => navigate("/reservations")}
-            className="px-5 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
-          >
-            View reservations
-          </button>
+  <button
+    type="button"
+    onClick={() => navigate("/reservations")}
+    className="px-5 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+  >
+    View reservations
+  </button>
 
-          <Link
-            to="/post/new"
-            className="px-4 py-2 rounded-2xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
-          >
-            + Add Inventory
-          </Link>
-          <div className="ml-auto text-xs text-white/60 flex flex-col items-end gap-1">
-            <span>
-              {loadingListings
-                ? "Loading portfolio…"
-                : `${resultCount} listing${
-                    resultCount === 1 ? "" : "s"
-                  } in portfolio`}
-            </span>
-            <span>
-              KYC:{" "}
-              <strong>
-                {kycStatusRaw || (isKycApproved ? "approved" : "pending")}
-              </strong>
-            </span>
-          </div>
-        </section>
+  <Link
+    to="/post/new"
+    className="px-4 py-2 rounded-xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
+  >
+    + Add Inventory
+  </Link>
 
+  {/* ✅ WITHDRAW CTA */}
+  <button
+    type="button"
+    disabled={!isKycApproved}
+    onClick={() => navigate("/withdrawals")}
+    className={`ml-auto px-5 py-2 rounded-xl text-sm font-semibold transition ${
+      isKycApproved
+        ? "bg-amber-500 text-black hover:bg-amber-400"
+        : "bg-white/5 border border-white/15 text-white/40 cursor-not-allowed"
+    }`}
+    title={!isKycApproved ? "Complete KYC to withdraw earnings" : undefined}
+  >
+    Withdraw earnings
+  </button>
+</section>
         {/* FILTERS */}
         <section className="rounded-3xl bg-[#090c12] border border-white/5 p-4 md:p-5 space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto] gap-3">

@@ -1,5 +1,5 @@
 // src/pages/InboxPage.js
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   collection,
@@ -12,6 +12,7 @@ import {
   updateDoc,
   where,
   writeBatch,
+  arrayRemove,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
@@ -19,6 +20,18 @@ import "../styles/polish.css";
 import "../styles/motion.css";
 
 /* ───────────────── helpers ───────────────── */
+
+function toMillisSafe(ts) {
+  try {
+    if (!ts) return 0;
+    if (typeof ts?.toMillis === "function") return ts.toMillis();
+    if (typeof ts?.toDate === "function") return ts.toDate().getTime();
+    const ms = new Date(ts).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  } catch {
+    return 0;
+  }
+}
 
 function timeAgo(ts) {
   try {
@@ -37,10 +50,14 @@ function timeAgo(ts) {
   }
 }
 
+/**
+ * IMPORTANT: Standardize localStorage key:
+ * nesta_chat_lastread_<uid>_chats:<chatId>
+ */
 function getLocalLastRead(uid, chatId) {
   try {
     if (!uid || !chatId) return 0;
-    const key = `nesta_chat_lastread_${uid}_${chatId}`;
+    const key = `nesta_chat_lastread_${uid}_chats:${chatId}`;
     const raw = localStorage.getItem(key);
     return raw ? Number(raw) : 0;
   } catch {
@@ -48,10 +65,17 @@ function getLocalLastRead(uid, chatId) {
   }
 }
 
-// lastMessage may be string or object { text, senderId, createdAt }
+function setLocalLastRead(uid, chatId) {
+  try {
+    if (!uid || !chatId) return;
+    const key = `nesta_chat_lastread_${uid}_chats:${chatId}`;
+    localStorage.setItem(key, Date.now().toString());
+  } catch {}
+}
+
 function lastMessageText(lastMessage) {
   if (!lastMessage) return "";
-  if (typeof lastMessage === "string") return lastMessage;
+  if (typeof lastMessage === "string") return lastMessage; // tolerate legacy
   if (typeof lastMessage?.text === "string") return lastMessage.text;
   return "";
 }
@@ -64,14 +88,13 @@ function initials(nameOrEmail = "") {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-// soft beep (no external file)
 function playSoftBeep() {
   try {
-    // don’t beep in background tabs
     if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return;
+
+    // only after user gesture; browsers will block otherwise
     const ctx = new AudioCtx();
     const o = ctx.createOscillator();
     const g = ctx.createGain();
@@ -101,7 +124,6 @@ function playSoftBeep() {
 export default function InboxPage() {
   const { user } = useAuth();
   const nav = useNavigate();
-
   const uid = user?.uid || null;
 
   const [threads, setThreads] = useState([]);
@@ -110,55 +132,91 @@ export default function InboxPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [qtext, setQtext] = useState("");
 
-  // presence per thread: { [chatId]: { typing, online } }
   const [presenceMap, setPresenceMap] = useState({});
   const presenceUnsubsRef = useRef({});
 
-  // counterparty cache per uid: { [uid]: { displayName, photoURL } }
+  // users_public cache
   const [counterCache, setCounterCache] = useState({});
   const counterLoadingRef = useRef({});
 
-  // toast
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
-
-  // detect newly-unread threads while you're on inbox
   const lastUnreadSetRef = useRef(new Set());
 
-  /* ───────────────── chats listener ───────────────── */
+  /* ───────────────── chats listener (ONLY chats collection, with fallback) ───────────────── */
   useEffect(() => {
-    if (!uid) return;
+    if (!uid) {
+      setThreads([]);
+      setLoading(false);
+      return;
+    }
+
+    let unsub = null;
+    let active = true;
 
     setLoading(true);
 
-    const qRef = query(
+    const qSorted = query(
       collection(db, "chats"),
       where("participants", "array-contains", uid),
       orderBy("updatedAt", "desc")
     );
 
-    const unsub = onSnapshot(
-      qRef,
-      (snap) => {
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setThreads(list);
-        setLoading(false);
-      },
-      (err) => {
-        console.error("[Inbox] onSnapshot:", err);
-        setThreads([]);
-        setLoading(false);
-      }
+    const qFallback = query(
+      collection(db, "chats"),
+      where("participants", "array-contains", uid)
     );
 
-    return () => {
-      unsub();
+    const attach = (qref, label) =>
+      onSnapshot(
+        qref,
+        (snap) => {
+          if (!active) return;
 
-      // clean presence listeners
+          const rows = snap.docs.map((d) => {
+            const data = d.data() || {};
+            return {
+              id: d.id,
+              ...data,
+              updatedAt: data.updatedAt || data.createdAt || null,
+            };
+          });
+
+          // Always sort locally to avoid relying on Firestore ordering
+          rows.sort((a, b) => toMillisSafe(b.updatedAt) - toMillisSafe(a.updatedAt));
+
+          setThreads(rows);
+          setLoading(false);
+        },
+        (err) => {
+          console.error(`[Inbox] chats onSnapshot (${label}):`, err);
+
+          // fallback once if sorted query fails
+          if (label === "sorted") {
+            try {
+              unsub && unsub();
+            } catch {}
+            unsub = attach(qFallback, "fallback");
+            return;
+          }
+
+          setThreads([]);
+          setLoading(false);
+        }
+      );
+
+    unsub = attach(qSorted, "sorted");
+
+    return () => {
+      active = false;
+
+      try {
+        unsub && unsub();
+      } catch {}
+
       Object.values(presenceUnsubsRef.current).forEach((fn) => fn && fn());
       presenceUnsubsRef.current = {};
 
-      // clean toast timer
       clearTimeout(toastTimerRef.current);
     };
   }, [uid]);
@@ -167,21 +225,24 @@ export default function InboxPage() {
   const isUnread = useCallback(
     (t) => {
       if (!uid) return false;
-      const lastDoc = t?.lastReadAt?.[uid]?.toMillis?.() ?? 0;
+
+      const lastDocMs = t?.lastReadAt?.[uid]?.toMillis?.() ?? 0;
       const localMs = getLocalLastRead(uid, t.id);
-      const lastMs = Math.max(lastDoc, localMs);
-      const updMs = t?.updatedAt?.toMillis?.() ?? 0;
-      return updMs > lastMs;
+      const lastSeenMs = Math.max(lastDocMs, localMs);
+
+      const updMs = toMillisSafe(t?.updatedAt);
+      return updMs > lastSeenMs;
     },
     [uid]
   );
 
-  /* ───────────────── presence per thread ───────────────── */
+  /* ───────────────── presence per thread (chats/{chatId}/presence/{otherUid}) ───────────────── */
   useEffect(() => {
     if (!uid) return;
 
-    // remove listeners for threads that disappeared
     const currentIds = new Set(threads.map((t) => t.id));
+
+    // cleanup removed listeners
     for (const chatId of Object.keys(presenceUnsubsRef.current)) {
       if (!currentIds.has(chatId)) {
         presenceUnsubsRef.current[chatId]();
@@ -189,12 +250,8 @@ export default function InboxPage() {
       }
     }
 
-    // add listeners for new threads
     threads.forEach((t) => {
-      const others = Array.isArray(t.participants)
-        ? t.participants.filter((p) => p !== uid)
-        : [];
-      const otherId = others[0];
+      const otherId = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
       if (!otherId) return;
       if (presenceUnsubsRef.current[t.id]) return;
 
@@ -205,10 +262,7 @@ export default function InboxPage() {
           const data = snap.data();
           setPresenceMap((prev) => ({
             ...prev,
-            [t.id]: {
-              typing: !!data?.typing,
-              online: !!data,
-            },
+            [t.id]: { typing: !!data?.typing, online: !!data },
           }));
         },
         () => {
@@ -223,19 +277,15 @@ export default function InboxPage() {
     });
   }, [threads, uid]);
 
-  /* ───────────────── counterparty profile fetch + cache ───────────────── */
+  /* ───────────────── counterparty profile fetch (users_public) ───────────────── */
   useEffect(() => {
     if (!uid) return;
 
     const needed = new Set();
-    threads.forEach((t) => {
-      const other = Array.isArray(t.participants)
-        ? t.participants.find((p) => p !== uid)
-        : null;
 
-      if (other && !counterCache[other] && !counterLoadingRef.current[other]) {
-        needed.add(other);
-      }
+    threads.forEach((t) => {
+      const other = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
+      if (other && !counterCache[other] && !counterLoadingRef.current[other]) needed.add(other);
     });
 
     if (needed.size === 0) return;
@@ -243,11 +293,10 @@ export default function InboxPage() {
     needed.forEach(async (otherUid) => {
       counterLoadingRef.current[otherUid] = true;
       try {
-        const snap = await getDoc(doc(db, "users", otherUid));
+        const snap = await getDoc(doc(db, "users_public", otherUid));
         const d = snap.exists() ? snap.data() : null;
 
-        const displayName =
-          d?.displayName || d?.name || d?.email || "Host/Partner";
+        const displayName = d?.displayName || d?.name || d?.email || "User";
         const photoURL = d?.photoURL || d?.avatarUrl || d?.avatar || null;
 
         setCounterCache((prev) => ({
@@ -255,56 +304,43 @@ export default function InboxPage() {
           [otherUid]: { displayName, photoURL },
         }));
       } catch (e) {
-        console.warn("Counter profile load failed:", otherUid, e);
+        console.warn("users_public load failed:", otherUid, e);
         setCounterCache((prev) => ({
           ...prev,
-          [otherUid]: { displayName: "Host/Partner", photoURL: null },
+          [otherUid]: { displayName: "User", photoURL: null },
         }));
       } finally {
         counterLoadingRef.current[otherUid] = false;
       }
     });
-    // intentionally omit counterCache (we only want to react to new threads)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threads, uid]);
 
   /* ───────────────── filtered rows ───────────────── */
   const rows = useMemo(() => {
-    const mine = Array.isArray(threads) ? threads.slice() : [];
     if (!uid) return [];
+    const mine = Array.isArray(threads) ? threads.slice() : [];
 
-    // archive filter
     const filtered = mine.filter((t) => {
-      const archivedMap = t.archived || {};
-      const isArch =
-        archivedMap && typeof archivedMap === "object"
-          ? archivedMap[uid] === true
-          : false;
-      return showArchived ? isArch : !isArch;
-    });
+  const archivedMap = t.archived || {};
+  const isArchivedForMe = archivedMap[uid] === true;
+  return showArchived ? isArchivedForMe : !isArchivedForMe;
+});
 
-    // search filter
     const kw = qtext.trim().toLowerCase();
     const filteredByText = kw
       ? filtered.filter((t) => {
           const title = (t.listingTitle || "").toLowerCase();
           const last = lastMessageText(t.lastMessage).toLowerCase();
-          return (
-            title.includes(kw) ||
-            last.includes(kw) ||
-            (t.id || "").toLowerCase().includes(kw)
-          );
+          return title.includes(kw) || last.includes(kw) || (t.id || "").toLowerCase().includes(kw);
         })
       : filtered;
 
-    // sort pinned then updatedAt
     filteredByText.sort((a, b) => {
       const aPin = a?.pinned?.[uid] ? 1 : 0;
       const bPin = b?.pinned?.[uid] ? 1 : 0;
       if (aPin !== bPin) return bPin - aPin;
-      const au = a?.updatedAt?.toMillis?.() ?? 0;
-      const bu = b?.updatedAt?.toMillis?.() ?? 0;
-      return bu - au;
+      return toMillisSafe(b.updatedAt) - toMillisSafe(a.updatedAt);
     });
 
     return filteredByText;
@@ -328,27 +364,22 @@ export default function InboxPage() {
     lastUnreadSetRef.current = currentUnread;
 
     if (newlyUnread.length > 0 && !showArchived) {
+      // Beep can be blocked by browser; harmless if it fails
       playSoftBeep();
-      setToast(
-        newlyUnread.length === 1
-          ? "New message received"
-          : `${newlyUnread.length} new messages received`
-      );
+      setToast(newlyUnread.length === 1 ? "New message received" : `${newlyUnread.length} new messages received`);
       clearTimeout(toastTimerRef.current);
       toastTimerRef.current = setTimeout(() => setToast(null), 2600);
     }
   }, [rows, uid, loading, showArchived, isUnread]);
 
   /* ───────────────── actions ───────────────── */
+
   async function toggleArchive(t) {
     if (!uid) return;
     const ref = doc(db, "chats", t.id);
     const curr = !!t?.archived?.[uid];
     try {
-      await updateDoc(ref, {
-        [`archived.${uid}`]: !curr,
-        updatedAt: serverTimestamp(),
-      });
+      await updateDoc(ref, { [`archived.${uid}`]: !curr, updatedAt: serverTimestamp() });
     } catch (e) {
       console.error("archive toggle failed:", e);
       alert("Could not update archive state.");
@@ -360,10 +391,7 @@ export default function InboxPage() {
     const ref = doc(db, "chats", t.id);
     const curr = !!t?.pinned?.[uid];
     try {
-      await updateDoc(ref, {
-        [`pinned.${uid}`]: !curr,
-        updatedAt: serverTimestamp(),
-      });
+      await updateDoc(ref, { [`pinned.${uid}`]: !curr, updatedAt: serverTimestamp() });
     } catch (e) {
       console.error("pin toggle failed:", e);
       alert("Could not update pin state.");
@@ -373,27 +401,25 @@ export default function InboxPage() {
   async function openThread(t) {
     if (!uid) return;
 
-    // mark read (server)
+    // mark read (server + local)
     try {
       const ref = doc(db, "chats", t.id);
-      await updateDoc(ref, { [`lastReadAt.${uid}`]: serverTimestamp() });
+      await updateDoc(ref, {
+        [`lastReadAt.${uid}`]: serverTimestamp(),
+        unreadFor: arrayRemove(uid),
+      });
     } catch (e) {
-      console.warn("lastReadAt update failed (non-blocking):", e);
+      console.warn("mark read failed (non-blocking):", e);
     }
 
-    // mark read (local) for instant UI
-    try {
-      const key = `nesta_chat_lastread_${uid}_${t.id}`;
-      localStorage.setItem(key, Date.now().toString());
-    } catch {}
+    setLocalLastRead(uid, t.id);
 
-    const partnerUid = (t.participants || []).find((p) => p !== uid) || null;
-    const listing = t.listingId
-      ? { id: t.listingId, title: t.listingTitle || "Listing" }
-      : null;
+    const partnerUid = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
+    const listing = t.listingId ? { id: t.listingId, title: t.listingTitle || "Listing" } : null;
 
+    // IMPORTANT: pass chatId so ChatPage forcedChatId works
     nav("/chat", {
-      state: { threadId: t.id, partnerUid, listing, from: "inbox" },
+      state: { chatId: t.id, partnerUid, listing, from: "inbox" },
     });
   }
 
@@ -406,18 +432,14 @@ export default function InboxPage() {
       const batch = writeBatch(db);
       unreadThreads.forEach((t) => {
         const ref = doc(db, "chats", t.id);
-        batch.update(ref, { [`lastReadAt.${uid}`]: serverTimestamp() });
+        batch.update(ref, {
+          [`lastReadAt.${uid}`]: serverTimestamp(),
+          unreadFor: arrayRemove(uid),
+        });
       });
       await batch.commit();
 
-      // local read for instant UI
-      try {
-        const now = Date.now().toString();
-        unreadThreads.forEach((t) => {
-          const key = `nesta_chat_lastread_${uid}_${t.id}`;
-          localStorage.setItem(key, now);
-        });
-      } catch {}
+      unreadThreads.forEach((t) => setLocalLastRead(uid, t.id));
 
       setToast("All messages marked as read");
       clearTimeout(toastTimerRef.current);
@@ -435,9 +457,7 @@ export default function InboxPage() {
       <main className="min-h-screen bg-[#0f1419] text-white px-4 py-8 motion-fade-in nesta-inbox">
         <div className="max-w-4xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h1 className="text-2xl font-extrabold">Inbox</h1>
-          <p className="text-gray-300 mt-1">
-            Please sign in to view your conversations.
-          </p>
+          <p className="text-gray-300 mt-1">Please sign in to view your conversations.</p>
         </div>
       </main>
     );
@@ -446,31 +466,23 @@ export default function InboxPage() {
   return (
     <main className="min-h-screen bg-[#0f1419] text-white px-4 py-8 motion-fade-in nesta-inbox">
       <div className="max-w-5xl mx-auto">
-        {/* toast */}
         {toast && (
           <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[120] px-4 py-2 rounded-full border border-amber-400/30 bg-black/70 text-amber-200 text-sm shadow-[0_16px_50px_rgba(0,0,0,0.5)]">
             {toast}
           </div>
         )}
 
-        {/* header */}
         <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6 motion-slide-up">
           <div className="flex items-center gap-2">
             <div>
-              <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-                Inbox
-              </h1>
-              <p className="text-gray-300 mt-1">
-                Messages with hosts &amp; verified partners
-              </p>
+              <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Inbox</h1>
+              <p className="text-gray-300 mt-1">Messages with hosts &amp; verified partners</p>
             </div>
 
             {unreadCount > 0 && (
               <span
                 className="ml-2 inline-flex items-center justify-center text-xs font-semibold px-2 py-0.5 rounded-full border border-amber-400/40 bg-amber-400/10 text-amber-300"
-                title={`${unreadCount} unread ${
-                  unreadCount === 1 ? "chat" : "chats"
-                }`}
+                title={`${unreadCount} unread ${unreadCount === 1 ? "chat" : "chats"}`}
               >
                 {unreadCount} new
               </span>
@@ -503,7 +515,6 @@ export default function InboxPage() {
           </div>
         </header>
 
-        {/* search */}
         <div className="mb-4 flex items-center gap-2 motion-slide-up">
           <input
             value={qtext}
@@ -513,7 +524,6 @@ export default function InboxPage() {
           />
         </div>
 
-        {/* states */}
         {loading && (
           <div className="rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
             Loading conversations…
@@ -522,23 +532,15 @@ export default function InboxPage() {
 
         {!loading && rows.length === 0 && (
           <div className="rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
-            <p className="font-semibold mb-1">
-              {showArchived
-                ? "No archived conversations."
-                : "No conversations yet."}
-            </p>
-            <p className="text-gray-300">
-              You’ll see your messages here after you contact a host/partner.
-            </p>
+            <p className="font-semibold mb-1">{showArchived ? "No archived conversations." : "No conversations yet."}</p>
+            <p className="text-gray-300">You’ll see your messages here after you contact a host/partner.</p>
           </div>
         )}
 
-        {/* list */}
         {!loading && rows.length > 0 && (
           <ul className="grid grid-cols-1 gap-3 motion-stagger">
             {rows.map((t) => {
-              const partnerUid =
-                (t.participants || []).find((p) => p !== uid) || null;
+              const partnerUid = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
 
               const unread = isUnread(t);
               const pinned = !!t?.pinned?.[uid];
@@ -547,33 +549,17 @@ export default function InboxPage() {
               const pres = presenceMap[t.id] || { typing: false, online: false };
 
               const counter = partnerUid ? counterCache[partnerUid] : null;
-              const displayName =
-                counter?.displayName ||
-                (partnerUid ? partnerUid.slice(0, 8) : "Host/Partner");
+              const displayName = counter?.displayName || (partnerUid ? partnerUid.slice(0, 8) : "User");
               const avatar = counter?.photoURL || null;
 
               return (
-                <li
-                  key={t.id}
-                  className={[
-                    "nesta-chat-row card-glow",
-                    unread ? "nesta-chat-unread" : "",
-                  ].join(" ")}
-                >
+                <li key={t.id} className={["nesta-chat-row card-glow", unread ? "nesta-chat-unread" : ""].join(" ")}>
                   <div className="p-4 flex items-start gap-3">
-                    {/* avatar */}
                     <div className="relative shrink-0 w-12 h-12 rounded-xl bg-white/5 border border-white/10 overflow-hidden grid place-items-center">
                       {avatar ? (
-                        <img
-                          src={avatar}
-                          alt={displayName}
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                        />
+                        <img src={avatar} alt={displayName} className="w-full h-full object-cover" loading="lazy" />
                       ) : (
-                        <span className="text-sm font-bold text-amber-200">
-                          {initials(displayName)}
-                        </span>
+                        <span className="text-sm font-bold text-amber-200">{initials(displayName)}</span>
                       )}
 
                       {pres.online && (
@@ -585,12 +571,9 @@ export default function InboxPage() {
                         />
                       )}
 
-                      {unread && !pres.online && (
-                        <span className="absolute -top-1 -right-1 nesta-unread-dot" />
-                      )}
+                      {unread && !pres.online && <span className="absolute -top-1 -right-1 nesta-unread-dot" />}
                     </div>
 
-                    {/* content */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <button
@@ -617,9 +600,7 @@ export default function InboxPage() {
                           </span>
                         )}
 
-                        <span className="ml-auto text-xs text-gray-400">
-                          {timeAgo(t.updatedAt)}
-                        </span>
+                        <span className="ml-auto text-xs text-gray-400">{timeAgo(t.updatedAt)}</span>
                       </div>
 
                       <div className="mt-0.5 text-gray-300 line-clamp-1">
@@ -638,12 +619,10 @@ export default function InboxPage() {
                       </div>
 
                       <div className="mt-1 text-xs text-gray-400 truncate">
-                        With:{" "}
-                        <span className="text-gray-200">{displayName}</span>
+                        With: <span className="text-gray-200">{displayName}</span>
                       </div>
                     </div>
 
-                    {/* actions */}
                     <div className="nesta-chat-actions shrink-0 flex flex-col md:flex-row items-stretch md:items-center gap-2">
                       <button
                         onClick={() => togglePin(t)}
@@ -675,17 +654,9 @@ export default function InboxPage() {
         )}
 
         <div className="text-xs text-gray-400 mt-5 motion-slide-up">
-          Contact details stay hidden by policy; they reveal only when booking
-          status and host/partner subscription permit.
+          Contact details stay hidden by policy; they reveal only when booking status and subscription permit.
         </div>
       </div>
     </main>
   );
-}
-
-/* small local helper */
-function useCallback(fn, deps) {
-  // (avoid extra import line just for this file)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  return React.useCallback(fn, deps);
 }

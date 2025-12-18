@@ -173,20 +173,20 @@ export default function Footer() {
             <span>
               Email:{" "}
               <a
-                href="mailto:hello@nestaapp.ng"
+                href="mailto:hello@nestanaija.com"
                 className="hover:text-amber-300"
               >
-                hello@nestaapp.ng
+                hello@nestanaija.com
               </a>
             </span>
             <span className="hidden md:inline-block">•</span>
             <span>
               Support:{" "}
               <a
-                href="mailto:support@nestaapp.ng"
+                href="mailto:support@nestanaija.com"
                 className="hover:text-amber-300"
               >
-                support@nestaapp.ng
+                support@nestanaija.com
               </a>
             </span>
             <span className="hidden md:inline-block">•</span>

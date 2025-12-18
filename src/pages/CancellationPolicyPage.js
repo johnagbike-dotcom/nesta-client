@@ -147,19 +147,19 @@ export default function CancellationPolicy() {
             <p>
               Email:{" "}
               <a
-                href="mailto:support@nestaapp.ng"
+                href="mailto:support@nestanaija.com"
                 className="underline text-amber-200"
               >
-                support@nestaapp.ng
+                support@nestanaija.com
               </a>
             </p>
             <p>
               Serious concerns:{" "}
               <a
-                href="mailto:complaints@nestaapp.ng"
+                href="mailto:complaints@nestanaija.com"
                 className="underline text-amber-200"
               >
-                complaints@nestaapp.ng
+                complaints@nestanaija.com
               </a>
             </p>
           </div>
