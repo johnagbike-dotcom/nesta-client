@@ -33,3 +33,9 @@ export const auth = getAuth(app);
 export const storage = getStorage(app);
 
 export { signInWithEmailAndPassword };
+// dev helper (safe)
+if (typeof window !== "undefined") {
+  window.__nesta = window.__nesta || {};
+  window.__nesta.auth = auth;
+  window.__nesta.db = db;
+}

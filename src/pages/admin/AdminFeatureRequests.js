@@ -3,19 +3,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  Timestamp,
-  writeBatch,
-} from "firebase/firestore";
-import { db } from "../../firebase";
+import axios from "axios";
+import { getAuth } from "firebase/auth";
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
 import { useToast } from "../../components/Toast";
@@ -29,10 +18,31 @@ const FEATURE_PLANS = [
   { id: "signature", label: "Signature • 30 days", price: 250000, durationDays: 30 },
 ];
 
+/* ───────────────────────── axios base (admin API) ───────────────────────── */
+const api = axios.create({
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  timeout: 20000,
+});
+
+// Attach Firebase ID token automatically
+api.interceptors.request.use(async (config) => {
+  const user = getAuth().currentUser;
+  if (user) {
+    const token = await user.getIdToken();
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 /* ───────────────────────── Helpers ───────────────────────── */
 function asDate(v) {
   if (!v) return null;
   if (typeof v?.toDate === "function") return v.toDate();
+  if (typeof v?.seconds === "number") {
+    const ms = v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
+    const d = new Date(ms);
+    return isNaN(+d) ? null : d;
+  }
   if (typeof v === "number") {
     const d = new Date(v);
     return isNaN(+d) ? null : d;
@@ -171,7 +181,7 @@ export default function AdminFeatureRequests() {
   const [listingPreview, setListingPreview] = useState(null);
   const [busyId, setBusyId] = useState(null);
 
-  // payment reference input (luxury: reconciliation tool)
+  // payment reference input (reconciliation tool)
   const [paymentRefInput, setPaymentRefInput] = useState("");
 
   const nav = useNavigate();
@@ -184,17 +194,15 @@ export default function AdminFeatureRequests() {
     window.alert(msg);
   };
 
-  const normalize = (d) => {
-    const r = d.data() || {};
+  const normalize = (r) => {
     const createdAt = r.createdAt || r.submittedAt || null;
 
-    // locked terms should live on the request AFTER approval
     const plan = FEATURE_PLANS.find((p) => p.id === (r.planId || r.planKey)) || null;
     const lockedPrice = r.price ?? r.planPrice ?? plan?.price ?? null;
     const lockedDuration = r.durationDays ?? plan?.durationDays ?? null;
 
     return {
-      id: d.id,
+      id: r.id,
       listingId: r.listingId || "",
       listingTitle: r.listingTitle || r.title || "-",
       hostEmail: r.hostEmail || r.by || r.email || "",
@@ -222,15 +230,21 @@ export default function AdminFeatureRequests() {
     };
   };
 
-  /* ───────────────────────── Load ───────────────────────── */
+  /* ───────────────────────── Load (server-gated) ───────────────────────── */
   const load = async () => {
     setLoading(true);
     try {
-      const ref = collection(db, "featureRequests");
-      const snap = await getDocs(query(ref, orderBy("createdAt", "desc")));
-      setRows(snap.docs.map(normalize));
+      const res = await api.get("/admin/feature-requests", {
+        params: {
+          status: "all",
+          q: "",
+        },
+      });
+
+      const arr = Array.isArray(res.data?.data) ? res.data.data : [];
+      setRows(arr.map(normalize));
     } catch (e) {
-      console.error(e);
+      console.error("FeatureRequests load failed:", e?.response?.data || e.message);
       notify("Failed to load feature requests.", "error");
       setRows([]);
     } finally {
@@ -273,37 +287,27 @@ export default function AdminFeatureRequests() {
     return list;
   }, [rows, tab, q]);
 
-  /* ───────────────────────── Actions ───────────────────────── */
-  const patch = async (id, data) => {
-    await updateDoc(doc(db, "featureRequests", id), { ...data, updatedAt: serverTimestamp() });
-  };
+  /* ───────────────────────── Actions (server-gated) ───────────────────────── */
 
-  // Approve = lock plan + move to awaiting-payment (luxury gate)
   const approveToAwaitingPayment = async (row) => {
     try {
       setBusyId(row.id);
 
       const plan = FEATURE_PLANS.find((p) => p.id === planId) || FEATURE_PLANS[0];
-      const locked = {
-        status: "awaiting-payment",
-        planId: planId,
+      const payload = {
+        planId,
         planLabel: plan?.label || row.planLabel || "Custom plan",
         price: Number(price || 0),
         durationDays: Number(durationDays || 1),
-        approvedAt: serverTimestamp(),
-        rejectedAt: null,
-        adminNote: "",
-        // IMPORTANT: never set paid here
-        paid: false,
-        paidAt: null,
       };
 
-      await patch(row.id, locked);
+      await api.patch(`/admin/feature-requests/${row.id}/approve`, payload);
+
       notify("Approved. Now awaiting payment.", "success");
       await load();
       setOpen(false);
     } catch (e) {
-      console.error(e);
+      console.error("Approve failed:", e?.response?.data || e.message);
       notify("Failed to approve.", "error");
     } finally {
       setBusyId(null);
@@ -314,12 +318,12 @@ export default function AdminFeatureRequests() {
     if (!window.confirm("Reject this request?")) return;
     try {
       setBusyId(row.id);
-      await patch(row.id, { status: "rejected", rejectedAt: serverTimestamp() });
+      await api.patch(`/admin/feature-requests/${row.id}`, { status: "rejected" });
       notify("Rejected.", "success");
       await load();
       setOpen(false);
     } catch (e) {
-      console.error(e);
+      console.error("Reject failed:", e?.response?.data || e.message);
       notify("Failed to reject.", "error");
     } finally {
       setBusyId(null);
@@ -329,76 +333,52 @@ export default function AdminFeatureRequests() {
   const toggleArchive = async (row) => {
     try {
       setBusyId(row.id);
-      await patch(row.id, { archived: !row.archived });
+      await api.patch(`/admin/feature-requests/${row.id}`, { archived: !row.archived });
       notify(row.archived ? "Unarchived." : "Archived.", "success");
       await load();
     } catch (e) {
-      console.error(e);
+      console.error("Archive failed:", e?.response?.data || e.message);
       notify("Failed to archive.", "error");
     } finally {
       setBusyId(null);
     }
   };
 
-  // ✅ “Mark paid” is still available but framed as reconciliation override
   const markPaidOverride = async (row) => {
     if (!window.confirm("Mark as PAID manually?\n\nUse only for bank transfer / reconciliation.")) return;
     try {
       setBusyId(row.id);
-      await patch(row.id, {
-        paid: true,
-        paidAt: serverTimestamp(),
-        status: "paid",
-        paymentRef: row.paymentRef || "manual-override",
+      await api.patch(`/admin/feature-requests/${row.id}/mark-paid`, {
+        paymentRef: (row.paymentRef || paymentRefInput || "manual-override").trim(),
       });
       notify("Marked as paid (override).", "success");
       await load();
     } catch (e) {
-      console.error(e);
+      console.error("Mark paid failed:", e?.response?.data || e.message);
       notify("Failed to mark paid.", "error");
     } finally {
       setBusyId(null);
     }
   };
 
-  // ✅ Luxury governance: Deactivate (kill-switch)
   const deactivateFeaturedNow = async (row) => {
     if (!row.listingId) return notify("Missing listingId.", "error");
     if (!window.confirm("End this featured placement now?\n\nThis removes it from the homepage carousel immediately.")) return;
 
     try {
       setBusyId(row.id);
-
-      const batch = writeBatch(db);
-
-      batch.update(doc(db, "listings", row.listingId), {
-        sponsored: false,
-        featured: false,
-        sponsoredUntil: null,
-        updatedAt: serverTimestamp(),
-      });
-
-      batch.update(doc(db, "featureRequests", row.id), {
-        status: "paid", // stays paid but no longer active
-        deactivatedAt: serverTimestamp(),
-        sponsoredUntil: null,
-        updatedAt: serverTimestamp(),
-      });
-
-      await batch.commit();
-
+      await api.patch(`/admin/feature-requests/${row.id}/deactivate`, {});
       notify("Deactivated. Listing removed from carousel.", "success");
       await load();
       setOpen(false);
     } catch (e) {
-      console.error(e);
+      console.error("Deactivate failed:", e?.response?.data || e.message);
       notify("Failed to deactivate.", "error");
     } finally {
       setBusyId(null);
     }
   };
 
-  // ✅ Activate featured (atomic request + listing update)
   const activateFeatured = async (row) => {
     if (!row.listingId) return notify("Missing listingId for this request.", "error");
     if (!row.paid) return notify("This request is not marked paid yet.", "error");
@@ -408,46 +388,18 @@ export default function AdminFeatureRequests() {
 
     try {
       setBusyId(row.id);
-
-      const now = new Date();
-      const until = new Date(now.getTime() + dur * 24 * 60 * 60 * 1000);
-
-      // Atomic update (luxury-grade: prevent partial states)
-      const batch = writeBatch(db);
-
-      batch.update(doc(db, "listings", row.listingId), {
-        sponsored: true,
-        featured: true,
-        sponsoredPlanId: row.planId || "custom",
-        sponsoredPlanLabel: row.planLabel || "Custom plan",
-        sponsoredPrice: Number(row.price || 0),
-        sponsoredSince: serverTimestamp(),
-        sponsoredUntil: Timestamp.fromDate(until),
-        status: "active",
-        updatedAt: serverTimestamp(),
-      });
-
-      batch.update(doc(db, "featureRequests", row.id), {
-        status: "active",
-        sponsoredUntil: Timestamp.fromDate(until),
-        activatedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      await batch.commit();
-
+      await api.patch(`/admin/feature-requests/${row.id}/activate`, {});
       notify("Activated. Listing is now eligible for homepage carousel.", "success");
       await load();
       setOpen(false);
     } catch (e) {
-      console.error(e);
+      console.error("Activate failed:", e?.response?.data || e.message);
       notify("Failed to activate.", "error");
     } finally {
       setBusyId(null);
     }
   };
 
-  /* ───────────────────────── Review modal loader ───────────────────────── */
   const openReview = async (row) => {
     setActiveRow(row);
     setOpen(true);
@@ -462,10 +414,10 @@ export default function AdminFeatureRequests() {
 
     try {
       if (!row.listingId) return;
-      const snap = await getDoc(doc(db, "listings", row.listingId));
-      if (snap.exists()) setListingPreview({ id: snap.id, ...snap.data() });
+      const res = await api.get(`/admin/listings/${encodeURIComponent(row.listingId)}`);
+      if (res.data?.data) setListingPreview(res.data.data);
     } catch (e) {
-      console.warn("Could not load listing preview:", e);
+      console.warn("Could not load listing preview:", e?.response?.data || e.message);
     }
   };
 
@@ -476,16 +428,15 @@ export default function AdminFeatureRequests() {
     setPaymentRefInput("");
   };
 
-  // Small helper: save paymentRef on request (for reconciliation)
   const savePaymentRef = async () => {
     if (!activeRow) return;
     try {
       setBusyId(activeRow.id);
-      await patch(activeRow.id, { paymentRef: String(paymentRefInput || "").trim() });
+      await api.patch(`/admin/feature-requests/${activeRow.id}`, { paymentRef: String(paymentRefInput || "").trim() });
       notify("Payment reference saved.", "success");
       await load();
     } catch (e) {
-      console.error(e);
+      console.error("Save payment ref failed:", e?.response?.data || e.message);
       notify("Could not save payment reference.", "error");
     } finally {
       setBusyId(null);
@@ -557,7 +508,7 @@ export default function AdminFeatureRequests() {
       <AdminHeader
         back
         title="Featured Requests"
-        subtitle="Luxury-grade workflow: review → approve → pay → activate → carousel"
+        subtitle="Luxury workflow: review → approve → pay → activate → carousel"
         rightActions={
           <div style={{ display: "flex", gap: 8 }}>
             <LuxeBtn kind="gold" small onClick={exportCsv}>
@@ -824,6 +775,26 @@ export default function AdminFeatureRequests() {
               </div>
             </div>
 
+            {/* Listing preview (optional) */}
+            {listingPreview ? (
+              <div
+                style={{
+                  border: "1px solid rgba(255,255,255,.10)",
+                  borderRadius: 14,
+                  padding: 12,
+                  background: "rgba(255,255,255,.04)",
+                }}
+              >
+                <div style={{ fontWeight: 900, color: "#f8fafc", marginBottom: 6 }}>Listing preview</div>
+                <div style={{ color: "#cbd5e1", fontSize: 13 }}>
+                  <div style={{ fontWeight: 800 }}>{listingPreview.title || listingPreview.name || "—"}</div>
+                  <div style={{ opacity: 0.8 }}>
+                    {listingPreview.city || ""} {listingPreview.area ? `• ${listingPreview.area}` : ""}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             {/* Payment ref tool (reconciliation) */}
             <div
               style={{
@@ -837,7 +808,7 @@ export default function AdminFeatureRequests() {
             >
               <div style={{ fontWeight: 900, color: "#f8fafc" }}>Payment reference (optional)</div>
               <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                Luxury best-practice: store a transaction reference for audit/reconciliation (Paystack/Flutterwave).
+                Store transaction reference for audit/reconciliation (Paystack/Flutterwave/bank transfer).
               </div>
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -872,7 +843,7 @@ export default function AdminFeatureRequests() {
             >
               <div style={{ fontWeight: 900, color: "#f8fafc" }}>Approval terms (locked)</div>
               <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                Luxury standard: approve → lock price & duration → await payment → activate.
+                Approve → lock price & duration → await payment → activate.
               </div>
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -953,7 +924,7 @@ export default function AdminFeatureRequests() {
                     kind="gold"
                     disabled={busyId === activeRow.id}
                     onClick={() => approveToAwaitingPayment(activeRow)}
-                    title="Approve after photo review"
+                    title="Approve after review"
                   >
                     Approve → Awaiting payment
                   </LuxeBtn>

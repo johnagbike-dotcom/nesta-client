@@ -3,8 +3,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import dayjs from "dayjs";
 import axios from "axios";
 import { getAuth } from "firebase/auth";
-import { storage } from "../../firebase";
-import { ref, listAll, getDownloadURL } from "firebase/storage";
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
 import { useToast } from "../../components/Toast";
@@ -31,19 +29,16 @@ const safeLower = (v) => String(v || "").trim().toLowerCase();
 function safeDateLoose(v) {
   if (!v) return null;
 
-  // ISO string
   if (typeof v === "string") {
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d;
   }
 
-  // epoch
   if (typeof v === "number") {
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d;
   }
 
-  // Firestore Timestamp-like
   if (typeof v === "object" && typeof v.toDate === "function") {
     try {
       return v.toDate();
@@ -52,7 +47,6 @@ function safeDateLoose(v) {
     }
   }
 
-  // {seconds,nanoseconds}
   if (typeof v === "object" && typeof v.seconds === "number") {
     const ms = v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
     const d = new Date(ms);
@@ -125,6 +119,54 @@ async function downloadCsv(href, fallbackName) {
   document.body.removeChild(a);
 
   window.URL.revokeObjectURL(url);
+}
+
+/* ------------------------------ Docs extraction ------------------------------ */
+/**
+ * Your server returns kycProfiles docs via /admin/kyc, and the row already includes:
+ * - uploads: { docType: { url, name, ... } }
+ * - documents: { docType: [ { url, name }, ... ] }
+ * So admin UI should use row.uploads/documents directly (no client Firestore/Storage reads).
+ */
+function docsFromKycRow(row) {
+  const out = [];
+
+  const uploads = row?.uploads && typeof row.uploads === "object" ? row.uploads : null;
+  if (uploads) {
+    Object.entries(uploads).forEach(([docType, entry]) => {
+      if (entry?.url) {
+        out.push({
+          name: `${docType}: ${entry?.name || "file"}`,
+          url: entry.url,
+          source: "api_uploads",
+        });
+      }
+    });
+  }
+
+  const documents = row?.documents && typeof row.documents === "object" ? row.documents : null;
+  if (documents) {
+    Object.entries(documents).forEach(([docType, arr]) => {
+      const list = Array.isArray(arr) ? arr : [];
+      list.forEach((x, idx) => {
+        if (x?.url) {
+          out.push({
+            name: `${docType}: ${x?.name || `file_${idx + 1}`}`,
+            url: x.url,
+            source: "api_documents",
+          });
+        }
+      });
+    });
+  }
+
+  const seen = new Set();
+  return out.filter((d) => {
+    if (!d.url) return false;
+    if (seen.has(d.url)) return false;
+    seen.add(d.url);
+    return true;
+  });
 }
 
 /* ------------------------------ Modal ------------------------------ */
@@ -202,6 +244,7 @@ export default function KycReviewPage() {
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState(null);
   const [docs, setDocs] = useState([]);
+  const [docsNote, setDocsNote] = useState("");
 
   const lastPage = Math.max(1, Math.ceil((total || 0) / perPage));
 
@@ -255,31 +298,28 @@ export default function KycReviewPage() {
     setSel(row);
     setOpen(true);
     setDocs([]);
+    setDocsNote("");
 
-    const uid = row?.userId || row?.uid || row?.userID || null;
-    if (!uid) return;
-
-    try {
-      const baseRef = ref(storage, `kyc/${uid}`);
-      const res = await listAll(baseRef);
-      const items = await Promise.all(
-        res.items.map(async (it) => ({
-          name: it.name,
-          url: await getDownloadURL(it),
-        }))
-      );
-      setDocs(items);
-    } catch (e) {
-      // If no files, or rules block it, we keep empty list
-      console.warn("No KYC storage files (or blocked):", e?.message || e);
-      setDocs([]);
+    // ✅ Use what the admin API already returned (uploads/documents)
+    const fromApi = docsFromKycRow(row);
+    if (fromApi.length) {
+      setDocs(fromApi);
+      setDocsNote("");
+      return;
     }
+
+    // If none present, show a clear message (this means KYC submit didn't store urls)
+    const uid = row?.userId || row?.uid || row?.id || "—";
+    setDocsNote(
+      `No documents found on this KYC record.\n\nThis admin screen no longer reads Storage directly (rules can block it).\nPlease confirm KYC submit stored uploads/documents under kycProfiles/${uid}.`
+    );
   };
 
   const closeReview = () => {
     setOpen(false);
     setSel(null);
     setDocs([]);
+    setDocsNote("");
   };
 
   const setStatus = async (row, nextStatus) => {
@@ -291,9 +331,7 @@ export default function KycReviewPage() {
       await api.patch(`/admin/kyc/${id}/status`, { status: nextStatus });
 
       // optimistic update
-      setRows((prev) =>
-        prev.map((x) => (x.id === id ? { ...x, status: nextStatus } : x))
-      );
+      setRows((prev) => prev.map((x) => (x.id === id ? { ...x, status: nextStatus } : x)));
 
       notify(`KYC marked as ${nextStatus}.`, "success");
     } catch (e) {
@@ -437,10 +475,8 @@ export default function KycReviewPage() {
                 </tr>
               ) : (
                 rows.map((r) => {
-                  const submitted = safeDateLoose(
-                    r.submittedAt || r.createdAt || r.created_at || r.updatedAt
-                  );
-                  const uid = r.userId || r.uid || "—";
+                  const submitted = safeDateLoose(r.submittedAt || r.createdAt || r.created_at || r.updatedAt);
+                  const uid = r.userId || r.uid || r.id || "—";
                   const status = safeLower(r.status || "pending");
 
                   return (
@@ -465,27 +501,13 @@ export default function KycReviewPage() {
                           <LuxeBtn small onClick={() => openReview(r)}>
                             Review
                           </LuxeBtn>
-                          <LuxeBtn
-                            small
-                            kind="emerald"
-                            disabled={busyId === r.id}
-                            onClick={() => setStatus(r, "approved")}
-                          >
+                          <LuxeBtn small kind="emerald" disabled={busyId === r.id} onClick={() => setStatus(r, "approved")}>
                             Approve
                           </LuxeBtn>
-                          <LuxeBtn
-                            small
-                            kind="ruby"
-                            disabled={busyId === r.id}
-                            onClick={() => setStatus(r, "rejected")}
-                          >
+                          <LuxeBtn small kind="ruby" disabled={busyId === r.id} onClick={() => setStatus(r, "rejected")}>
                             Reject
                           </LuxeBtn>
-                          <LuxeBtn
-                            small
-                            disabled={busyId === r.id}
-                            onClick={() => setStatus(r, "pending")}
-                          >
+                          <LuxeBtn small disabled={busyId === r.id} onClick={() => setStatus(r, "pending")}>
                             Reset
                           </LuxeBtn>
                         </div>
@@ -583,14 +605,14 @@ export default function KycReviewPage() {
         {!sel ? null : (
           <div style={{ display: "grid", gap: 14 }}>
             <div style={{ display: "grid", gridTemplateColumns: "170px 1fr", gap: 10 }}>
-              <div style={{ color: "#94a3b8", fontWeight: 700 }}>Name</div>
-              <div style={{ color: "#e5e7eb", fontWeight: 800 }}>{sel.name || "—"}</div>
+              <div style={{ color: "#94a3b8", fontWeight: 700 }}>Type</div>
+              <div style={{ color: "#e5e7eb", fontWeight: 800 }}>{sel.type || "—"}</div>
 
               <div style={{ color: "#94a3b8", fontWeight: 700 }}>Email</div>
               <div style={{ color: "#e5e7eb" }}>{sel.email || "—"}</div>
 
               <div style={{ color: "#94a3b8", fontWeight: 700 }}>User ID</div>
-              <div style={{ color: "#e5e7eb" }}>{sel.userId || sel.uid || "—"}</div>
+              <div style={{ color: "#e5e7eb" }}>{sel.userId || sel.uid || sel.id || "—"}</div>
 
               <div style={{ color: "#94a3b8", fontWeight: 700 }}>Status</div>
               <div>
@@ -610,17 +632,11 @@ export default function KycReviewPage() {
               <div style={{ fontWeight: 900, marginBottom: 8, color: "#f8fafc" }}>Documents</div>
 
               {docs.length === 0 ? (
-                <div style={{ color: "#94a3b8" }}>
-                  No files found in storage path <code>kyc/{sel.userId || sel.uid}</code>.
+                <div style={{ color: "#94a3b8", whiteSpace: "pre-wrap" }}>
+                  {docsNote || "No documents attached to this record."}
                 </div>
               ) : (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-                    gap: 10,
-                  }}
-                >
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
                   {docs.map((a) => (
                     <a
                       key={a.url}
@@ -661,6 +677,9 @@ export default function KycReviewPage() {
                         }}
                       >
                         <span style={{ fontSize: 12, opacity: 0.75 }}>Open</span>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 11, opacity: 0.6 }}>
+                        source: {a.source}
                       </div>
                     </a>
                   ))}

@@ -2,249 +2,331 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
-import useUserProfile from "../../hooks/useUserProfile";
-import {
-  loadKycProfile,
-  saveKycProfile,
-  OK_STATUSES,
-} from "../../api/kycProfile";
-import { storage } from "../../firebase";
-import {
-  ref,
-  uploadBytesResumable,
-  getDownloadURL,
-  listAll,
-} from "firebase/storage";
+import { db, storage } from "../../firebase";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { ref, uploadBytesResumable, getDownloadURL, listAll } from "firebase/storage";
 
-/* --------------------------------------------- */
-/* STATUS PILL --------------------------------- */
-/* --------------------------------------------- */
+const HARD_REQUIRED = [
+  { key: "governmentId", label: "Government-issued ID (required)" },
+  { key: "liveSelfie", label: "Live selfie (required)" },
+  { key: "proofOfAddress", label: "Proof of address (required)" },
+];
 
-function StatusPill({ value }) {
-  const s = String(value || "").toUpperCase();
+const OPTIONAL = [
+  { key: "rightToList", label: "Proof of right to list (optional for launch)" },
+  { key: "utilityBill", label: "Utility bill (optional unless used as PoA)" },
+  { key: "cac", label: "CAC registration (partners/company - optional for launch)" },
+];
 
-  const tone = OK_STATUSES.includes(s)
-    ? {
-        label: "Approved",
-        bg: "rgba(16,185,129,.10)",
-        bd: "rgba(16,185,129,.35)",
-        fg: "#b7f7df",
-        dot: "#34d399",
-      }
-    : s === "PENDING"
-    ? {
-        label: "Pending",
-        bg: "rgba(245,158,11,.10)",
-        bd: "rgba(245,158,11,.35)",
-        fg: "#ffe8b5",
-        dot: "#fbbf24",
-      }
-    : {
-        label: "Not submitted",
-        bg: "rgba(148,163,184,.10)",
-        bd: "rgba(148,163,184,.35)",
-        fg: "#e6ebf4",
-        dot: "#cbd5e1",
-      };
-
+function isAllowedFile(file) {
+  const t = file?.type || "";
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 12px",
-        borderRadius: 999,
-        background: tone.bg,
-        border: `1px solid ${tone.bd}`,
-        color: tone.fg,
-        fontWeight: 800,
-        letterSpacing: 0.3,
-      }}
-    >
-      <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: 999,
-          background: tone.dot,
-        }}
-      />
-      {tone.label}
-    </span>
+    t.startsWith("image/") ||
+    t === "application/pdf" ||
+    t === "application/octet-stream" // some phones
   );
 }
 
-/* --------------------------------------------- */
-/* MAIN PAGE ----------------------------------- */
-/* --------------------------------------------- */
+function prettyStatus(status) {
+  const s = String(status || "").toUpperCase();
+  if (["APPROVED", "VERIFIED", "COMPLETE"].includes(s)) return "Approved";
+  if (["SUBMITTED", "PENDING"].includes(s)) return "Pending";
+  if (s === "MORE_INFO_REQUIRED") return "More info";
+  if (s === "REJECTED") return "Rejected";
+  return "Not submitted";
+}
 
 export default function KycPage() {
   const { user } = useAuth();
-  const { profile } = useUserProfile(user?.uid);
   const uid = user?.uid;
 
   const [kyc, setKyc] = useState(null);
-  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [loading, setLoading] = useState(true);
 
+  // Storage preview
   const [files, setFiles] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
 
-  const [uploadFile, setUploadFile] = useState(null);
+  // Upload state
+  const [uploadingKey, setUploadingKey] = useState("");
   const [progress, setProgress] = useState(0);
-  const [uploading, setUploading] = useState(false);
-
   const [banner, setBanner] = useState("");
   const [error, setError] = useState("");
 
-  const status = useMemo(
-    () => String(kyc?.status || "").toUpperCase(),
-    [kyc]
-  );
+  // Declaration
+  const [declAccepted, setDeclAccepted] = useState(false);
+  const [signature, setSignature] = useState("");
 
-  const isApproved = OK_STATUSES.includes(status);
-
-  /* --------------------------------------------- */
-  /* LOAD PROFILE -------------------------------- */
-  /* --------------------------------------------- */
-
+  // ---- Load kycProfiles/{uid}
   useEffect(() => {
     if (!uid) return;
+    let live = true;
 
-    async function run() {
-      setLoadingProfile(true);
+    (async () => {
+      setLoading(true);
       try {
-        const data = await loadKycProfile(uid);
-        setKyc(data);
+        const refDoc = doc(db, "kycProfiles", uid);
+        const snap = await getDoc(refDoc);
+        if (!live) return;
+
+        if (!snap.exists()) {
+          // create initial stub so admins/users have a consistent doc
+          await setDoc(
+            refDoc,
+            {
+              uid,
+              email: user?.email || "",
+              status: "DRAFT",
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+              uploads: {},
+            },
+            { merge: true }
+          );
+          const snap2 = await getDoc(refDoc);
+          setKyc(snap2.exists() ? { id: snap2.id, ...snap2.data() } : null);
+        } else {
+          setKyc({ id: snap.id, ...snap.data() });
+        }
       } catch (e) {
-        console.error("Failed to load KYC profile", e);
+        console.error(e);
       } finally {
-        setLoadingProfile(false);
+        if (live) setLoading(false);
       }
-    }
+    })();
 
-    run();
-  }, [uid]);
+    return () => (live = false);
+  }, [uid, user?.email]);
 
-  /* --------------------------------------------- */
-  /* LOAD FILES ---------------------------------- */
-  /* --------------------------------------------- */
-
-  useEffect(() => {
+  // ---- Refresh storage files (root + subfolders)
+  const refreshFiles = async () => {
     if (!uid) return;
-    let cancelled = false;
+    setFilesLoading(true);
+    try {
+      const rootRef = ref(storage, `kyc/${uid}`);
+      const rootRes = await listAll(rootRef);
 
-    async function loadFiles() {
-      setFilesLoading(true);
-      try {
-        const base = ref(storage, `kyc/${uid}`);
-        const res = await listAll(base);
+      const rootItems = await Promise.all(
+        rootRes.items.map(async (it) => ({
+          name: it.name,
+          url: await getDownloadURL(it),
+          fullPath: it.fullPath,
+        }))
+      );
 
-        const items = await Promise.all(
-          res.items.map(async (it) => ({
+      const subfolderItems = [];
+      for (const prefix of rootRes.prefixes || []) {
+        const subRes = await listAll(prefix);
+        const subItems = await Promise.all(
+          subRes.items.map(async (it) => ({
             name: it.name,
             url: await getDownloadURL(it),
+            fullPath: it.fullPath,
           }))
         );
-
-        if (!cancelled) setFiles(items);
-      } catch (e) {
-        console.log(e);
-      } finally {
-        if (!cancelled) setFilesLoading(false);
+        subfolderItems.push(...subItems);
       }
-    }
 
-    loadFiles();
-    return () => {
-      cancelled = true;
-    };
+      setFiles([...rootItems, ...subfolderItems]);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setFilesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshFiles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid]);
 
-  /* --------------------------------------------- */
-  /* PICK FILE ----------------------------------- */
-  /* --------------------------------------------- */
+  const status = useMemo(() => String(kyc?.status || ""), [kyc]);
 
-  const onPick = (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
+  // uploads map: uploads.{docType} = {url,path,name,uploadedAtMs,...}
+  const uploadsByType = useMemo(() => {
+    const u = kyc?.uploads || {};
+    return u && typeof u === "object" ? u : {};
+  }, [kyc]);
 
-    if (!["image/", "application/pdf"].some((t) => f.type.startsWith(t))) {
-      setError("Only images or PDF allowed.");
+  /* ✅ NEW: detect uploaded doc by Storage folder too
+     A doc is considered present if:
+     - Firestore uploads map has URL
+     - OR Storage has any file under /kyc/{uid}/{docType}/
+  */
+  const storageHasDocType = (docType) => {
+    if (!Array.isArray(files) || files.length === 0) return false;
+    const needle = `kyc/${uid}/${docType}/`;
+    return files.some((f) => String(f.fullPath || "").includes(needle));
+  };
+
+  const hasDoc = (docType) => {
+    const entry = uploadsByType?.[docType];
+    if (entry?.url) return true;
+    return storageHasDocType(docType);
+  };
+
+  const hardMissing = useMemo(() => {
+    const missing = [];
+    for (const r of HARD_REQUIRED) {
+      if (!hasDoc(r.key)) missing.push(r.key);
+    }
+    if (!declAccepted || !String(signature || "").trim()) missing.push("declaration");
+    return missing;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadsByType, files, declAccepted, signature]);
+
+  // ---- Upload doc to Storage, then record in Firestore as MAP (no arrays)
+  const uploadDoc = async (docType, file) => {
+    if (!uid || !file) return;
+    setError("");
+    setBanner("");
+
+    if (!isAllowedFile(file)) {
+      setError("Only images or PDFs allowed.");
       return;
     }
-
-    if (f.size > 20 * 1024 * 1024) {
+    if (file.size > 20 * 1024 * 1024) {
       setError("Max file size is 20MB.");
       return;
     }
 
-    setUploadFile(f);
-    setError("");
-    setBanner("");
-    setProgress(0);
-  };
-
-  /* --------------------------------------------- */
-  /* UPLOAD FILE --------------------------------- */
-  /* --------------------------------------------- */
-
-  async function upload() {
-    if (!uploadFile || !uid) return;
     try {
-      setUploading(true);
-      const safeName = uploadFile.name.replace(/\s+/g, "_");
+      setUploadingKey(docType);
+      setProgress(0);
 
-      const fileRef = ref(storage, `kyc/${uid}/${Date.now()}_${safeName}`);
+      const safeName = file.name.replace(/\s+/g, "_");
+      const path = `kyc/${uid}/${docType}/${Date.now()}_${safeName}`;
+      const fileRef = ref(storage, path);
 
-      const task = uploadBytesResumable(fileRef, uploadFile);
-      task.on("state_changed", (snap) => {
-        const pct = Math.round(
-          (snap.bytesTransferred / snap.totalBytes) * 100
-        );
-        setProgress(pct);
+      const task = uploadBytesResumable(fileRef, file, {
+        contentType: file.type || "application/octet-stream",
       });
 
-      await task;
+      await new Promise((resolve, reject) => {
+        task.on(
+          "state_changed",
+          (snap) => {
+            const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+            setProgress(pct);
+          },
+          reject,
+          resolve
+        );
+      });
 
       const url = await getDownloadURL(fileRef);
 
-      await saveKycProfile(uid, {
-        status: "PENDING",
-        lastUploadedUrl: url,
-      });
-
-      // 💡 Instant local update so the status pill changes immediately
-      setKyc((prev) => ({
-        ...(prev || {}),
-        status: "PENDING",
-        lastUploadedUrl: url,
-      }));
-
-      setBanner("Document uploaded. Pending review.");
-      setUploadFile(null);
-
-      // Reload file list
-      const base = ref(storage, `kyc/${uid}`);
-      const res = await listAll(base);
-      const all = await Promise.all(
-        res.items.map(async (it) => ({
-          name: it.name,
-          url: await getDownloadURL(it),
-        }))
+      // ✅ store as a MAP entry (safe): uploads.<docType> = {...}
+      const kycRef = doc(db, "kycProfiles", uid);
+      await setDoc(
+        kycRef,
+        {
+          uid,
+          email: user?.email || "",
+          status: "PENDING",
+          updatedAt: serverTimestamp(),
+          [`uploads.${docType}`]: {
+            docType,
+            url,
+            path,
+            name: file.name,
+            mime: file.type || "application/octet-stream",
+            size: file.size,
+            uploadedAtMs: Date.now(),
+          },
+        },
+        { merge: true }
       );
-      setFiles(all);
+
+      // ✅ Refresh both Firestore + Storage after upload so UI updates instantly
+      const nextSnap = await getDoc(kycRef);
+      setKyc(nextSnap.exists() ? { id: nextSnap.id, ...nextSnap.data() } : null);
+
+      await refreshFiles();
+
+      setBanner(`${docType} uploaded.`);
     } catch (e) {
       console.error(e);
-      setError("Upload failed");
+      setError("Upload failed. Check Storage rules + file type.");
     } finally {
-      setUploading(false);
+      setUploadingKey("");
+      setProgress(0);
     }
-  }
+  };
 
-  /* --------------------------------------------- */
-  /* UI ------------------------------------------ */
-  /* --------------------------------------------- */
+  // ---- Submit for review (creates onboarding/{uid} so Admin sees it)
+  const submitForReview = async () => {
+    if (!uid) return;
+    setError("");
+    setBanner("");
+
+    if (hardMissing.length) {
+      setError("Please upload required docs and sign the declaration before submitting.");
+      return;
+    }
+
+    try {
+      // kycProfiles: mark submitted + declaration
+      await setDoc(
+        doc(db, "kycProfiles", uid),
+        {
+          status: "SUBMITTED",
+          submittedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          declaration: {
+            accepted: true,
+            signature: String(signature || "").trim(),
+            acceptedAtMs: Date.now(),
+          },
+          compliance: {
+            hardEnforced: ["governmentId", "liveSelfie", "proofOfAddress", "declaration"],
+            missingHard: [],
+            launchMode: true,
+          },
+        },
+        { merge: true }
+      );
+
+      // onboarding queue doc (Admin reads this)
+      await setDoc(
+        doc(db, "onboarding", uid),
+        {
+          userId: uid,
+          uid,
+          email: user?.email || "",
+          type: "host", // adjust if you have role detection
+          status: "PENDING",
+          submittedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // mirror status into users/{uid} for gating
+      await setDoc(
+        doc(db, "users", uid),
+        {
+          kycStatus: "submitted",
+          kyc: {
+            status: "submitted",
+            submittedAt: serverTimestamp(),
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      const nextSnap = await getDoc(doc(db, "kycProfiles", uid));
+      setKyc(nextSnap.exists() ? { id: nextSnap.id, ...nextSnap.data() } : null);
+
+      setBanner("Submitted for review. Admin will verify shortly.");
+    } catch (e) {
+      console.error(e);
+      setError("Submit failed. Check Firestore rules for onboarding/kycProfiles.");
+    }
+  };
+
+  if (!user) return null;
 
   return (
     <main className="min-h-screen bg-[#0d1013] text-white pt-24 pb-16">
@@ -254,16 +336,16 @@ export default function KycPage() {
             <p className="uppercase text-xs tracking-[0.25em] text-slate-400">
               Nesta • Identity Verification
             </p>
-            <h1 className="text-4xl font-black mt-2 text-[#f5b301]">
-              KYC Verification
-            </h1>
+            <h1 className="text-4xl font-black mt-2 text-[#f5b301]">KYC Verification</h1>
             <p className="text-slate-300/80 mt-3 max-w-xl">
-              Upload your government ID and proof of address to verify your
-              identity for hosting or partner privileges.
+              Upload required documents and submit for review. For launch, we enforce ID,
+              selfie, proof of address, and declaration.
             </p>
           </div>
 
-          <StatusPill value={status} />
+          <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/15 bg-white/5 text-sm font-semibold">
+            {prettyStatus(status)}
+          </span>
         </div>
 
         {banner && (
@@ -278,60 +360,95 @@ export default function KycPage() {
           </div>
         )}
 
-        {/* Card */}
         <section className="rounded-2xl border border-white/10 bg-[#12171d] shadow-xl overflow-hidden">
           <div className="p-6 space-y-6">
-            {/* Upload area */}
-            {!isApproved && (
-              <div className="rounded-xl border border-dashed border-white/20 bg-white/5 px-6 py-8 text-center">
-                <input
-                  id="kyc-file"
-                  type="file"
-                  accept="image/*,application/pdf"
-                  onChange={onPick}
-                  className="hidden"
+            <div className="space-y-3">
+              <div className="text-sm font-bold">Required documents</div>
+              {HARD_REQUIRED.map((d) => (
+                <DocRow
+                  key={d.key}
+                  label={d.label}
+                  docType={d.key}
+                  has={hasDoc(d.key)} // ✅ FIXED
+                  uploading={uploadingKey === d.key}
+                  progress={uploadingKey === d.key ? progress : 0}
+                  onUpload={uploadDoc}
                 />
-                <label htmlFor="kyc-file" className="cursor-pointer block">
-                  <div className="text-sm font-semibold text-white/80">
-                    Click to upload ID / Proof of Address
-                  </div>
-                  <div className="text-xs mt-1 text-white/50">
-                    JPG / PNG / PDF — Max 20MB
-                  </div>
-                </label>
+              ))}
+            </div>
 
-                {uploadFile && (
-                  <div className="mt-3 text-xs text-white/70">
-                    Selected:{" "}
-                    <span className="font-semibold">{uploadFile.name}</span>
-                    {progress > 0 && <span> • {progress}%</span>}
-                  </div>
-                )}
+            <div className="space-y-3">
+              <div className="text-sm font-bold text-white/80">Optional for launch</div>
+              {OPTIONAL.map((d) => (
+                <DocRow
+                  key={d.key}
+                  label={d.label}
+                  docType={d.key}
+                  has={hasDoc(d.key)} // ✅ FIXED
+                  uploading={uploadingKey === d.key}
+                  progress={uploadingKey === d.key ? progress : 0}
+                  onUpload={uploadDoc}
+                />
+              ))}
+            </div>
 
-                <button
-                  onClick={upload}
-                  disabled={uploading}
-                  className={`mt-5 px-5 py-2.5 rounded-xl font-semibold ${
-                    uploading
-                      ? "bg-white/10 text-white/60"
-                      : "bg-amber-400 text-black"
-                  }`}
-                >
-                  {uploading ? "Uploading…" : "Submit document"}
-                </button>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
+              <div className="font-bold text-sm">Declaration (required)</div>
+              <label className="flex items-start gap-3 text-sm text-white/80">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={declAccepted}
+                  onChange={(e) => setDeclAccepted(e.target.checked)}
+                />
+                <span>
+                  I confirm I have the right to list, all information is accurate, and I agree
+                  to Nesta policies.
+                </span>
+              </label>
+
+              <div>
+                <div className="text-xs text-white/60 mb-1">Type your full name as signature</div>
+                <input
+                  value={signature}
+                  onChange={(e) => setSignature(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/15 text-sm outline-none focus:border-amber-400/80"
+                  placeholder="Full name"
+                />
               </div>
-            )}
+            </div>
 
-            {/* Files */}
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={submitForReview}
+                disabled={hardMissing.length > 0}
+                className={`px-5 py-2.5 rounded-xl font-semibold ${
+                  hardMissing.length > 0
+                    ? "bg-white/10 text-white/60 cursor-not-allowed"
+                    : "bg-amber-400 text-black"
+                }`}
+              >
+                Submit for review
+              </button>
+
+              {hardMissing.length > 0 && (
+                <div className="text-xs text-white/60">Missing: {hardMissing.join(", ")}</div>
+              )}
+
+              {String(status || "").toUpperCase() === "APPROVED" && (
+                <Link to="/host" className="text-sm text-amber-300 underline font-semibold">
+                  Go to Host Dashboard →
+                </Link>
+              )}
+            </div>
+
             <div>
-              <div className="text-sm font-bold mb-2">Documents on file</div>
+              <div className="text-sm font-bold mb-2">Files in Storage</div>
 
               {filesLoading ? (
                 <div className="text-white/60 text-sm">Loading…</div>
               ) : files.length === 0 ? (
-                <div className="text-sm text-white/40">
-                  No documents uploaded.
-                </div>
+                <div className="text-sm text-white/40">No files uploaded.</div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {files.map((f) => (
@@ -342,32 +459,54 @@ export default function KycPage() {
                       rel="noreferrer"
                       className="block rounded-xl border border-white/10 bg-white/5 p-3"
                     >
-                      <div className="text-xs truncate mb-2 opacity-80">
-                        {f.name}
-                      </div>
+                      <div className="text-xs truncate mb-2 opacity-80">{f.fullPath}</div>
                       <div className="h-24 grid place-items-center bg-black/20 rounded-lg text-white/50 text-xs">
-                        Preview
+                        Open
                       </div>
                     </a>
                   ))}
                 </div>
               )}
             </div>
-
-            {isApproved && (
-              <div className="rounded-xl bg-emerald-500/10 border border-emerald-300/30 px-4 py-3 text-sm text-emerald-200">
-                You are fully verified.
-                <Link
-                  to="/host"
-                  className="font-bold text-amber-400 underline ml-2"
-                >
-                  Go to Host Dashboard →
-                </Link>
-              </div>
-            )}
           </div>
         </section>
       </div>
     </main>
+  );
+}
+
+function DocRow({ label, docType, has, uploading, progress, onUpload }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      <div>
+        <div className="text-sm font-semibold">{label}</div>
+        <div className="text-xs text-white/60">
+          {has ? "Uploaded" : "No file uploaded yet"}
+          {uploading && progress > 0 ? ` • ${progress}%` : ""}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <input
+          id={`file-${docType}`}
+          type="file"
+          accept="image/*,application/pdf"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onUpload(docType, f);
+            e.target.value = "";
+          }}
+        />
+        <label
+          htmlFor={`file-${docType}`}
+          className={`px-4 py-2 rounded-xl text-sm font-semibold cursor-pointer ${
+            uploading ? "bg-white/10 text-white/60" : "bg-white/10 hover:bg-white/15"
+          }`}
+        >
+          {uploading ? "Uploading…" : has ? "Replace" : "Upload"}
+        </label>
+      </div>
+    </div>
   );
 }

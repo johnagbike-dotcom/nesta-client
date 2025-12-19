@@ -1,4 +1,3 @@
-// src/pages/admin/AdminDashboard.js
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -127,16 +126,28 @@ export default function AdminDashboard() {
     setLoading(true);
     setError("");
 
-    let overviewOk = false;
+    // ✅ Important: overviewOk now means "API gave us a valid users count"
+    let overviewHasUsersCount = false;
 
-    // 1) API overview (source of truth when available)
+    // 1) API overview (use if available)
     try {
       const res = await api.get("/admin/overview");
       const o = res?.data || null;
+
       setServerOverview(o);
-      setUsersCount(Number(o?.users || 0));
+
+      // ✅ Support either: { users: { total } } OR { users: number }
+      const apiUsersCount = Number(o?.users?.total ?? o?.users ?? NaN);
+
+      if (Number.isFinite(apiUsersCount)) {
+        setUsersCount(apiUsersCount);
+        overviewHasUsersCount = true;
+      } else {
+        // API overview may still be useful, but not for users count
+        overviewHasUsersCount = false;
+      }
+
       setUpdatedAt(new Date().toISOString());
-      overviewOk = true;
     } catch (e) {
       console.warn(
         "[AdminDashboard] /admin/overview failed, falling back to Firestore:",
@@ -144,6 +155,7 @@ export default function AdminDashboard() {
       );
       setServerOverview(null);
       setError("Admin overview is temporarily unavailable. Showing fallback stats.");
+      overviewHasUsersCount = false;
     }
 
     // 2) Latest bookings (Firestore)
@@ -154,8 +166,8 @@ export default function AdminDashboard() {
       const loaded = snap.docs.map((d) => normaliseBooking(d));
       setBookings(loaded);
 
-      // Fallback users count if overview not available
-      if (!overviewOk) {
+      // ✅ Fallback users count if API didn't supply it
+      if (!overviewHasUsersCount) {
         try {
           const usersSnap = await getDocs(collection(db, "users"));
           setUsersCount(usersSnap.size || 0);
@@ -168,7 +180,7 @@ export default function AdminDashboard() {
     } catch (e) {
       console.error("[AdminDashboard] Firestore bookings load failed:", e?.message || e);
       setBookings([]);
-      if (!overviewOk) setUsersCount(0);
+      if (!overviewHasUsersCount) setUsersCount(0);
       setError((prev) => prev || "We couldn’t load admin stats right now.");
     } finally {
       setLoading(false);
@@ -307,7 +319,9 @@ export default function AdminDashboard() {
             {softNum(usersCount)}
           </p>
           <p className="text-white/60 text-sm mt-3">
-            {serverOverview ? "From API: /admin/overview" : "Fallback: Firestore users collection"}
+            {serverOverview
+              ? "API: /admin/overview (users if provided) + Firestore fallback"
+              : "Fallback: Firestore users collection"}
           </p>
         </div>
       </div>

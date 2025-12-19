@@ -5,6 +5,7 @@ import {
   getDoc,
   setDoc,
   serverTimestamp,
+  deleteField,
 } from "firebase/firestore";
 import {
   ref,
@@ -60,6 +61,12 @@ export async function createInitialKycProfile(uid, role = "host") {
       updatedAt: serverTimestamp(),
       status: "DRAFT", // not yet submitted
       step: 1,
+
+      // Canonical structure for uploads (map keyed by docType)
+      uploads: {},
+
+      // Optional: track required docs as an array of strings (safe, no timestamps)
+      requiredDocTypes: [],
     },
     { merge: true }
   );
@@ -78,6 +85,10 @@ export async function loadKycProfile(uid) {
 
 /**
  * Merge arbitrary data into the kycProfiles/{uid} doc.
+ *
+ * NOTE:
+ * - This function will NOT magically fix "serverTimestamp() inside arrays"
+ *   if the caller passes that pattern. Use recordKycUpload() instead.
  */
 export async function saveKycProfile(uid, data) {
   if (!uid) throw new Error("Missing uid for saveKycProfile");
@@ -95,10 +106,69 @@ export async function saveKycProfile(uid, data) {
 }
 
 /**
- * Called on final submit – marks KYC as submitted / in review.
+ * SAFEST way to store a file upload in Firestore.
+ * Avoids serverTimestamp() inside arrays by:
+ * - using uploads.<docType> map entries
+ * - using uploadedAtMs: Date.now()
+ *
+ * docType examples:
+ * - "governmentId"
+ * - "liveSelfie"
+ * - "proofOfAddress"
+ * - "declaration"
+ * - "proofOfRightToList"
  */
-export async function startKycFlow({ uid, role, email }) {
-  if (!uid) return;
+export async function recordKycUpload(uid, docType, fileMeta) {
+  if (!uid) throw new Error("Missing uid for recordKycUpload");
+  if (!docType) throw new Error("Missing docType for recordKycUpload");
+  if (!fileMeta?.url || !fileMeta?.path) {
+    throw new Error("Missing fileMeta.url/path for recordKycUpload");
+  }
+
+  const refDoc = doc(db, "kycProfiles", uid);
+
+  // store a single “latest” upload per docType (simple and robust for launch)
+  const patch = {
+    status: "PENDING",
+    [`uploads.${docType}`]: {
+      docType,
+      name: fileMeta.name || "",
+      url: fileMeta.url,
+      path: fileMeta.path,
+      contentType: fileMeta.contentType || "",
+      size: typeof fileMeta.size === "number" ? fileMeta.size : null,
+      uploadedAtMs: Date.now(), // ✅ allowed everywhere
+    },
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(refDoc, patch, { merge: true });
+}
+
+/**
+ * Optional helper: remove an upload entry from uploads map.
+ */
+export async function removeKycUpload(uid, docType) {
+  if (!uid) throw new Error("Missing uid for removeKycUpload");
+  if (!docType) throw new Error("Missing docType for removeKycUpload");
+
+  const refDoc = doc(db, "kycProfiles", uid);
+  await setDoc(
+    refDoc,
+    {
+      [`uploads.${docType}`]: deleteField(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Called on final submit – marks KYC as submitted / in review.
+ * (Use this when user clicks "Submit for review".)
+ */
+export async function submitKycForReview({ uid, role, email }) {
+  if (!uid) throw new Error("Missing uid for submitKycForReview");
 
   const refDoc = doc(db, "kycProfiles", uid);
   await setDoc(
@@ -107,7 +177,7 @@ export async function startKycFlow({ uid, role, email }) {
       uid,
       role: role || "host",
       email: email || "",
-      status: "SUBMITTED", // your reviewer can later move to APPROVED / REJECTED
+      status: "SUBMITTED", // admin can later set APPROVED / REJECTED / MORE_INFO_REQUIRED
       submittedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     },
@@ -116,36 +186,66 @@ export async function startKycFlow({ uid, role, email }) {
 }
 
 /**
- * List all uploaded KYC files for a user.
+ * List all uploaded KYC files for a user from Storage.
+ * Supports both:
+ * - flat:   kyc/{uid}/file.pdf
+ * - typed:  kyc/{uid}/{docType}/file.pdf
+ *
  * Returns [{ name, url, fullPath }]
  */
 export async function listKycFiles(uid) {
   if (!uid) return [];
-  const baseRef = ref(storage, `kyc/${uid}`);
-  const res = await listAll(baseRef);
 
-  const items = await Promise.all(
-    res.items.map(async (item) => ({
+  // 1) list direct items in kyc/{uid}
+  const rootRef = ref(storage, `kyc/${uid}`);
+  const rootRes = await listAll(rootRef);
+
+  const rootItems = await Promise.all(
+    rootRes.items.map(async (item) => ({
       name: item.name,
       fullPath: item.fullPath,
       url: await getDownloadURL(item),
     }))
   );
 
-  return items;
+  // 2) list subfolders (docType folders) if any
+  const folderItems = [];
+  for (const prefix of rootRes.prefixes || []) {
+    const subRes = await listAll(prefix);
+    const subItems = await Promise.all(
+      subRes.items.map(async (item) => ({
+        name: item.name,
+        fullPath: item.fullPath,
+        url: await getDownloadURL(item),
+      }))
+    );
+    folderItems.push(...subItems);
+  }
+
+  return [...rootItems, ...folderItems];
 }
 
 /**
- * Upload a single KYC document.
- * onProgress(pct) is optional.
- * Returns { url, path, name }.
+ * Upload a single KYC document to Storage.
+ *
+ * Options:
+ * - docType: if provided, stores under kyc/{uid}/{docType}/...
+ * - onProgress(pct): optional
+ *
+ * Returns { url, path, name, contentType, size }.
  */
-export async function uploadKycDocument(uid, file, onProgress) {
+export async function uploadKycDocument(uid, file, onProgress, options = {}) {
   if (!uid) throw new Error("Missing uid for uploadKycDocument");
   if (!file) throw new Error("Missing file for uploadKycDocument");
 
-  const safeName = file.name.replace(/\s+/g, "_");
-  const objectRef = ref(storage, `kyc/${uid}/${Date.now()}_${safeName}`);
+  const safeName = String(file.name || "document").replace(/\s+/g, "_");
+  const docType = options?.docType ? String(options.docType) : "";
+
+  const storagePath = docType
+    ? `kyc/${uid}/${docType}/${Date.now()}_${safeName}`
+    : `kyc/${uid}/${Date.now()}_${safeName}`;
+
+  const objectRef = ref(storage, storagePath);
 
   const task = uploadBytesResumable(objectRef, file, {
     contentType: file.type || "application/octet-stream",
@@ -156,9 +256,7 @@ export async function uploadKycDocument(uid, file, onProgress) {
       "state_changed",
       (snap) => {
         if (!snap.totalBytes) return;
-        const pct = Math.round(
-          (snap.bytesTransferred / snap.totalBytes) * 100
-        );
+        const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
         if (onProgress) onProgress(pct);
       },
       (err) => reject(err),
@@ -167,9 +265,12 @@ export async function uploadKycDocument(uid, file, onProgress) {
   });
 
   const url = await getDownloadURL(objectRef);
+
   return {
     url,
     path: objectRef.fullPath,
     name: file.name,
+    contentType: file.type || "",
+    size: file.size || null,
   };
 }

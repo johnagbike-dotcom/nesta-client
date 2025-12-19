@@ -7,8 +7,10 @@ import Footer from "./components/Footer";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { ToastProvider } from "./components/Toast";
 import { InboxProvider } from "./context/InboxContext";
+
 import ReserveSuccessPage from "./pages/ReserveSuccessPage";
 import SearchBrowse from "./pages/SearchBrowse";
+
 // Legal / info pages
 import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
@@ -17,7 +19,6 @@ import ComplaintsPage from "./pages/ComplaintsPage";
 
 // Onboarding / KYC
 import KycPage from "./pages/onboarding/KycPage";
-import KycStart from "./pages/onboarding/KycStart";
 import KycApplicationPage from "./pages/onboarding/KycApplicationPage";
 import KycGate from "./pages/onboarding/KycGate";
 import KycPending from "./pages/onboarding/KycPending";
@@ -60,7 +61,6 @@ import PartnerReservationsPage from "./pages/PartnerReservationsPage";
 import CreateListing from "./pages/CreateListing";
 import EditListing from "./pages/EditListing";
 import Withdrawals from "./pages/Withdrawals";
-// unified listings page
 import ManageMyListings from "./pages/ManageMyListings";
 import SubscribePage from "./pages/SubscribePage";
 
@@ -78,6 +78,7 @@ import ResetPassword from "./auth/ResetPassword";
 import MfaSetup from "./auth/MfaSetup";
 import AuthActionHandler from "./auth/AuthActionHandler";
 import MfaVerifyPage from "./auth/MfaVerifyPage";
+
 // Guards
 import {
   RequireAuth,
@@ -113,7 +114,6 @@ export default function AppRouter() {
               <Route path="/about" element={<AboutPage />} />
               <Route path="/post-ad" element={<PostAdLanding />} />
               <Route path="/PostListing" element={<PostListing />} />
-              <Route path="/post" element={<PostAdRouter />} />
               <Route path="/contact" element={<ContactPage />} />
               <Route path="/press" element={<PressPage />} />
               <Route path="/careers" element={<CareersPage />} />
@@ -124,6 +124,7 @@ export default function AppRouter() {
               <Route path="/complaints" element={<ComplaintsPage />} />
               <Route path="/trust-and-safety" element={<TrustSafetyPage />} />
               <Route path="/security" element={<SecurityPage />} />
+              <Route path="/search" element={<SearchBrowse />} />
 
               {/* ---------- Auth (public) ---------- */}
               <Route path="/login" element={<LoginPage />} />
@@ -135,8 +136,6 @@ export default function AppRouter() {
               <Route path="/mfa-setup" element={<MfaSetup />} />
               <Route path="/action" element={<AuthActionHandler />} />
               <Route path="/mfa" element={<MfaVerifyPage />} />
-              <Route path="/search" element={<SearchBrowse />} />
-
 
               {/* ---------- Logged-in guest space ---------- */}
               <Route
@@ -163,6 +162,7 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
+
               {/* ---------- Booking details / receipt / check-in ---------- */}
               <Route
                 path="/booking/:id"
@@ -199,24 +199,6 @@ export default function AppRouter() {
                 }
               />
 
-              {/* ---------- Listing create / edit ---------- */}
-              <Route
-                path="/post/new"
-                element={
-                  <RequireAuth>
-                    <CreateListing />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/listing/:id/edit"
-                element={
-                  <RequireAuth>
-                    <EditListing />
-                  </RequireAuth>
-                }
-              />
-
               {/* ---------- KYC / Onboarding flows ---------- */}
               <Route
                 path="/onboarding/kyc"
@@ -231,14 +213,6 @@ export default function AppRouter() {
                 element={
                   <RequireAuth>
                     <KycGate />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/onboarding/kyc/start"
-                element={
-                  <RequireAuth>
-                    <KycStart />
                   </RequireAuth>
                 }
               />
@@ -279,10 +253,7 @@ export default function AppRouter() {
               <Route
                 path="/onboarding/partner"
                 element={
-                  <OnboardingGate
-                    wantRole="partner"
-                    alreadyHasRoleTo="/partner"
-                  >
+                  <OnboardingGate wantRole="partner" alreadyHasRoleTo="/partner">
                     <OnboardingPartner />
                   </OnboardingGate>
                 }
@@ -298,7 +269,6 @@ export default function AppRouter() {
                 }
               />
 
-              {/* Legacy / simple chat (if you ever deep-link by user id) */}
               <Route
                 path="/chat"
                 element={
@@ -315,8 +285,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
-              {/* Luxury booking-based chat: host/partner ↔ guest scoped to a booking */}
               <Route
                 path="/booking/:bookingId/chat"
                 element={
@@ -352,7 +320,51 @@ export default function AppRouter() {
                 }
               />
 
-              {/* ---------- Host / Partner tools ---------- */}
+              {/* =========================================================
+                  ✅ POINT 1: ONLY HOST/PARTNER/ADMIN CAN LIST PROPERTIES
+                  ========================================================= */}
+
+              {/* Legacy "post" route now gated (prevents guests bypassing onboarding) */}
+              <Route
+                path="/post"
+                element={
+                  <RequireAuth>
+                    <RequireKycApproved>
+                      <RequireRole roles={["host", "partner", "admin"]}>
+                        <PostAdRouter />
+                      </RequireRole>
+                    </RequireKycApproved>
+                  </RequireAuth>
+                }
+              />
+
+              {/* Listing create / edit now gated */}
+              <Route
+                path="/post/new"
+                element={
+                  <RequireAuth>
+                    <RequireKycApproved>
+                      <RequireRole roles={["host", "partner", "admin"]}>
+                        <CreateListing />
+                      </RequireRole>
+                    </RequireKycApproved>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/listing/:id/edit"
+                element={
+                  <RequireAuth>
+                    <RequireKycApproved>
+                      <RequireRole roles={["host", "partner", "admin"]}>
+                        <EditListing />
+                      </RequireRole>
+                    </RequireKycApproved>
+                  </RequireAuth>
+                }
+              />
+
+              {/* ---------- Host / Partner dashboards & tools ---------- */}
               <Route
                 path="/host"
                 element={
@@ -377,11 +389,16 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
+
               <Route
                 path="/host-reservations"
                 element={
                   <RequireAuth>
-                    <HostReservationsPage />
+                    <RequireKycApproved>
+                      <RequireRole roles={["host", "admin"]}>
+                        <HostReservationsPage />
+                      </RequireRole>
+                    </RequireKycApproved>
                   </RequireAuth>
                 }
               />
@@ -389,39 +406,44 @@ export default function AppRouter() {
                 path="/reservations"
                 element={
                   <RequireAuth>
-                    <PartnerReservationsPage />
+                    <RequireKycApproved>
+                      <RequireRole roles={["partner", "admin"]}>
+                        <PartnerReservationsPage />
+                      </RequireRole>
+                    </RequireKycApproved>
                   </RequireAuth>
                 }
               />
-              <Route 
-                path="/withdrawals" 
+
+              <Route
+                path="/withdrawals"
                 element={
                   <RequireAuth>
-                    <Withdrawals />
+                    <RequireKycApproved>
+                      <RequireRole roles={["host", "partner", "admin"]}>
+                        <Withdrawals />
+                      </RequireRole>
+                    </RequireKycApproved>
                   </RequireAuth>
-                } 
+                }
               />
 
-              {/* ✅ Unified listings / portfolio for BOTH host & partner */}
               <Route
                 path="/manage-listings"
                 element={
                   <RequireAuth>
                     <RequireKycApproved>
-                      <ManageMyListings />
+                      <RequireRole roles={["host", "partner", "admin"]}>
+                        <ManageMyListings />
+                      </RequireRole>
                     </RequireKycApproved>
                   </RequireAuth>
                 }
               />
+
               {/* Backwards-compat: old URLs now redirect to the unified page */}
-              <Route
-                path="/host-listings"
-                element={<Navigate to="/manage-listings" replace />}
-              />
-              <Route
-                path="/partner-listings"
-                element={<Navigate to="/manage-listings" replace />}
-              />
+              <Route path="/host-listings" element={<Navigate to="/manage-listings" replace />} />
+              <Route path="/partner-listings" element={<Navigate to="/manage-listings" replace />} />
 
               {/* ---------- Admin (new consolidated) ---------- */}
               <Route
@@ -432,8 +454,6 @@ export default function AppRouter() {
                   </RequireAdmin>
                 }
               />
-
-              {/* ---------- Admin (backward compat — /admin) ---------- */}
               <Route
                 path="/admin"
                 element={

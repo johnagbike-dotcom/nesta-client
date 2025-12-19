@@ -10,6 +10,7 @@ import {
   doc,
   serverTimestamp,
   addDoc,
+  setDoc,
 } from "firebase/firestore";
 import { ref, listAll, getDownloadURL } from "firebase/storage";
 
@@ -188,16 +189,41 @@ function Modal({ open, onClose, title, children }) {
   );
 }
 
+/* -------------------- Storage docs loader -------------------- */
+async function listDocsForPossibleKeys(storage, possibleKeys = []) {
+  const tried = [];
+  for (const key of possibleKeys) {
+    const k = String(key || "").trim();
+    if (!k) continue;
+
+    const p = `kyc/${k}`;
+    tried.push(p);
+
+    const baseRef = ref(storage, p);
+    const res = await listAll(baseRef);
+
+    if (res?.items?.length) {
+      const items = await Promise.all(
+        res.items.map(async (it) => ({
+          name: it.name,
+          url: await getDownloadURL(it),
+        }))
+      );
+      return { items, path: p, tried };
+    }
+  }
+  return { items: [], path: "", tried };
+}
+
 /* ═══════════════════ Onboarding Queue (admin) ═══════════════════ */
 export default function OnboardingQueue() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [blockedMsg, setBlockedMsg] = useState("");
-  const [tab, setTab] = useState("all"); // all|PENDING|APPROVED|REJECTED|MORE_INFO_REQUIRED
-  const [typeTab, setTypeTab] = useState("all"); // all|host|partner
+  const [tab, setTab] = useState("all");
+  const [typeTab, setTypeTab] = useState("all");
   const [q, setQ] = useState("");
 
-  // review modal
   const [revOpen, setRevOpen] = useState(false);
   const [revRow, setRevRow] = useState(null);
 
@@ -210,18 +236,17 @@ export default function OnboardingQueue() {
     setLoading(true);
     setBlockedMsg("");
     try {
-      const base = collection(db, "onboarding");
-      const snap = await getDocs(base);
+      const snap = await getDocs(collection(db, "onboarding"));
 
       const list = [];
       snap.forEach((d) => {
         const x = d.data() || {};
         list.push({
           id: d.id,
-          userId: x.userId || x.uid || d.id, // 🔧 include uid fallback
+          userId: x.userId || x.uid || d.id,
           uid: x.uid || x.userId || null,
           email: x.email || "",
-          type: x.type || "host",
+          type: x.type || "host", // "host" | "partner"
           status: x.status || "PENDING",
           submittedAt: x.submittedAt?.toDate?.() || null,
           reviewedAt: x.reviewedAt?.toDate?.() || null,
@@ -229,7 +254,6 @@ export default function OnboardingQueue() {
           requiredDocuments: Array.isArray(x.requiredDocuments)
             ? x.requiredDocuments
             : [],
-          // optional debug fields
           _raw: x,
         });
       });
@@ -239,7 +263,6 @@ export default function OnboardingQueue() {
           (b.submittedAt ? +b.submittedAt : 0) -
           (a.submittedAt ? +a.submittedAt : 0)
       );
-
       setRows(list);
     } catch (e) {
       const msg = String(e?.message || e);
@@ -297,33 +320,6 @@ export default function OnboardingQueue() {
     return c;
   }, [rows]);
 
-  /* -------------------- Storage docs loader (FIXED) -------------------- */
-  async function listDocsForPossibleKeys(possibleKeys = []) {
-    const tried = [];
-    for (const key of possibleKeys) {
-      const k = String(key || "").trim();
-      if (!k) continue;
-      const p = `kyc/${k}`;
-      tried.push(p);
-
-      const baseRef = ref(storage, p);
-
-      // listAll returns { items: [] } even if folder empty
-      const res = await listAll(baseRef);
-
-      if (res?.items?.length) {
-        const items = await Promise.all(
-          res.items.map(async (it) => ({
-            name: it.name,
-            url: await getDownloadURL(it),
-          }))
-        );
-        return { items, path: p, tried };
-      }
-    }
-    return { items: [], path: "", tried };
-  }
-
   const openReview = async (r) => {
     setRevRow(r);
     setRevOpen(true);
@@ -334,16 +330,18 @@ export default function OnboardingQueue() {
     setDocsLoading(true);
 
     try {
-      // 🔧 IMPORTANT: try multiple keys because your Storage UID != onboarding userId sometimes
       const possibleKeys = [
         r.userId,
         r.uid,
-        r.id, // onboarding doc id sometimes equals uid
+        r.id,
         r._raw?.firebaseUid,
         r._raw?.userUID,
       ].filter(Boolean);
 
-      const { items, path, tried } = await listDocsForPossibleKeys(possibleKeys);
+      const { items, path, tried } = await listDocsForPossibleKeys(
+        storage,
+        possibleKeys
+      );
 
       if (items.length) {
         setDocs(items);
@@ -355,7 +353,6 @@ export default function OnboardingQueue() {
       }
     } catch (e) {
       const msg = String(e?.message || e);
-      // Permission error is common with Storage rules
       if (/storage\/unauthorized|permission|unauthorized/i.test(msg)) {
         setDocsError(
           "Storage access denied by rules. Allow admins to read the kyc/* path, or use a Cloud Function to proxy access."
@@ -377,50 +374,91 @@ export default function OnboardingQueue() {
     setStoragePathUsed("");
   };
 
-  // core writer – APPROVE / REJECT / MORE_INFO_REQUIRED
+  // ✅ This is the IMPORTANT FIX:
+  // When APPROVED, also promote user role + mark kycProfiles status.
   const setStatus = async (row, next, reason = "", requiredDocs = []) => {
-    if (!row?.userId || !row?.id) return;
+    if (!row?.id) return;
+
+    const nextUpper = String(next || "PENDING").toUpperCase();
+    const userKey = row.uid || row.userId || row.id; // safest
 
     try {
-      const refDoc = doc(db, "onboarding", row.id);
-
-      await updateDoc(refDoc, {
-        status: next,
+      // 1) update onboarding queue row
+      await updateDoc(doc(db, "onboarding", row.id), {
+        status: nextUpper,
         reviewedAt: serverTimestamp(),
         adminNote: reason || null,
         requiredDocuments: requiredDocs.length ? requiredDocs : null,
       });
 
+      // 2) audit trail
       await addDoc(collection(db, "onboarding", row.id, "audits"), {
-        action: next,
+        action: nextUpper,
         reason: reason || null,
         requiredDocuments: requiredDocs.length ? requiredDocs : null,
         reviewedAt: serverTimestamp(),
       });
 
-      // mirror into users/{uid}
-      try {
-        // Prefer uid if present; fallback to userId
-        const userKey = row.uid || row.userId;
-        await updateDoc(doc(db, "users", userKey), {
-          kycStatus: next.toLowerCase(),
-          kyc: {
-            status: next.toLowerCase(),
-            reviewedAt: serverTimestamp(),
-            reason: reason || null,
-            requiredDocuments: requiredDocs.length ? requiredDocs : null,
-          },
-        });
-      } catch {
-        // ignore if user doc missing
+      // 3) update kycProfiles/{uid} so the user page shows correct final status
+      //    (if doc exists; setDoc merge won't fail if it doesn't)
+      await setDoc(
+        doc(db, "kycProfiles", userKey),
+        {
+          status:
+            nextUpper === "APPROVED"
+              ? "APPROVED"
+              : nextUpper === "REJECTED"
+              ? "REJECTED"
+              : nextUpper === "MORE_INFO_REQUIRED"
+              ? "MORE_INFO_REQUIRED"
+              : "PENDING",
+          reviewedAt: serverTimestamp(),
+          adminNote: reason || null,
+          requiredDocuments: requiredDocs.length ? requiredDocs : null,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // 4) mirror into users/{uid} for gating + ROLE PROMOTION
+      //    This is what makes them stop being "guest"
+      const roleToSet =
+        row.type === "partner" ? "verified_partner" : "verified_host";
+
+      const kycLower =
+        nextUpper === "APPROVED"
+          ? "approved"
+          : nextUpper === "REJECTED"
+          ? "rejected"
+          : nextUpper === "MORE_INFO_REQUIRED"
+          ? "more_info_required"
+          : "pending";
+
+      const userPatch = {
+        kycStatus: kycLower,
+        kyc: {
+          status: kycLower,
+          reviewedAt: serverTimestamp(),
+          reason: reason || null,
+          requiredDocuments: requiredDocs.length ? requiredDocs : null,
+        },
+        updatedAt: serverTimestamp(),
+      };
+
+      // Only promote role on APPROVED
+      if (nextUpper === "APPROVED") {
+        userPatch.role = roleToSet;
       }
 
+      await setDoc(doc(db, "users", userKey), userPatch, { merge: true });
+
+      // local UI update
       setRows((prev) =>
         prev.map((x) =>
           x.id === row.id
             ? {
                 ...x,
-                status: next,
+                status: nextUpper,
                 adminNote: reason || x.adminNote,
                 requiredDocuments: requiredDocs.length
                   ? requiredDocs
@@ -429,6 +467,7 @@ export default function OnboardingQueue() {
             : x
         )
       );
+
       closeReview();
     } catch (e) {
       alert("Could not update status: " + (e?.message || e));
@@ -484,7 +523,10 @@ export default function OnboardingQueue() {
           { k: "PENDING", label: `Pending ${counts.PENDING}` },
           { k: "APPROVED", label: `Approved ${counts.APPROVED}` },
           { k: "REJECTED", label: `Rejected ${counts.REJECTED}` },
-          { k: "MORE_INFO_REQUIRED", label: `More info ${counts.MORE_INFO_REQUIRED}` },
+          {
+            k: "MORE_INFO_REQUIRED",
+            label: `More info ${counts.MORE_INFO_REQUIRED}`,
+          },
         ].map((x) => (
           <button
             key={x.k}
@@ -518,7 +560,8 @@ export default function OnboardingQueue() {
               padding: "12px 16px",
               borderRadius: 14,
               border: "1px solid rgba(255,255,255,.12)",
-              background: typeTab === x.k ? "#413cff" : "rgba(255,255,255,.06)",
+              background:
+                typeTab === x.k ? "#413cff" : "rgba(255,255,255,.06)",
               color: typeTab === x.k ? "#eef2ff" : "#cfd3da",
               fontWeight: 900,
               cursor: "pointer",
@@ -604,7 +647,10 @@ export default function OnboardingQueue() {
               >
                 {["Type", "Email", "User", "Status", "Submitted", "Actions"].map(
                   (h) => (
-                    <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
+                    <th
+                      key={h}
+                      style={{ padding: "14px 16px", whiteSpace: "nowrap" }}
+                    >
                       {h}
                     </th>
                   )
@@ -631,26 +677,47 @@ export default function OnboardingQueue() {
               {!loading &&
                 filtered.map((r) => (
                   <tr key={r.id}>
-                    <td style={{ padding: "12px 16px", textTransform: "capitalize" }}>
+                    <td
+                      style={{
+                        padding: "12px 16px",
+                        textTransform: "capitalize",
+                      }}
+                    >
                       {r.type}
                     </td>
-                    <td style={{ padding: "12px 16px" }}>{r.email || "—"}</td>
-                    <td style={{ padding: "12px 16px" }}>{r.userId || r.uid || "—"}</td>
                     <td style={{ padding: "12px 16px" }}>
-                      <StatusPill value={(r.status || "PENDING").toUpperCase()} />
+                      {r.email || "—"}
                     </td>
                     <td style={{ padding: "12px 16px" }}>
-                      {r.submittedAt ? dayjs(r.submittedAt).format("YYYY-MM-DD HH:mm") : "—"}
+                      {r.userId || r.uid || "—"}
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <StatusPill
+                        value={(r.status || "PENDING").toUpperCase()}
+                      />
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      {r.submittedAt
+                        ? dayjs(r.submittedAt).format("YYYY-MM-DD HH:mm")
+                        : "—"}
                     </td>
                     <td style={{ padding: "12px 16px" }}>
                       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                         {String(r.status).toUpperCase() !== "APPROVED" && (
-                          <LuxeBtn kind="emerald" small onClick={() => setStatus(r, "APPROVED")}>
+                          <LuxeBtn
+                            kind="emerald"
+                            small
+                            onClick={() => setStatus(r, "APPROVED")}
+                          >
                             Approve
                           </LuxeBtn>
                         )}
                         {String(r.status).toUpperCase() !== "REJECTED" && (
-                          <LuxeBtn kind="ruby" small onClick={() => setStatus(r, "REJECTED")}>
+                          <LuxeBtn
+                            kind="ruby"
+                            small
+                            onClick={() => setStatus(r, "REJECTED")}
+                          >
                             Reject
                           </LuxeBtn>
                         )}
@@ -658,7 +725,11 @@ export default function OnboardingQueue() {
                           Review
                         </LuxeBtn>
                         {String(r.status).toUpperCase() !== "APPROVED" && (
-                          <LuxeBtn kind="slate" small onClick={() => handleMoreInfo(r)}>
+                          <LuxeBtn
+                            kind="slate"
+                            small
+                            onClick={() => handleMoreInfo(r)}
+                          >
                             More info
                           </LuxeBtn>
                         )}
@@ -675,7 +746,13 @@ export default function OnboardingQueue() {
       <Modal open={revOpen} onClose={closeReview} title="KYC review">
         {!revRow ? null : (
           <div style={{ display: "grid", gap: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 8 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "160px 1fr",
+                gap: 8,
+              }}
+            >
               <div className="muted">Type</div>
               <div style={{ textTransform: "capitalize" }}>{revRow.type}</div>
 
@@ -690,7 +767,9 @@ export default function OnboardingQueue() {
 
               <div className="muted">Submitted</div>
               <div>
-                {revRow.submittedAt ? dayjs(revRow.submittedAt).format("YYYY-MM-DD HH:mm") : "—"}
+                {revRow.submittedAt
+                  ? dayjs(revRow.submittedAt).format("YYYY-MM-DD HH:mm")
+                  : "—"}
               </div>
 
               {revRow.adminNote ? (
@@ -700,7 +779,8 @@ export default function OnboardingQueue() {
                 </>
               ) : null}
 
-              {Array.isArray(revRow.requiredDocuments) && revRow.requiredDocuments.length ? (
+              {Array.isArray(revRow.requiredDocuments) &&
+              revRow.requiredDocuments.length ? (
                 <>
                   <div className="muted">Requested docs</div>
                   <div>{revRow.requiredDocuments.join(", ")}</div>
@@ -708,7 +788,12 @@ export default function OnboardingQueue() {
               ) : null}
             </div>
 
-            <div style={{ borderTop: "1px solid rgba(255,255,255,.08)", paddingTop: 10 }}>
+            <div
+              style={{
+                borderTop: "1px solid rgba(255,255,255,.08)",
+                paddingTop: 10,
+              }}
+            >
               <div style={{ fontWeight: 800, marginBottom: 8 }}>Documents</div>
 
               {docsLoading ? (
@@ -727,19 +812,18 @@ export default function OnboardingQueue() {
                   {docsError}
                   {storagePathUsed ? (
                     <div style={{ marginTop: 8, fontWeight: 600, opacity: 0.85 }}>
-                      Paths tried: <code style={{ opacity: 0.95 }}>{storagePathUsed}</code>
+                      Paths tried:{" "}
+                      <code style={{ opacity: 0.95 }}>{storagePathUsed}</code>
                     </div>
                   ) : null}
                 </div>
               ) : docs.length === 0 ? (
                 <div className="muted">
-                  No files found. (If you can see files in Firebase Console, it’s almost always a UID/path mismatch.)
+                  No files found.
                   {storagePathUsed ? (
-                    <>
-                      <div style={{ marginTop: 8 }}>
-                        Path used: <code> {storagePathUsed} </code>
-                      </div>
-                    </>
+                    <div style={{ marginTop: 8 }}>
+                      Path used: <code> {storagePathUsed} </code>
+                    </div>
                   ) : null}
                 </div>
               ) : (
@@ -751,7 +835,8 @@ export default function OnboardingQueue() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))",
+                      gridTemplateColumns:
+                        "repeat(auto-fill,minmax(220px,1fr))",
                       gap: 10,
                     }}
                   >
@@ -790,7 +875,9 @@ export default function OnboardingQueue() {
                             borderRadius: 10,
                           }}
                         >
-                          <span style={{ fontSize: 12, opacity: 0.7 }}>Open</span>
+                          <span style={{ fontSize: 12, opacity: 0.7 }}>
+                            Open
+                          </span>
                         </div>
                       </a>
                     ))}
@@ -799,7 +886,14 @@ export default function OnboardingQueue() {
               )}
             </div>
 
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                justifyContent: "flex-end",
+                marginTop: 6,
+              }}
+            >
               <LuxeBtn onClick={closeReview}>Close</LuxeBtn>
               <LuxeBtn kind="emerald" onClick={() => setStatus(revRow, "APPROVED")}>
                 Approve
