@@ -4,16 +4,20 @@ import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { storage } from "../firebase";
 
 /**
- * ImageUploader (reliable + admin-grade UX)
- * - Uploads to Firebase Storage
- * - Returns array of URL strings (compatible with CreateListing)
- * - Shows progress + errors (prevents "nothing happens" confusion)
+ * ImageUploader (Nesta)
+ * ✅ Matches your Storage rules:
+ *   - path: listing-images/{userId}/...
+ *   - write: only if request.auth.uid == {userId}
+ *   - max: < 10MB
+ *   - contentType: image/*
+ *
+ * Returns: array of URL strings
  */
 
-const MAX_MB = 15; // adjust if you want
+const MAX_MB = 10; // MUST match Storage rules underMax10MB()
 const MAX_BYTES = MAX_MB * 1024 * 1024;
 
-function safeName(name = "photo") {
+function safeName(name = "photo.jpg") {
   return String(name)
     .trim()
     .replace(/\s+/g, "_")
@@ -22,33 +26,47 @@ function safeName(name = "photo") {
 
 function friendlyFirebaseError(err) {
   const code = err?.code || "";
-  const msg = err?.message || "";
+  const msg = String(err?.message || "");
 
   if (code.includes("storage/unauthorized") || msg.toLowerCase().includes("permission")) {
-    return "Upload blocked by Storage permissions. Check Firebase Storage rules (unauthorized).";
+    return "Upload blocked by Storage permissions (unauthorized). Make sure you are signed in and your Storage rules allow this path.";
   }
   if (code.includes("storage/canceled")) return "Upload cancelled.";
   if (code.includes("storage/retry-limit-exceeded")) return "Network issue. Please retry.";
-  if (code.includes("storage/unknown")) return "Unknown upload error. Please retry.";
+  if (code.includes("storage/quota-exceeded")) return "Storage quota exceeded. Please contact support.";
   return msg || "Upload failed.";
 }
 
-function isImageLike(file) {
+/**
+ * Your rules require request.resource.contentType matches image/.*
+ * So we MUST ensure the upload metadata contentType is image/* (never octet-stream).
+ */
+function guessImageContentType(file) {
   const t = String(file?.type || "").toLowerCase();
-  // allow typical images + HEIC/HEIF (often empty type on some phones)
+  if (t.startsWith("image/")) return t;
+
+  const name = String(file?.name || "").toLowerCase();
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".heic")) return "image/heic";
+  if (name.endsWith(".heif")) return "image/heif";
+  if (name.endsWith(".bmp")) return "image/bmp";
+  // default for jpg/jpeg or unknown image extension
+  return "image/jpeg";
+}
+
+function isProbablyImage(file) {
+  // Some phones send empty type. We'll allow it and rely on extension + contentType we set.
+  const t = String(file?.type || "").toLowerCase();
   if (!t) return true;
-  return (
-    t.startsWith("image/") ||
-    t === "image/heic" ||
-    t === "image/heif" ||
-    t === "application/octet-stream"
-  );
+  return t.startsWith("image/");
 }
 
 export default function ImageUploader({
   value = [],
   onChange,
-  folder = "listing-images",
+  userId, // ✅ REQUIRED for rules match: listing-images/{userId}/...
   disabled = false,
   maxFiles = 20,
 }) {
@@ -56,25 +74,31 @@ export default function ImageUploader({
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [queue, setQueue] = useState([]); // [{id,name,pct,status}]
 
-  // queue: [{id,name,pct,status}]
-  const [queue, setQueue] = useState([]);
+  const urls = Array.isArray(value) ? value : [];
+  const currentCount = urls.length;
 
-  const currentCount = Array.isArray(value) ? value.length : 0;
-  const canPick = !disabled && !busy && currentCount < maxFiles;
+  const canPick = !disabled && !busy && currentCount < maxFiles && !!userId;
 
   const pickLabel = useMemo(() => {
+    if (!userId) return "Sign in to upload";
     if (disabled) return "Uploads disabled";
     if (busy) return "Uploading…";
     if (currentCount >= maxFiles) return `Max ${maxFiles} photos reached`;
     return "Upload";
-  }, [disabled, busy, currentCount, maxFiles]);
+  }, [userId, disabled, busy, currentCount, maxFiles]);
 
   async function handleFiles(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
 
     setError("");
+
+    if (!userId) {
+      setError("You must be signed in to upload photos.");
+      return;
+    }
 
     // enforce max count
     const remaining = Math.max(0, maxFiles - currentCount);
@@ -89,25 +113,30 @@ export default function ImageUploader({
 
     try {
       for (const file of picked) {
-        if (!isImageLike(file)) {
+        if (!isProbablyImage(file)) {
           setError("Only image files are allowed.");
           continue;
         }
-        if (file.size > MAX_BYTES) {
-          setError(`One file is too large. Max is ${MAX_MB}MB per image.`);
+
+        if (file.size >= MAX_BYTES) {
+          setError(`One file is too large. Max is ${MAX_MB}MB per image (per Storage rules).`);
           continue;
         }
 
         const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
         const clean = safeName(file.name || "photo.jpg");
-        const path = `${folder}/${id}_${clean}`;
+
+        // ✅ MUST match rules:
+        // match /listing-images/{userId}/{allPaths=**}
+        const path = `listing-images/${userId}/${id}_${clean}`;
 
         setQueue((q) => [...q, { id, name: file.name || clean, pct: 0, status: "uploading" }]);
 
         const storageRef = ref(storage, path);
 
+        // ✅ Force image/* contentType (rules require image/.*)
         const task = uploadBytesResumable(storageRef, file, {
-          contentType: file.type || "application/octet-stream",
+          contentType: guessImageContentType(file),
         });
 
         await new Promise((resolve, reject) => {
@@ -124,10 +153,10 @@ export default function ImageUploader({
             async () => {
               try {
                 const url = await getDownloadURL(task.snapshot.ref);
-                const next = [...(Array.isArray(value) ? value : []), url];
-                onChange?.(next);
-
-                setQueue((q) => q.map((it) => (it.id === id ? { ...it, pct: 100, status: "done" } : it)));
+                onChange?.([...urls, url]);
+                setQueue((q) =>
+                  q.map((it) => (it.id === id ? { ...it, pct: 100, status: "done" } : it))
+                );
                 resolve();
               } catch (e) {
                 setQueue((q) => q.map((it) => (it.id === id ? { ...it, status: "error" } : it)));
@@ -147,7 +176,7 @@ export default function ImageUploader({
   }
 
   function removeAt(i) {
-    const next = [...(Array.isArray(value) ? value : [])];
+    const next = [...urls];
     next.splice(i, 1);
     onChange?.(next);
   }
@@ -155,7 +184,6 @@ export default function ImageUploader({
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
       <div className="flex items-center gap-3">
-        {/* Keep input visible for desktop usability */}
         <input
           ref={fileInput}
           type="file"
@@ -196,7 +224,11 @@ export default function ImageUploader({
                 <div
                   className={[
                     "text-xs font-semibold",
-                    q.status === "done" ? "text-emerald-300" : q.status === "error" ? "text-red-300" : "text-yellow-300",
+                    q.status === "done"
+                      ? "text-emerald-300"
+                      : q.status === "error"
+                      ? "text-red-300"
+                      : "text-yellow-300",
                   ].join(" ")}
                 >
                   {q.status}
@@ -207,9 +239,9 @@ export default function ImageUploader({
         </div>
       ) : null}
 
-      {Array.isArray(value) && value.length > 0 ? (
+      {urls.length > 0 ? (
         <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-          {value.map((url, i) => (
+          {urls.map((url, i) => (
             <div key={`${url}-${i}`} className="relative rounded-lg overflow-hidden border border-white/10">
               <img src={url} alt={`img-${i}`} className="w-full h-28 object-cover" />
               <button

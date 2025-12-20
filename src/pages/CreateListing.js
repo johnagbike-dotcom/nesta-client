@@ -495,11 +495,11 @@ export default function CreateListing() {
 
         <Section title="Photos" subtitle="Upload bright images that sell the experience.">
   <ImageUploader
-    value={images}
-    onChange={setImages}
-    folder={`users/${user?.uid}/listing-images`}
-    disabled={!user?.uid}
-  />
+  value={images}
+  onChange={setImages}
+  userId={user?.uid}
+  disabled={!user?.uid}
+/>
 </Section>
 
 
