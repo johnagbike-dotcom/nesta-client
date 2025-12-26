@@ -59,6 +59,22 @@ function slugify(s) {
     .replace(/(^-|-$)+/g, "");
 }
 
+/**
+ * ✅ Parses user input like:
+ * "20000" -> 20000
+ * "20,000" -> 20000
+ * " ₦ 20 000 " -> 20000
+ * "" -> 0
+ */
+function parseNaira(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return 0;
+  // keep digits + decimal point only
+  const cleaned = raw.replace(/[^\d.]/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function Section({ title, subtitle, children }) {
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 md:p-5">
@@ -141,6 +157,17 @@ function Toggle({ checked, onChange, label }) {
   );
 }
 
+function CheckRow({ ok, label }) {
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <div className="text-white/80">{label}</div>
+      <div className={ok ? "text-emerald-300 font-semibold" : "text-red-300 font-semibold"}>
+        {ok ? "✓" : "✕"}
+      </div>
+    </div>
+  );
+}
+
 export default function CreateListing() {
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
@@ -182,15 +209,27 @@ export default function CreateListing() {
     setAmenities((prev) => (prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]));
   }
 
+  const parsedPrice = useMemo(() => parseNaira(form.pricePerNight), [form.pricePerNight]);
+
+  // ✅ granular checks (for debugging why Publish is grey)
+  const checks = useMemo(() => {
+    const titleOk = form.title.trim().length >= 5;
+    const cityOk = form.city.trim().length >= 2;
+    const areaOk = form.area.trim().length >= 2;
+
+    // ✅ robust price check (works for 20,000)
+    const priceOk = parsedPrice > 0;
+
+    // ✅ robust photos check (must be non-empty URL strings)
+    const photosOk =
+      Array.isArray(images) && images.filter((u) => typeof u === "string" && u.trim().length > 10).length > 0;
+
+    return { titleOk, cityOk, areaOk, priceOk, photosOk };
+  }, [form, images, parsedPrice]);
+
   const canSubmit = useMemo(() => {
-    return (
-      form.title.trim().length >= 5 &&
-      form.city.trim().length >= 2 &&
-      form.area.trim().length >= 2 &&
-      Number(form.pricePerNight) > 0 &&
-      images.length > 0
-    );
-  }, [form, images.length]);
+    return checks.titleOk && checks.cityOk && checks.areaOk && checks.priceOk && checks.photosOk;
+  }, [checks]);
 
   function keywords(cleanTitle) {
     const bag = [cleanTitle, form.type, form.city, form.area, ...(amenities || [])]
@@ -227,7 +266,7 @@ export default function CreateListing() {
       const cleanDesc = redactContactText(form.description);
       const cleanRules = redactContactText(houseRules);
 
-      const price = Number(form.pricePerNight || 0);
+      const price = parsedPrice; // ✅ use parsed numeric price
       const nowSlug = slugify(`${cleanTitle}-${form.city}-${form.area}`);
 
       const primaryImageUrl = images?.[0] || null;
@@ -255,8 +294,8 @@ export default function CreateListing() {
         type: form.type,
         city: form.city.trim(),
         area: form.area.trim(),
-        neighbourhood: "", // optional
-        address: "", // optional (should be shown only after confirmation in guest flow)
+        neighbourhood: "",
+        address: "",
 
         // Pricing consistency
         pricePerNight: price,
@@ -317,17 +356,14 @@ export default function CreateListing() {
             hostEmail: user.email || profile?.email || "",
             requesterRole: profile?.role || "",
 
-            // Luxury: request starts pending, admin reviews + locks terms later
             status: "pending",
             archived: false,
 
-            // Plan data (default for create; admin can still override when approving)
             planId: DEFAULT_SPOTLIGHT_PLAN.planId,
             planLabel: DEFAULT_SPOTLIGHT_PLAN.planLabel,
             price: DEFAULT_SPOTLIGHT_PLAN.price,
             durationDays: DEFAULT_SPOTLIGHT_PLAN.durationDays,
 
-            // Preview helpers
             primaryImageUrl,
 
             createdAt: serverTimestamp(),
@@ -371,6 +407,34 @@ export default function CreateListing() {
         </div>
       ) : null}
 
+      {/* ✅ Publish checklist (THIS shows why publish button is grey) */}
+      <div className="mt-4 max-w-5xl rounded-2xl border border-white/10 bg-white/5 p-4">
+        <div className="text-sm font-semibold text-white">Publish checklist</div>
+        <div className="mt-3 grid gap-2">
+          <CheckRow ok={checks.titleOk} label="Title at least 5 characters" />
+          <CheckRow ok={checks.cityOk} label="City at least 2 characters" />
+          <CheckRow ok={checks.areaOk} label="Area at least 2 characters" />
+          <CheckRow ok={checks.priceOk} label="Price per night is greater than 0" />
+          <CheckRow
+            ok={checks.photosOk}
+            label={`At least 1 photo uploaded (current: ${Array.isArray(images) ? images.length : 0})`}
+          />
+        </div>
+
+        {!checks.priceOk ? (
+          <div className="mt-3 text-xs text-white/60">
+            Tip: enter price like <span className="text-white/80 font-semibold">20000</span> (commas like{" "}
+            <span className="text-white/80 font-semibold">20,000</span> are allowed now, but avoid currency symbols).
+          </div>
+        ) : null}
+
+        {!checks.photosOk ? (
+          <div className="mt-3 text-xs text-white/60">
+            If photos remain 0 even after selecting images, the uploader may be blocked by Firebase Storage rules or not returning URL strings.
+          </div>
+        ) : null}
+      </div>
+
       <form onSubmit={handleCreate} className="mt-5 grid gap-4 max-w-5xl">
         <Section title="Essentials" subtitle="Core info guests see first.">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -400,14 +464,14 @@ export default function CreateListing() {
               <TextInput value={form.area} onChange={(e) => setField("area", e.target.value)} maxLength={50} />
             </Field>
 
-            <Field label="Price per night (₦)">
+            <Field label="Price per night (₦)" hint="Enter numbers only e.g. 20000 (commas ok too)">
               <TextInput
                 ref={priceFieldRef}
                 inputMode="numeric"
-                type="number"
-                min={0}
+                type="text"
                 value={form.pricePerNight}
                 onChange={(e) => setField("pricePerNight", e.target.value)}
+                placeholder="e.g. 20000 or 20,000"
               />
             </Field>
 
@@ -424,10 +488,22 @@ export default function CreateListing() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Bedrooms">
-              <TextInput inputMode="numeric" type="number" min={0} value={form.bedrooms} onChange={(e) => setField("bedrooms", e.target.value)} />
+              <TextInput
+                inputMode="numeric"
+                type="number"
+                min={0}
+                value={form.bedrooms}
+                onChange={(e) => setField("bedrooms", e.target.value)}
+              />
             </Field>
             <Field label="Bathrooms">
-              <TextInput inputMode="numeric" type="number" min={0} value={form.bathrooms} onChange={(e) => setField("bathrooms", e.target.value)} />
+              <TextInput
+                inputMode="numeric"
+                type="number"
+                min={0}
+                value={form.bathrooms}
+                onChange={(e) => setField("bathrooms", e.target.value)}
+              />
             </Field>
             <Field label="Size (m²)">
               <TextInput placeholder="e.g. 85" value={form.size} onChange={(e) => setField("size", e.target.value)} />
@@ -438,7 +514,11 @@ export default function CreateListing() {
             label="Description"
             hint="Focus on the experience and quality. We automatically remove phone numbers/emails."
           >
-            <TextArea value={form.description} onChange={(e) => setField("description", e.target.value)} maxLength={1000} />
+            <TextArea
+              value={form.description}
+              onChange={(e) => setField("description", e.target.value)}
+              maxLength={1000}
+            />
           </Field>
         </Section>
 
@@ -494,14 +574,8 @@ export default function CreateListing() {
         </Section>
 
         <Section title="Photos" subtitle="Upload bright images that sell the experience.">
-  <ImageUploader
-  value={images}
-  onChange={setImages}
-  userId={user?.uid}
-  disabled={!user?.uid}
-/>
-</Section>
-
+          <ImageUploader value={images} onChange={setImages} userId={user?.uid} disabled={!user?.uid} />
+        </Section>
 
         <Section title="Extras">
           <Field label="House rules (optional)">

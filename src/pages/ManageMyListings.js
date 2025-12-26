@@ -25,6 +25,11 @@ export default function ManageMyListings() {
   useEffect(() => {
     let alive = true;
 
+    async function runQuery(colRef, qref) {
+      const snap = await getDocs(qref);
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    }
+
     async function loadMyListings() {
       if (!user?.uid) {
         if (alive) {
@@ -40,18 +45,66 @@ export default function ManageMyListings() {
         setErr("");
 
         const colRef = collection(db, "listings");
+        let list = [];
 
-        // Hosts matched on ownerId
-        // Partners matched on partnerUid (or partnerId fallback if you add it later)
-        const qref = isPartner
+        // --------------------------
+        // PRIMARY QUERY (your original)
+        // --------------------------
+        const primaryRef = isPartner
           ? query(colRef, where("partnerUid", "==", user.uid), orderBy("createdAt", "desc"))
           : query(colRef, where("ownerId", "==", user.uid), orderBy("createdAt", "desc"));
 
-        const snap = await getDocs(qref);
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        list = await runQuery(colRef, primaryRef);
+
+        // --------------------------
+        // FALLBACKS (only if empty)
+        // --------------------------
+        if (list.length === 0) {
+          if (isPartner) {
+            // fallback 1: partnerId
+            try {
+              const q2 = query(colRef, where("partnerId", "==", user.uid), orderBy("createdAt", "desc"));
+              list = await runQuery(colRef, q2);
+            } catch (e) {
+              // ignore and continue
+            }
+
+            // fallback 2: managers array
+            if (list.length === 0) {
+              try {
+                const q3 = query(colRef, where("managers", "array-contains", user.uid), orderBy("createdAt", "desc"));
+                list = await runQuery(colRef, q3);
+              } catch (e) {
+                // ignore and continue
+              }
+            }
+          } else {
+            // host fallbacks
+            try {
+              const q2 = query(colRef, where("ownerUid", "==", user.uid), orderBy("createdAt", "desc"));
+              list = await runQuery(colRef, q2);
+            } catch (e) {
+              // ignore and continue
+            }
+
+            if (list.length === 0) {
+              try {
+                const q3 = query(colRef, where("hostUid", "==", user.uid), orderBy("createdAt", "desc"));
+                list = await runQuery(colRef, q3);
+              } catch (e) {
+                // ignore and continue
+              }
+            }
+          }
+        }
+
+        // de-dupe by id (in case fallbacks overlap)
+        const map = new Map();
+        list.forEach((x) => map.set(x.id, x));
+        const unique = Array.from(map.values());
 
         if (alive) {
-          setRows(list);
+          setRows(unique);
           setLoading(false);
         }
       } catch (e) {
@@ -97,15 +150,10 @@ export default function ManageMyListings() {
   }, [rows, q, status]);
 
   const heading =
-    isPartner || (!isHost && !isPartner)
-      ? "Your Portfolio Listings"
-      : "Your Managed Listings";
+    isPartner || (!isHost && !isPartner) ? "Your Portfolio Listings" : "Your Managed Listings";
 
   return (
-    <main
-      className="container mx-auto px-4 py-6 text-white"
-      style={{ paddingTop: 96 }} // ✅ fixes fixed header overlap
-    >
+    <main className="container mx-auto px-4 py-6 text-white" style={{ paddingTop: 96 }}>
       <button
         className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
         onClick={() => navigate(-1)}
@@ -168,16 +216,11 @@ export default function ManageMyListings() {
         ) : (
           <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((l) => (
-              <li
-                key={l.id}
-                className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden"
-              >
+              <li key={l.id} className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
                 <div className="h-36 bg-white/5 border-b border-white/10" />
                 <div className="p-4">
                   <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-lg flex-1 truncate">
-                      {l.title || "Untitled"}
-                    </h3>
+                    <h3 className="font-semibold text-lg flex-1 truncate">{l.title || "Untitled"}</h3>
                     <span className="text-[11px] px-2 py-0.5 rounded-md border border-white/15 text-white/70 capitalize">
                       {l.status || "active"}
                     </span>
@@ -186,10 +229,7 @@ export default function ManageMyListings() {
                   <div className="text-white/70 mt-1">
                     {l.city || "—"} • {l.area || "—"}
                     {typeof l.pricePerNight === "number" ? (
-                      <>
-                        {" "}
-                        • ₦{Number(l.pricePerNight).toLocaleString()}/night
-                      </>
+                      <> • ₦{Number(l.pricePerNight).toLocaleString()}/night</>
                     ) : null}
                   </div>
 

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NestaNg</string>
+    <string name="title_activity_main">NestaNg</string>
+    <string name="package_name">com.nestanaija.app</string>
+    <string name="custom_url_scheme">com.nestanaija.app</string>
+</resources>

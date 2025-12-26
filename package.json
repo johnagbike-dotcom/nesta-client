@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
     "@paystack/inline-js": "^2.22.7",
     "@tailwindcss/cli": "^4.1.12",
     "@testing-library/dom": "^10.4.1",
@@ -54,6 +56,7 @@
     ]
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.0.0",
     "@tailwindcss/forms": "^0.5.10",
     "@tailwindcss/postcss": "^4.1.13",
     "ajv": "^6.12.6",

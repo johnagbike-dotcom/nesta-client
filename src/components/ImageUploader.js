@@ -1,5 +1,5 @@
 // src/components/ImageUploader.js
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { storage } from "../firebase";
 
@@ -63,6 +63,31 @@ function isProbablyImage(file) {
   return t.startsWith("image/");
 }
 
+/**
+ * Append helper:
+ * - If parent passed setState (e.g. setImages), it supports functional updates.
+ * - If parent passed a normal function expecting an array, we still support it.
+ */
+function appendUrl(onChange, url, fallbackArray = []) {
+  if (typeof onChange !== "function") return;
+
+  // Try functional update (works with React setState)
+  try {
+    onChange((prev) => {
+      const base = Array.isArray(prev) ? prev : fallbackArray;
+      // Avoid accidental duplicates
+      if (base.includes(url)) return base;
+      return [...base, url];
+    });
+    return;
+  } catch {
+    // Fallback: direct array update
+  }
+
+  const base = Array.isArray(fallbackArray) ? fallbackArray : [];
+  if (!base.includes(url)) onChange([...base, url]);
+}
+
 export default function ImageUploader({
   value = [],
   onChange,
@@ -76,9 +101,14 @@ export default function ImageUploader({
   const [error, setError] = useState("");
   const [queue, setQueue] = useState([]); // [{id,name,pct,status}]
 
+  // Keep latest urls in a ref to avoid stale-closure issues
   const urls = Array.isArray(value) ? value : [];
-  const currentCount = urls.length;
+  const urlsRef = useRef(urls);
+  useEffect(() => {
+    urlsRef.current = Array.isArray(value) ? value : [];
+  }, [value]);
 
+  const currentCount = urls.length;
   const canPick = !disabled && !busy && currentCount < maxFiles && !!userId;
 
   const pickLabel = useMemo(() => {
@@ -88,6 +118,59 @@ export default function ImageUploader({
     if (currentCount >= maxFiles) return `Max ${maxFiles} photos reached`;
     return "Upload";
   }, [userId, disabled, busy, currentCount, maxFiles]);
+
+  // Upload ONE file (moved out of the loop logic so ESLint no-loop-func is gone)
+  const uploadOne = async (file) => {
+    if (!userId) throw new Error("Missing userId (must be signed in).");
+
+    if (!isProbablyImage(file)) {
+      throw new Error("Only image files are allowed.");
+    }
+
+    if (file.size >= MAX_BYTES) {
+      throw new Error(`One file is too large. Max is ${MAX_MB}MB per image (per Storage rules).`);
+    }
+
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const clean = safeName(file.name || "photo.jpg");
+
+    // ✅ MUST match rules:
+    // match /listing-images/{userId}/{allPaths=**}
+    const path = `listing-images/${userId}/${id}_${clean}`;
+    const storageRef = ref(storage, path);
+
+    setQueue((q) => [...q, { id, name: file.name || clean, pct: 0, status: "uploading" }]);
+
+    const task = uploadBytesResumable(storageRef, file, {
+      contentType: guessImageContentType(file), // ✅ Force image/* contentType
+    });
+
+    const url = await new Promise((resolve, reject) => {
+      task.on(
+        "state_changed",
+        (snap) => {
+          const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+          setQueue((q) => q.map((it) => (it.id === id ? { ...it, pct } : it)));
+        },
+        (err) => {
+          setQueue((q) => q.map((it) => (it.id === id ? { ...it, status: "error" } : it)));
+          reject(err);
+        },
+        async () => {
+          try {
+            const downloadUrl = await getDownloadURL(task.snapshot.ref);
+            setQueue((q) => q.map((it) => (it.id === id ? { ...it, pct: 100, status: "done" } : it)));
+            resolve(downloadUrl);
+          } catch (e) {
+            setQueue((q) => q.map((it) => (it.id === id ? { ...it, status: "error" } : it)));
+            reject(e);
+          }
+        }
+      );
+    });
+
+    return url;
+  };
 
   async function handleFiles(fileList) {
     const files = Array.from(fileList || []);
@@ -101,11 +184,12 @@ export default function ImageUploader({
     }
 
     // enforce max count
-    const remaining = Math.max(0, maxFiles - currentCount);
+    const latestUrls = urlsRef.current || [];
+    const remaining = Math.max(0, maxFiles - latestUrls.length);
     const picked = files.slice(0, remaining);
 
     if (!picked.length) {
-      setError(`You already have ${currentCount} photos. Remove one to upload more.`);
+      setError(`You already have ${latestUrls.length} photos. Remove one to upload more.`);
       return;
     }
 
@@ -113,58 +197,20 @@ export default function ImageUploader({
 
     try {
       for (const file of picked) {
-        if (!isProbablyImage(file)) {
-          setError("Only image files are allowed.");
-          continue;
+        try {
+          const downloadUrl = await uploadOne(file);
+
+          // ✅ Always append against the latest value (prevents stale closure issues)
+          appendUrl(onChange, downloadUrl, urlsRef.current);
+
+          // update ref immediately so next upload sees latest array even before parent rerender
+          urlsRef.current = Array.isArray(urlsRef.current)
+            ? (urlsRef.current.includes(downloadUrl) ? urlsRef.current : [...urlsRef.current, downloadUrl])
+            : [downloadUrl];
+        } catch (oneErr) {
+          console.error("[ImageUploader] single upload failed:", oneErr);
+          setError(oneErr?.message ? String(oneErr.message) : friendlyFirebaseError(oneErr));
         }
-
-        if (file.size >= MAX_BYTES) {
-          setError(`One file is too large. Max is ${MAX_MB}MB per image (per Storage rules).`);
-          continue;
-        }
-
-        const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        const clean = safeName(file.name || "photo.jpg");
-
-        // ✅ MUST match rules:
-        // match /listing-images/{userId}/{allPaths=**}
-        const path = `listing-images/${userId}/${id}_${clean}`;
-
-        setQueue((q) => [...q, { id, name: file.name || clean, pct: 0, status: "uploading" }]);
-
-        const storageRef = ref(storage, path);
-
-        // ✅ Force image/* contentType (rules require image/.*)
-        const task = uploadBytesResumable(storageRef, file, {
-          contentType: guessImageContentType(file),
-        });
-
-        await new Promise((resolve, reject) => {
-          task.on(
-            "state_changed",
-            (snap) => {
-              const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
-              setQueue((q) => q.map((it) => (it.id === id ? { ...it, pct } : it)));
-            },
-            (err) => {
-              setQueue((q) => q.map((it) => (it.id === id ? { ...it, status: "error" } : it)));
-              reject(err);
-            },
-            async () => {
-              try {
-                const url = await getDownloadURL(task.snapshot.ref);
-                onChange?.([...urls, url]);
-                setQueue((q) =>
-                  q.map((it) => (it.id === id ? { ...it, pct: 100, status: "done" } : it))
-                );
-                resolve();
-              } catch (e) {
-                setQueue((q) => q.map((it) => (it.id === id ? { ...it, status: "error" } : it)));
-                reject(e);
-              }
-            }
-          );
-        });
       }
     } catch (err) {
       console.error("[ImageUploader] upload failed:", err);
@@ -176,8 +222,9 @@ export default function ImageUploader({
   }
 
   function removeAt(i) {
-    const next = [...urls];
+    const next = [...(urlsRef.current || [])];
     next.splice(i, 1);
+    urlsRef.current = next;
     onChange?.(next);
   }
 
