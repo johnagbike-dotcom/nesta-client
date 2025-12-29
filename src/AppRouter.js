@@ -120,7 +120,10 @@ export default function AppRouter() {
               <Route path="/help" element={<HelpPage />} />
               <Route path="/terms" element={<Terms />} />
               <Route path="/privacy" element={<Privacy />} />
-              <Route path="/cancellation-policy" element={<CancellationPolicyPage />} />
+              <Route
+                path="/cancellation-policy"
+                element={<CancellationPolicyPage />}
+              />
               <Route path="/complaints" element={<ComplaintsPage />} />
               <Route path="/trust-and-safety" element={<TrustSafetyPage />} />
               <Route path="/security" element={<SecurityPage />} />
@@ -268,7 +271,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
               <Route
                 path="/chat"
                 element={
@@ -311,6 +313,8 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
+
+              {/* ✅ Favourites / Wishlist (aliases) */}
               <Route
                 path="/favourites"
                 element={
@@ -319,12 +323,13 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
+              <Route path="/wishlist" element={<Navigate to="/favourites" replace />} />
+              <Route path="/favorites" element={<Navigate to="/favourites" replace />} />
 
               {/* =========================================================
-                  ✅ POINT 1: ONLY HOST/PARTNER/ADMIN CAN LIST PROPERTIES
+                  ✅ ONLY HOST/PARTNER/ADMIN CAN LIST PROPERTIES
                   ========================================================= */}
 
-              {/* Legacy "post" route now gated (prevents guests bypassing onboarding) */}
               <Route
                 path="/post"
                 element={
@@ -338,7 +343,6 @@ export default function AppRouter() {
                 }
               />
 
-              {/* Listing create / edit now gated */}
               <Route
                 path="/post/new"
                 element={
@@ -441,11 +445,16 @@ export default function AppRouter() {
                 }
               />
 
-              {/* Backwards-compat: old URLs now redirect to the unified page */}
-              <Route path="/host-listings" element={<Navigate to="/manage-listings" replace />} />
-              <Route path="/partner-listings" element={<Navigate to="/manage-listings" replace />} />
+              <Route
+                path="/host-listings"
+                element={<Navigate to="/manage-listings" replace />}
+              />
+              <Route
+                path="/partner-listings"
+                element={<Navigate to="/manage-listings" replace />}
+              />
 
-              {/* ---------- Admin (new consolidated) ---------- */}
+              {/* ---------- Admin (consolidated) ---------- */}
               <Route
                 path="/admin/*"
                 element={

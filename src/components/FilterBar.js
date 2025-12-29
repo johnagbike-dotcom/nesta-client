@@ -1,9 +1,27 @@
 // src/components/FilterBar.js
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { collection, getDocs } from "firebase/firestore";
+import { db } from "../firebase";
 
 const cleanNum = (v) => String(v || "").replace(/\D/g, "");
 const normText = (v) => String(v || "").trim();
+
+function normCityKey(v) {
+  const s = String(v || "").trim();
+  if (!s) return "";
+  return s.toLowerCase().replace(/\s+/g, " ");
+}
+
+function toTitleCase(s) {
+  // “abuja” -> “Abuja”, “port harcourt” -> “Port Harcourt”
+  return String(s || "")
+    .toLowerCase()
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
 
 export default function FilterBar() {
   const [params] = useSearchParams();
@@ -20,9 +38,13 @@ export default function FilterBar() {
   );
 
   const [q, setQ] = useState(init.q);
-  const [city, setCity] = useState(init.city);
+  const [city, setCity] = useState(init.city); // what user sees/edits
   const [min, setMin] = useState(init.min);
   const [max, setMax] = useState(init.max);
+
+  // ✅ City suggestions (deduped)
+  const [cityOptions, setCityOptions] = useState([]);
+  const [cityLoading, setCityLoading] = useState(false);
 
   const lastAppliedRef = useRef(init);
 
@@ -35,9 +57,61 @@ export default function FilterBar() {
     lastAppliedRef.current = init;
   }, [init]);
 
+  // ✅ Fetch and dedupe city list from listings (simple + safe)
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadCities() {
+      setCityLoading(true);
+      try {
+        const snap = await getDocs(collection(db, "listings"));
+        if (!mounted) return;
+
+        const map = new Map(); // key -> display label
+        snap.forEach((d) => {
+          const data = d.data() || {};
+          const raw = data.city;
+
+          const key = normCityKey(raw);
+          if (!key) return;
+
+          // Choose best display version:
+          // - If Firestore stores nice casing use it
+          // - Else convert to Title Case
+          const display = String(raw || "").trim();
+          const pretty = display && /[A-Z]/.test(display) ? display : toTitleCase(display);
+
+          if (!map.has(key)) map.set(key, pretty);
+        });
+
+        const arr = Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+        setCityOptions(arr);
+      } catch (e) {
+        // non-fatal; city can still be typed manually
+        console.warn("[FilterBar] could not load cities:", e);
+        if (mounted) setCityOptions([]);
+      } finally {
+        if (mounted) setCityLoading(false);
+      }
+    }
+
+    loadCities();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const currentNormalized = useMemo(() => {
     const nq = normText(q);
-    const nc = normText(city);
+
+    // ✅ If user selects “Any city” or blanks it, store empty
+    const ncRaw = normText(city);
+    const ncKey = normCityKey(ncRaw);
+    const nc =
+      !ncKey || ncKey === "any" || ncKey === "any city" || ncKey === "all" || ncKey === "all cities"
+        ? ""
+        : ncRaw;
+
     const nmin = cleanNum(min);
     const nmax = cleanNum(max);
 
@@ -74,9 +148,7 @@ export default function FilterBar() {
 
     if (currentNormalized.q) s.set("q", currentNormalized.q);
 
-    // ✅ Keep city as typed (so “Lagos”, “Abuja” looks premium in chips)
-    // If your Firestore stores lowercase cities, then use:
-    // s.set("city", currentNormalized.city.toLowerCase())
+    // ✅ Keep city as typed (chips look premium)
     if (currentNormalized.city) s.set("city", currentNormalized.city);
 
     if (currentNormalized.min) s.set("min", currentNormalized.min);
@@ -110,7 +182,6 @@ export default function FilterBar() {
 
   return (
     <>
-      {/* ✅ Local responsive rules (no global CSS required) */}
       <style>{`
         .nesta-filter-wrap{
           display:grid;
@@ -130,12 +201,7 @@ export default function FilterBar() {
         }
       `}</style>
 
-      <div
-        className="nesta-filter-wrap"
-        onKeyDown={onKeyDown}
-        role="search"
-        aria-label="Search filters"
-      >
+      <div className="nesta-filter-wrap" onKeyDown={onKeyDown} role="search" aria-label="Search filters">
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -143,12 +209,28 @@ export default function FilterBar() {
           style={input}
         />
 
-        <input
-          value={city}
-          onChange={(e) => setCity(e.target.value)}
-          placeholder="City (e.g. Lagos)"
-          style={input}
-        />
+        {/* ✅ Premium city select + searchable fallback */}
+        <div style={{ position: "relative", minWidth: 0 }}>
+          <input
+            value={city}
+            onChange={(e) => setCity(e.target.value)}
+            list="nesta-city-list"
+            placeholder={cityLoading ? "Loading cities…" : "Any city"}
+            style={input}
+            aria-label="City"
+          />
+          <datalist id="nesta-city-list">
+            <option value="">Any city</option>
+            {cityOptions.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+
+          {/* subtle helper */}
+          <div style={{ marginTop: 6, fontSize: 11, color: "rgba(226,232,240,.55)" }}>
+            {cityOptions.length ? "Pick a city or type one." : "Type a city (e.g. Lagos, Abuja)."}
+          </div>
+        </div>
 
         <input
           value={min}
@@ -186,7 +268,6 @@ export default function FilterBar() {
           </button>
         </div>
 
-        {/* Optional helper line (luxury: subtle, not loud) */}
         <div style={hintLine}>
           Press <b>Enter</b> to apply • <b>Esc</b> to reset
         </div>

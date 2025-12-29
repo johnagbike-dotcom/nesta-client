@@ -1,4 +1,5 @@
-import React, { useCallback, useMemo, useState } from "react";
+// src/components/FavButton.js
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useFavourites } from "../hooks/useFavourites";
 
 export default function FavButton({
@@ -17,16 +18,14 @@ export default function FavButton({
     [active]
   );
 
-  const fireHint = useCallback((text) => {
-    setMsg(text);
-    window.clearTimeout(fireHint._t);
-    fireHint._t = window.setTimeout(() => setMsg(""), 2000);
-  }, []);
-  // eslint-disable-next-line
-  fireHint._t = fireHint._t;
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(""), 1800);
+    return () => clearTimeout(t);
+  }, [msg]);
 
   const onClick = useCallback(
-    (e) => {
+    async (e) => {
       e.preventDefault();
       e.stopPropagation();
 
@@ -34,14 +33,19 @@ export default function FavButton({
 
       if (!hasUser) {
         if (typeof onRequireLogin === "function") onRequireLogin();
-        else fireHint("Please log in to use favourites.");
+        else setMsg("Please log in to use favourites.");
         return;
       }
 
-      toggle(listingId);
-      fireHint(active ? "Removed from favourites" : "Added to favourites");
+      try {
+        await toggle(listingId);
+        setMsg(active ? "Removed from favourites" : "Added to favourites");
+      } catch (err) {
+        console.error("[FavButton] toggle failed:", err);
+        setMsg("Could not update favourites.");
+      }
     },
-    [listingId, hasUser, toggle, active, onRequireLogin, fireHint]
+    [listingId, hasUser, toggle, active, onRequireLogin]
   );
 
   return (
@@ -71,10 +75,6 @@ export default function FavButton({
           boxShadow: active ? "0 14px 34px rgba(212,175,55,0.10)" : "none",
           transition: "transform .06s ease, filter .15s ease, box-shadow .15s ease",
         }}
-        onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
-        onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
-        onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.04)")}
-        onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
       >
         <span style={{ fontSize: size, lineHeight: 1 }}>
           {active ? "♥" : "♡"}
@@ -86,16 +86,11 @@ export default function FavButton({
         )}
       </button>
 
-      {/* subtle hint (replaces alert) */}
       {msg ? (
         <div
           role="status"
           aria-live="polite"
-          style={{
-            fontSize: 12,
-            color: "rgba(226,232,240,.7)",
-            paddingLeft: 6,
-          }}
+          style={{ fontSize: 12, color: "rgba(226,232,240,.7)", paddingLeft: 6 }}
         >
           {msg}
         </div>

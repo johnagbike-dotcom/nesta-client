@@ -48,7 +48,10 @@ function ToastHub() {
       const id = Math.random().toString(36).slice(2);
       const t = { id, msg: String(detail.msg || "Done") };
       setToasts((prev) => [...prev, t]);
-      setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), detail.timeoutMs || 2500);
+      setTimeout(
+        () => setToasts((prev) => prev.filter((x) => x.id !== id)),
+        detail.timeoutMs || 2500
+      );
     }
     window.addEventListener("toast", onToast);
     return () => window.removeEventListener("toast", onToast);
@@ -179,12 +182,44 @@ function SkeletonCard() {
 const PAGE_LIMIT = 40;
 const FAV_LS_KEY = "nesta:favs:v1";
 
+/* -------------------------- helpers -------------------------- */
+function toMillis(ts) {
+  if (!ts) return 0;
+  if (typeof ts === "number") return ts;
+  if (ts?.seconds) return ts.seconds * 1000 + Math.floor((ts.nanoseconds || 0) / 1e6);
+  if (ts instanceof Date) return ts.getTime();
+  return 0;
+}
+
+function normCity(v) {
+  const s = String(v || "").trim();
+  if (!s) return "";
+  const low = s.toLowerCase();
+  if (low === "any" || low === "all" || low === "any city" || low === "all cities")
+    return "";
+  return low;
+}
+
+// Defensive dedupe key (in case Firestore has duplicate docs / imports)
+function listingKey(l) {
+  const city = String(l.city || "").trim().toLowerCase();
+  const title = String(l.title || "").trim().toLowerCase();
+  const price = Number(l.pricePerNight || l.price || 0);
+  const firstImg =
+    (Array.isArray(l.photos) && l.photos[0]) ||
+    (Array.isArray(l.imageUrls) && l.imageUrls[0]) ||
+    "";
+  return `${city}::${title}::${price}::${String(firstImg).slice(0, 60)}`;
+}
+
 export default function SearchBrowse() {
   const [params] = useSearchParams();
   const nav = useNavigate();
 
   const q = (params.get("q") || "").trim();
-  const city = (params.get("city") || "").trim();
+  const cityParam = (params.get("city") || "").trim();
+  const city = normCity(cityParam);
+
   const min = params.get("min") ? Number(params.get("min")) : undefined;
   const max = params.get("max") ? Number(params.get("max")) : undefined;
 
@@ -197,6 +232,7 @@ export default function SearchBrowse() {
   const [hasMore, setHasMore] = useState(false);
 
   const seenIdsRef = useRef(new Set());
+  const seenKeysRef = useRef(new Set()); // ✅ dedupe by content too
 
   const [favs, setFavs] = useState(() => {
     try {
@@ -219,15 +255,14 @@ export default function SearchBrowse() {
   const isLoadingMoreRef = useRef(false);
 
   const col = useMemo(() => collection(db, "listings"), []);
-  const gridCls =
-    "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6";
+  const gridCls = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6";
 
   const clientMatch = useCallback(
     (r) => {
-      // Case-insensitive city match (works even if Firestore data is "Makurdi")
+      // Case-insensitive city match
       if (city) {
         const c = (r.city || "").toString().trim().toLowerCase();
-        if (c !== city.toLowerCase()) return false;
+        if (c !== city) return false;
       }
       if (q) {
         const needle = q.toLowerCase();
@@ -246,11 +281,11 @@ export default function SearchBrowse() {
     (after = null) => {
       const parts = [];
 
-      // price filters can be indexed nicely
+      // price filters
       if (Number.isFinite(min)) parts.push(where("pricePerNight", ">=", min));
       if (Number.isFinite(max)) parts.push(where("pricePerNight", "<=", max));
 
-      // order: price if filtering by price; else updatedAt (fallback to createdAt client-side)
+      // order: price if filtering; else updatedAt
       const order =
         Number.isFinite(min) || Number.isFinite(max)
           ? orderBy("pricePerNight", "asc")
@@ -263,37 +298,52 @@ export default function SearchBrowse() {
     [col, min, max]
   );
 
-  const normalizeRows = (docs) => {
-    let rows = docs.map((d) => ({ id: d.id, ...d.data() }));
+  // ✅ memoized normalizeRows (prevents repeat-fetch loops)
+  const normalizeRows = useCallback(
+    (docs) => {
+      let rows = docs.map((d) => ({ id: d.id, ...d.data() }));
 
-    // client-side filter (q + city case-insensitive)
-    rows = rows.filter(clientMatch);
+      // client-side filter (q + city)
+      rows = rows.filter(clientMatch);
 
-    // stable sort when not using price ordering
-    if (!(Number.isFinite(min) || Number.isFinite(max))) {
-      rows.sort((a, b) => {
-        const at = toMillis(a?.updatedAt || a?.createdAt);
-        const bt = toMillis(b?.updatedAt || b?.createdAt);
-        return bt - at;
-      });
-    }
+      // stable sort when not using price ordering
+      if (!(Number.isFinite(min) || Number.isFinite(max))) {
+        rows.sort((a, b) => {
+          const at = toMillis(a?.updatedAt || a?.createdAt);
+          const bt = toMillis(b?.updatedAt || b?.createdAt);
+          return bt - at;
+        });
+      }
 
-    return rows;
-  };
+      // ✅ content-dedupe to prevent accidental duplicates showing (e.g. Abuja twice)
+      const next = [];
+      for (const r of rows) {
+        const k = listingKey(r);
+        if (seenKeysRef.current.has(k)) continue;
+        seenKeysRef.current.add(k);
+        next.push(r);
+      }
+
+      return next;
+    },
+    [clientMatch, min, max]
+  );
 
   /* -------------------------- Firestore fetch (first page) -------------------------- */
   useEffect(() => {
     let mounted = true;
 
-    // reset paging + fade memory on filter changes
+    // reset paging + animation memory + content dedupe memory
     setLastDoc(null);
     setHasMore(false);
     seenIdsRef.current = new Set();
+    seenKeysRef.current = new Set();
 
     async function run() {
       setLoading(true);
       setError(null);
       setIndexUrl(null);
+
       try {
         const snap = await getDocs(buildBaseQuery(null));
         if (!mounted) return;
@@ -304,11 +354,11 @@ export default function SearchBrowse() {
         const nextLast = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
         setLastDoc(nextLast);
 
-        // only “hasMore” if Firestore returned a full page
         setHasMore(snap.docs.length === PAGE_LIMIT);
       } catch (err) {
         console.error("[Search] load failed:", err);
         if (!mounted) return;
+
         const m = (err?.message || "").match(/https:\/\/console\.firebase\.google\.com\/[^\s)]+/);
         if (m && m[0]) setIndexUrl(m[0]);
         setError("Couldn't load listings.");
@@ -321,7 +371,7 @@ export default function SearchBrowse() {
     return () => {
       mounted = false;
     };
-  }, [buildBaseQuery, normalizeRows, q, city, min, max]); // include filters (intentional)
+  }, [buildBaseQuery, normalizeRows, q, cityParam, min, max]);
 
   /* -------------------------- Load more -------------------------- */
   const loadMore = useCallback(async () => {
@@ -401,7 +451,7 @@ export default function SearchBrowse() {
 
   const filterChips = [
     { label: "Search", value: q || "Any" },
-    { label: "City", value: city || "Any" },
+    { label: "City", value: cityParam || "Any" },
     { label: "Min ₦", value: Number.isFinite(min) ? min.toLocaleString("en-NG") : "Any" },
     { label: "Max ₦", value: Number.isFinite(max) ? max.toLocaleString("en-NG") : "Any" },
   ];
@@ -532,15 +582,6 @@ export default function SearchBrowse() {
       </div>
     </main>
   );
-}
-
-/* -------------------------- helpers -------------------------- */
-function toMillis(ts) {
-  if (!ts) return 0;
-  if (typeof ts === "number") return ts;
-  if (ts?.seconds) return ts.seconds * 1000 + Math.floor((ts.nanoseconds || 0) / 1e6);
-  if (ts instanceof Date) return ts.getTime();
-  return 0;
 }
 
 /* -------------------------- legacy inline bits kept -------------------------- */

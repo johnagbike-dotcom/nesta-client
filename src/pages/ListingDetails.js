@@ -10,6 +10,13 @@ import ListingMap from "../components/ListingMap";
 // ✅ shared featured logic
 import { isFeaturedActive } from "../utils/featured";
 
+// ✅ favourites
+import FavButton from "../components/FavButton";
+
+// ✅ reviews
+import ReviewsPanel from "../components/ReviewsPanel";
+import StarRating from "../components/StarRating";
+
 const nf = new Intl.NumberFormat("en-NG");
 
 export default function ListingDetails() {
@@ -127,10 +134,14 @@ export default function ListingDetails() {
     return isFeaturedActive(listing, nowMs);
   }, [listing, nowMs]);
 
+  /* ───────────────── rating display ───────────────── */
+
+  const ratingAvg = Number(listing?.ratingAvg || 0);
+  const ratingCount = Number(listing?.ratingCount || 0);
+
   /* ───────────────── share helpers ───────────────── */
 
   const listingUrl = useMemo(() => {
-    // Always share the currently-open origin (works on Render, custom domain, localhost)
     const origin =
       typeof window !== "undefined" && window.location?.origin
         ? window.location.origin
@@ -142,7 +153,6 @@ export default function ListingDetails() {
     window.clearTimeout(clearShareMsgSoon._t);
     clearShareMsgSoon._t = window.setTimeout(() => setShareMsg(""), 2200);
   }, []);
-  // tiny hack: attach timer handle
   // eslint-disable-next-line
   clearShareMsgSoon._t = clearShareMsgSoon._t || null;
 
@@ -155,19 +165,13 @@ export default function ListingDetails() {
         ? `Check this stay on Nesta (${listing.city}).`
         : "Check this stay on Nesta.";
 
-      // Mobile + supported browsers: native share sheet
       if (navigator.share) {
-        await navigator.share({
-          title,
-          text,
-          url: listingUrl,
-        });
+        await navigator.share({ title, text, url: listingUrl });
         setShareMsg("Shared ✅");
         clearShareMsgSoon();
         return;
       }
 
-      // Fallback: copy link
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(listingUrl);
         setShareMsg("Link copied ✅");
@@ -175,7 +179,6 @@ export default function ListingDetails() {
         return;
       }
 
-      // Old fallback
       const ta = document.createElement("textarea");
       ta.value = listingUrl;
       ta.style.position = "fixed";
@@ -240,6 +243,10 @@ export default function ListingDetails() {
     nav("/chat", { state: { partnerUid: chatUid, listing: listingMeta, from: "listing" } });
   }, [listing, chatUid, user, nav]);
 
+  const requireLoginForSocial = useCallback(() => {
+    nav("/login", { state: { from: `/listing/${id}` } });
+  }, [nav, id]);
+
   /* ───────────────── loading / error ───────────────── */
 
   if (loading) {
@@ -300,7 +307,14 @@ export default function ListingDetails() {
             </div>
 
             <div className="flex items-center gap-2">
-              {/* ✅ Share button always visible (owners & guests) */}
+              {/* ✅ Favourite (guest-safe) */}
+              <FavButton
+                listingId={listing.id}
+                compact
+                onRequireLogin={requireLoginForSocial}
+              />
+
+              {/* ✅ Share button */}
               <button
                 onClick={onShare}
                 className="px-4 py-2 rounded-full bg-white/5 border border-white/15 hover:bg-white/10 text-sm"
@@ -374,16 +388,31 @@ export default function ListingDetails() {
               >
                 {listing.title || "Luxury apartment"}
               </h1>
+
               <p className="text-gray-300 mt-1 text-sm md:text-base">
                 {listing.area || "—"}, {listing.city || "Nigeria"}
               </p>
 
-              {/* ✅ Featured badge ONLY if active + not expired */}
-              {featuredActive ? (
-                <span className="inline-flex px-2 py-1 mt-2 rounded-full bg-amber-400/10 border border-amber-200/40 text-amber-100 text-xs">
-                  Featured
-                </span>
-              ) : null}
+              <div className="mt-2 flex items-center gap-3 flex-wrap">
+                {/* rating display */}
+                {ratingCount > 0 ? (
+                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+                    <StarRating value={ratingAvg} readOnly size={14} showValue />
+                    <span className="text-xs text-white/55">
+                      {ratingCount} review{ratingCount === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-xs text-white/55">No reviews yet</span>
+                )}
+
+                {/* Featured badge ONLY if active */}
+                {featuredActive ? (
+                  <span className="inline-flex px-2 py-1 rounded-full bg-amber-400/10 border border-amber-200/40 text-amber-100 text-xs">
+                    Featured
+                  </span>
+                ) : null}
+              </div>
             </div>
 
             {!isOwner && (
@@ -443,6 +472,17 @@ export default function ListingDetails() {
                 </div>
               </div>
 
+              {/* ✅ REVIEWS */}
+              <ReviewsPanel
+                listingId={listing.id}
+                user={user}
+                onRequireLogin={requireLoginForSocial}
+                onAggregateUpdate={(agg) => {
+                  // update listing state immediately so top badge changes without reload
+                  setListing((prev) => (prev ? { ...prev, ...agg } : prev));
+                }}
+              />
+
               {/* Location card with map */}
               <div className="rounded-2xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-3">
                 <h2
@@ -459,8 +499,13 @@ export default function ListingDetails() {
                     {listing.area || "—"}, {listing.city || "Nigeria"}
                   </div>
                 </div>
-                <ListingMap lat={typeof listing.lat === "number" ? listing.lat : null} lng={typeof listing.lng === "number" ? listing.lng : null} />
-                <p className="text-[11px] text-white/50 mt-1">Exact details are shared securely with confirmed guests only.</p>
+                <ListingMap
+                  lat={typeof listing.lat === "number" ? listing.lat : null}
+                  lng={typeof listing.lng === "number" ? listing.lng : null}
+                />
+                <p className="text-[11px] text-white/50 mt-1">
+                  Exact details are shared securely with confirmed guests only.
+                </p>
               </div>
 
               <div className="rounded-2xl bg-white/5 border border-white/10 p-4 md:p-5">
@@ -493,7 +538,20 @@ export default function ListingDetails() {
                 >
                   ₦{nf.format(price)}
                 </div>
-                <p className="text-xs text-gray-500 mt-1">Secured on Nesta • payment via seamless checkout</p>
+
+                <div className="mt-2 flex items-center justify-between">
+                  {ratingCount > 0 ? (
+                    <div className="text-xs text-white/70 flex items-center gap-2">
+                      <StarRating value={ratingAvg} readOnly size={14} />
+                      <span>{ratingAvg.toFixed(1)} ({ratingCount})</span>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-white/50">No reviews yet</div>
+                  )}
+                  <div className="text-xs text-gray-500">Secured on Nesta</div>
+                </div>
+
+                <p className="text-xs text-gray-500 mt-2">Payment via seamless checkout (Paystack)</p>
 
                 <div className="mt-4 flex flex-col gap-2">
                   {isOwner ? (
@@ -541,7 +599,7 @@ export default function ListingDetails() {
         </div>
       </main>
 
-      {/* ───────────────── lightbox overlay ───────────────── */}
+      {/* lightbox overlay */}
       {lightboxIndex !== null && images.length > 0 && (
         <div
           className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center px-4"

@@ -1,124 +1,204 @@
-import React, { useEffect, useMemo, useState } from "react";
+// src/pages/Wishlist.js
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { collection, where, query, getDocs, documentId } from "firebase/firestore";
 import { db } from "../firebase";
 import { useFavourites } from "../hooks/useFavourites";
 import { Link, useNavigate } from "react-router-dom";
 
+const nf = new Intl.NumberFormat("en-NG");
+const FALLBACK =
+  "https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=1200&q=60";
+
+/* ───────────────── helpers ───────────────── */
+
+function getListingCover(listing) {
+  if (!listing) return null;
+
+  if (Array.isArray(listing.images) && listing.images[0]) return listing.images[0];
+  if (Array.isArray(listing.imageUrls) && listing.imageUrls[0]) return listing.imageUrls[0];
+  if (Array.isArray(listing.photos) && listing.photos[0]) return listing.photos[0];
+  if (Array.isArray(listing.media) && listing.media[0]?.url) return listing.media[0].url;
+
+  if (listing.imageUrl) return listing.imageUrl;
+  if (listing.coverImage) return listing.coverImage;
+  if (listing.heroImage) return listing.heroImage;
+  if (listing.photo) return listing.photo;
+
+  return null;
+}
+
 export default function Wishlist() {
-  const { favIds } = useFavourites();
   const navigate = useNavigate();
+
+  const { favIds, ready, remove } = useFavourites();
 
   const ids = useMemo(() => Array.from(favIds || []), [favIds]);
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let alive = true;
+  const load = useCallback(async () => {
+    setLoading(true);
 
-    (async () => {
-      setLoading(true);
-      try {
-        if (ids.length === 0) {
-          if (!alive) return;
-          setRows([]);
-          return;
-        }
-
-        // Firestore IN supports up to 10; batch if needed
-        const batches = [];
-        for (let i = 0; i < ids.length; i += 10) {
-          const slice = ids.slice(i, i + 10);
-          const qRef = query(collection(db, "listings"), where(documentId(), "in", slice));
-          batches.push(getDocs(qRef));
-        }
-
-        const snaps = await Promise.all(batches);
-        const all = snaps.flatMap((s) => s.docs.map((d) => ({ id: d.id, ...d.data() })));
-
-        // keep order consistent with favIds (nice UX)
-        const byId = new Map(all.map((x) => [x.id, x]));
-        const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
-
-        if (!alive) return;
-        setRows(ordered);
-      } finally {
-        if (alive) setLoading(false);
+    try {
+      if (ids.length === 0) {
+        setRows([]);
+        return;
       }
-    })();
 
-    return () => {
-      alive = false;
-    };
+      // Firestore IN supports up to 10 — batch if needed
+      const batches = [];
+      for (let i = 0; i < ids.length; i += 10) {
+        const slice = ids.slice(i, i + 10);
+        const qRef = query(collection(db, "listings"), where(documentId(), "in", slice));
+        batches.push(getDocs(qRef));
+      }
+
+      const snaps = await Promise.all(batches);
+      const all = snaps.flatMap((s) => s.docs.map((d) => ({ id: d.id, ...d.data() })));
+
+      // keep order consistent with favIds (nice UX)
+      const byId = new Map(all.map((x) => [x.id, x]));
+      const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+
+      setRows(ordered);
+    } finally {
+      setLoading(false);
+    }
   }, [ids]);
 
-  return (
-    <main style={pageWrap}>
-      <div className="max-w-6xl mx-auto px-4" style={{ paddingTop: "calc(var(--topbar-h, 88px) + 18px)" }}>
-        <button
-          className="btn ghost"
-          onClick={() => navigate(-1)}
-          style={backBtn}
-        >
-          ← Back
-        </button>
+  useEffect(() => {
+    // avoid flicker on first auth snapshot
+    if (!ready) return;
+    load();
+  }, [ready, load]);
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-          <h2 style={{ marginTop: 12, marginBottom: 6 }}>Your Favourites</h2>
-          {!loading ? (
-            <div style={{ color: "rgba(226,232,240,.6)", fontSize: 13 }}>
-              {rows.length} saved
+  const onRemove = async (listingId) => {
+    await remove(listingId);
+    // UI updates automatically via snapshot, but this keeps it feeling instant
+    setRows((prev) => prev.filter((x) => x.id !== listingId));
+  };
+
+  return (
+    <main className="min-h-screen bg-[#05070a] text-white pt-20 pb-12 px-4">
+      <div className="max-w-6xl mx-auto space-y-5">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate(-1)}
+              className="px-4 py-2 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-semibold"
+            >
+              ← Back
+            </button>
+
+            <div>
+              <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
+                Your Favourites
+              </h1>
+              <p className="text-xs text-white/55 mt-1">
+                Saved stays you can return to anytime.
+              </p>
             </div>
-          ) : null}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Link
+              to="/explore"
+              className="px-4 py-2 rounded-full bg-amber-500 text-black font-semibold hover:bg-amber-400 text-sm"
+            >
+              Browse stays
+            </Link>
+            {ready && !loading ? (
+              <div className="text-xs text-white/60">{rows.length} saved</div>
+            ) : null}
+          </div>
         </div>
 
-        {loading ? (
-          <p style={{ opacity: 0.8 }}>Loading…</p>
+        {/* states */}
+        {!ready || loading ? (
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <article
+                key={i}
+                className="rounded-2xl bg-[#0f1419] border border-white/5 overflow-hidden animate-pulse shadow-[0_14px_40px_rgba(0,0,0,0.25)]"
+              >
+                <div className="h-40 bg-white/5" />
+                <div className="p-4 space-y-2">
+                  <div className="h-4 bg-white/10 rounded w-2/3" />
+                  <div className="h-3 bg-white/5 rounded w-1/2" />
+                  <div className="h-5 bg-white/10 rounded w-1/3 mt-2" />
+                  <div className="flex gap-2 mt-3">
+                    <div className="h-9 bg-white/5 rounded-xl flex-1" />
+                    <div className="h-9 bg-white/5 rounded-xl w-24" />
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
         ) : rows.length === 0 ? (
-          <div style={emptyCard}>
-            <p style={{ margin: 0, opacity: 0.85 }}>
-              No favourites yet. Go to <Link to="/explore" style={goldLink}>Explore</Link> to add some ♥
+          <div className="rounded-2xl border border-amber-300/20 bg-amber-400/5 p-6 text-center">
+            <h2 className="text-lg font-semibold mb-1">No favourites yet.</h2>
+            <p className="text-gray-200 text-sm">
+              Go to{" "}
+              <Link to="/explore" className="text-amber-300 underline underline-offset-4">
+                Explore
+              </Link>{" "}
+              and tap ♥ on any listing you like.
             </p>
           </div>
         ) : (
-          <div style={gridWrap}>
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {rows.map((l) => {
-              const img =
-                (Array.isArray(l.photos) && l.photos[0]) ||
-                l.imageUrl ||
-                (Array.isArray(l.images) ? l.images[0] : null);
-
-              const price = Number(l.pricePerNight || 0);
+              const cover = getListingCover(l) || FALLBACK;
+              const price = Number(l.pricePerNight || l.nightlyRate || l.price || 0);
 
               return (
-                <article key={l.id} style={card}>
-                  <div
-                    style={{
-                      ...thumb,
-                      background: img
-                        ? `url(${img}) center/cover no-repeat`
-                        : "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.04))",
-                    }}
-                  />
-
-                  <h3 style={titleRow}>{l.title || "Untitled"}</h3>
-
-                  <div style={metaLine}>
-                    <span style={{ fontWeight: 900 }}>₦{price.toLocaleString()}</span>
-                    <span style={{ opacity: 0.8 }}>/night</span>
-                    <span style={{ opacity: 0.8, marginLeft: 10 }}>
-                      • {l.city || "—"}
-                      {l.area ? ` • ${l.area}` : ""}
-                    </span>
+                <article
+                  key={l.id}
+                  className="rounded-2xl bg-[#0f1419] border border-white/5 overflow-hidden hover:border-amber-300/40 transition shadow-[0_14px_40px_rgba(0,0,0,0.35)]"
+                >
+                  <div className="relative h-40 bg-black/40 overflow-hidden">
+                    <img
+                      src={cover}
+                      alt={l.title || "Listing"}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                    />
+                    <div className="absolute top-2 left-2 px-2 py-1 rounded-full text-[10px] bg-black/65 border border-white/15 text-white/85 backdrop-blur">
+                      Saved
+                    </div>
                   </div>
 
-                  <div style={ctaRow}>
-                    <Link className="btn" to={`/listing/${l.id}`} style={btnSecondary}>
-                      View
-                    </Link>
-                    <Link className="btn" to={`/listing/${l.id}?tab=reserve`} style={btnPrimary}>
-                      Reserve
-                    </Link>
+                  <div className="p-4 space-y-2">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold truncate">{l.title || "Luxury stay"}</h3>
+                      <p className="text-gray-300 text-xs md:text-sm truncate">
+                        {l.area || "—"}, {l.city || "Nigeria"}
+                      </p>
+                    </div>
+
+                    <p className="text-lg font-bold mt-1">
+                      ₦{nf.format(price)}
+                      <span className="text-xs text-gray-400 ml-1">/ night</span>
+                    </p>
+
+                    <div className="flex gap-2 mt-3">
+                      <Link
+                        to={`/listing/${l.id}`}
+                        className="flex-1 text-center px-3 py-2 rounded-xl bg-amber-500 text-black text-sm font-semibold hover:bg-amber-400"
+                      >
+                        View
+                      </Link>
+
+                      <button
+                        type="button"
+                        onClick={() => onRemove(l.id)}
+                        className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
+                        title="Remove from favourites"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
                 </article>
               );
@@ -129,75 +209,3 @@ export default function Wishlist() {
     </main>
   );
 }
-
-const gold = "#d4af37";
-const pageWrap = {
-  minHeight: "100vh",
-  background:
-    "radial-gradient(1200px 600px at 20% -10%, rgba(212,175,55,0.08), transparent 60%), linear-gradient(120deg,#0b0f14,#10161c)",
-  color: "#fff",
-  paddingBottom: 56,
-};
-
-const backBtn = {
-  marginTop: 10,
-  background: "rgba(255,255,255,.05)",
-  border: "1px solid rgba(255,255,255,.10)",
-  color: "#e5e7eb",
-  padding: "8px 14px",
-  borderRadius: 999,
-  cursor: "pointer",
-  fontWeight: 800,
-};
-
-const emptyCard = {
-  marginTop: 16,
-  padding: 18,
-  borderRadius: 18,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background: "rgba(255,255,255,0.04)",
-};
-
-const goldLink = {
-  color: "#facc15",
-  textDecoration: "underline",
-  textUnderlineOffset: 3,
-};
-
-const gridWrap = {
-  marginTop: 18,
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-  gap: 18,
-};
-
-const card = {
-  padding: 16,
-  borderRadius: 18,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background: "linear-gradient(180deg, rgba(31,41,55,0.52), rgba(31,41,55,0.30))",
-  boxShadow: "0 20px 60px rgba(0,0,0,.25)",
-};
-
-const thumb = { borderRadius: 14, height: 160, marginBottom: 12 };
-const titleRow = { margin: "4px 0 8px", fontWeight: 800, color: "#fff" };
-const metaLine = { marginBottom: 10, color: "rgba(226,232,240,.85)" };
-const ctaRow = { display: "flex", gap: 10, flexWrap: "wrap" };
-
-const btnPrimary = {
-  borderRadius: 999,
-  padding: "9px 14px",
-  background: "linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c)",
-  border: "1px solid rgba(0,0,0,.12)",
-  color: "#201807",
-  fontWeight: 900,
-};
-
-const btnSecondary = {
-  borderRadius: 999,
-  padding: "9px 14px",
-  background: "rgba(255,255,255,0.08)",
-  border: "1px solid rgba(255,255,255,0.18)",
-  color: "#fff",
-  fontWeight: 800,
-};

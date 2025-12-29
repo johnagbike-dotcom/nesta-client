@@ -1,5 +1,5 @@
 // src/pages/SignUpPage.js
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   createUserWithEmailAndPassword,
@@ -52,17 +52,24 @@ function getPwChecks(pwRaw, emailRaw = "", nameRaw = "") {
   const pwLower = pw.toLowerCase();
   const isCommon = COMMON_WEAK.has(pwLower);
 
-  // basic personal info checks (simple but effective)
+  // basic personal info checks
   const emailUser = email.includes("@") ? email.split("@")[0] : "";
   const includesEmailUser = emailUser && pwLower.includes(emailUser);
   const includesEmailFull = email && pwLower.includes(email);
-  const includesName = name && name.length >= 3 && pwLower.includes(name.replace(/\s+/g, ""));
+  const includesName =
+    name && name.length >= 3 && pwLower.includes(name.replace(/\s+/g, ""));
 
   const noPersonal = !includesEmailUser && !includesEmailFull && !includesName;
 
-  const ok = hasMin && hasUpper && hasLower && hasNum && hasSpecial && !isCommon && noPersonal;
+  const ok =
+    hasMin &&
+    hasUpper &&
+    hasLower &&
+    hasNum &&
+    hasSpecial &&
+    !isCommon &&
+    noPersonal;
 
-  // message for first failure (used on submit)
   let firstFail = "";
   if (!hasMin) firstFail = `Password must be at least ${MIN_LEN} characters.`;
   else if (!hasUpper) firstFail = "Add at least 1 uppercase letter (A–Z).";
@@ -103,6 +110,10 @@ function CheckLine({ ok, label }) {
   );
 }
 
+function stripFirebasePrefix(msg) {
+  return String(msg || "").replace(/^Firebase:\s*/i, "").trim();
+}
+
 /* ---------------- Page ---------------- */
 
 export default function SignUpPage() {
@@ -115,10 +126,18 @@ export default function SignUpPage() {
   const [name, setName] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [showPw2, setShowPw2] = useState(false);
-  const [loading, setLoading] = useState(false);
 
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [okMsg, setOkMsg] = useState(""); // ✅ success banner
+
+  // ✅ Polished success stage
+  const [stage, setStage] = useState("form"); // form | success
+  const [okMsg, setOkMsg] = useState("");
+  const [successEmail, setSuccessEmail] = useState("");
+  const [resendBusy, setResendBusy] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  const cooldownTimerRef = useRef(null);
 
   const nextAfterRole = useMemo(() => state?.next || "/dashboard", [state]);
 
@@ -128,7 +147,6 @@ export default function SignUpPage() {
 
     const snap = await getDoc(userRef);
 
-    // Minimal safe defaults so rules never break
     const basePrivate = {
       email: emailVal,
       emailLower: String(emailVal || "").toLowerCase(),
@@ -136,14 +154,14 @@ export default function SignUpPage() {
       role: "guest",
       isAdmin: false,
       plan: "free",
-      emailVerified: !!emailVerified, // ✅ helpful for guards/admin UI
+      emailVerified: !!emailVerified,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
 
     const basePublic = {
       displayName: displayName || "User",
-      email: emailVal, // optional, remove if you prefer not to expose
+      email: emailVal, // optional
       role: "guest",
       photoURL: null,
       updatedAt: serverTimestamp(),
@@ -171,13 +189,10 @@ export default function SignUpPage() {
     const code = e?.code || "";
     if (code === "auth/email-already-in-use") return "That email is already in use.";
     if (code === "auth/invalid-email") return "Please enter a valid email address.";
-    if (code === "auth/weak-password")
-      return "Password is too weak. Please use a stronger password.";
-    if (code === "auth/network-request-failed")
-      return "Network error. Please check your internet connection and try again.";
-    if (code === "auth/too-many-requests")
-      return "Too many attempts. Please wait a moment and try again.";
-    return e?.message?.replace(/^Firebase:\s*/i, "") || "Could not create your account.";
+    if (code === "auth/weak-password") return "Password is too weak. Please use a stronger password.";
+    if (code === "auth/network-request-failed") return "Network error. Please check your internet connection and try again.";
+    if (code === "auth/too-many-requests") return "Too many attempts. Please wait a moment and try again.";
+    return stripFirebasePrefix(e?.message) || "Could not create your account.";
   }
 
   const pwChecks = useMemo(() => getPwChecks(pw, email, name), [pw, email, name]);
@@ -185,8 +200,43 @@ export default function SignUpPage() {
 
   const canSubmit = useMemo(() => {
     const cleanEmail = email.trim();
-    return !loading && cleanEmail.length > 3 && cleanEmail.includes("@") && pwChecks.ok && confirmOk;
+    return (
+      !loading &&
+      cleanEmail.length > 3 &&
+      cleanEmail.includes("@") &&
+      pwChecks.ok &&
+      confirmOk
+    );
   }, [email, pwChecks.ok, confirmOk, loading]);
+
+  function startCooldown(seconds = 30) {
+    if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
+    setCooldown(seconds);
+
+    cooldownTimerRef.current = setInterval(() => {
+      setCooldown((s) => {
+        if (s <= 1) {
+          clearInterval(cooldownTimerRef.current);
+          cooldownTimerRef.current = null;
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+  }
+
+  async function sendVerificationForCurrentUser() {
+    const u = auth.currentUser;
+    if (!u) return;
+
+    const actionCodeSettings = {
+      // ✅ critical: always send users back to YOUR handler
+      url: `${window.location.origin}/action`,
+      handleCodeInApp: false,
+    };
+
+    await sendEmailVerification(u, actionCodeSettings);
+  }
 
   async function onSubmit(e) {
     e.preventDefault();
@@ -204,14 +254,13 @@ export default function SignUpPage() {
       setLoading(true);
 
       const cred = await createUserWithEmailAndPassword(auth, cleanEmail, pw);
-
       const displayName = (name.trim() || cleanEmail.split("@")[0]).slice(0, 60);
 
       try {
         await updateProfile(cred.user, { displayName });
       } catch {}
 
-      // create user docs first (so admin can see them even if user doesn’t verify)
+      // Create user docs first
       await ensureUserProfile(
         cred.user.uid,
         cred.user.email || cleanEmail,
@@ -219,35 +268,18 @@ export default function SignUpPage() {
         cred.user.emailVerified
       );
 
-      // ✅ send verification email
+      // ✅ send verification email (to /action)
       try {
-        await sendEmailVerification(cred.user);
+        await sendVerificationForCurrentUser();
       } catch (ve) {
         console.warn("[SignUpPage] sendEmailVerification failed:", ve);
-        // not fatal, but tell the user what to do
       }
 
-      // ✅ success message
-      setOkMsg(
-        "✅ Account created. Please check your email and verify your account before signing in."
-      );
-
-      // ✅ sign out until verified (keeps platform trusted)
-      try {
-        await signOut(auth);
-      } catch {}
-
-      // redirect to login with a friendly message
-      setTimeout(() => {
-        nav("/login", {
-          replace: true,
-          state: {
-            info:
-              "Account created. Please verify your email (check inbox/spam) before logging in.",
-            next: nextAfterRole,
-          },
-        });
-      }, 1200);
+      // ✅ Success stage (more polished than instant redirect)
+      setSuccessEmail(cleanEmail);
+      setOkMsg("✅ Account created. Please verify your email to continue.");
+      setStage("success");
+      startCooldown(30);
     } catch (e2) {
       console.error(e2);
       setErr(humanizeFirebaseError(e2));
@@ -256,6 +288,141 @@ export default function SignUpPage() {
     }
   }
 
+  async function onResend() {
+    setErr("");
+    setOkMsg("");
+    if (cooldown > 0) return;
+
+    try {
+      setResendBusy(true);
+      await sendVerificationForCurrentUser();
+      setOkMsg("✅ Verification email sent again. Please check inbox/spam.");
+      startCooldown(30);
+    } catch (e) {
+      console.error(e);
+      setErr(stripFirebasePrefix(e?.message) || "Could not resend verification email.");
+    } finally {
+      setResendBusy(false);
+    }
+  }
+
+  async function goToLogin() {
+    // ✅ Keep platform trusted: sign out before login flow
+    try {
+      await signOut(auth);
+    } catch {}
+
+    nav("/login", {
+      replace: true,
+      state: {
+        info:
+          "Please verify your email (check inbox/spam). After verifying, come back and sign in.",
+        next: nextAfterRole,
+      },
+    });
+  }
+
+  // ✅ Success screen
+  if (stage === "success") {
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#070b12] to-[#05070d] text-white px-4 py-10">
+        <div className="mx-auto w-full max-w-md">
+          <div className="mb-6 text-center">
+            <div className="mx-auto mb-3 h-14 w-14 rounded-2xl bg-white/5 border border-white/10 grid place-items-center overflow-hidden">
+              <img src={OfficialLogo} alt="Nesta" className="h-full w-full object-cover" />
+            </div>
+            <h1
+              className="text-3xl font-extrabold tracking-tight"
+              style={{
+                fontFamily:
+                  'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+              }}
+            >
+              Verify your email
+            </h1>
+            <p className="text-sm text-white/60 mt-2">
+              We’ve sent a verification link to{" "}
+              <span className="text-white/80 font-semibold">{successEmail}</span>.
+            </p>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 shadow-[0_24px_70px_rgba(0,0,0,.7)]">
+            {err && (
+              <div className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-3 text-rose-100 text-sm">
+                {err}
+              </div>
+            )}
+
+            {okMsg && (
+              <div className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-500/10 p-3 text-emerald-100 text-sm">
+                {okMsg}
+              </div>
+            )}
+
+            <div className="text-sm text-white/70 leading-relaxed">
+              Open your email, click <span className="text-white/90 font-semibold">Verify</span>, then return here.
+              <div className="mt-2 text-xs text-white/55">
+                Tip: Check spam/junk. On mobile, Gmail may open the link in an in-app browser — that’s fine.
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={onResend}
+              disabled={resendBusy || cooldown > 0}
+              className={`mt-5 w-full py-3 rounded-2xl font-semibold transition ${
+                resendBusy || cooldown > 0
+                  ? "bg-white/10 border border-white/10 text-white/40 cursor-not-allowed"
+                  : "bg-white/5 border border-white/15 hover:bg-white/10 text-white"
+              }`}
+            >
+              {resendBusy
+                ? "Resending…"
+                : cooldown > 0
+                ? `Resend in ${cooldown}s`
+                : "Resend verification email"}
+            </button>
+
+            <button
+              type="button"
+              onClick={goToLogin}
+              className="mt-3 w-full py-3 rounded-2xl font-semibold transition bg-gradient-to-b from-amber-400 to-amber-500 text-black hover:from-amber-300 hover:to-amber-500 shadow-[0_18px_50px_rgba(0,0,0,.55)]"
+            >
+              Continue to login
+            </button>
+
+            <div className="mt-4 text-center text-xs text-white/55">
+              Used the wrong email?{" "}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await signOut(auth);
+                  } catch {}
+                  setStage("form");
+                  setOkMsg("");
+                  setErr("");
+                  setPw("");
+                  setPw2("");
+                }}
+                className="underline decoration-dotted hover:text-amber-200"
+              >
+                Create again
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5 text-center text-xs text-white/50">
+            <Link to="/" className="underline decoration-dotted hover:text-amber-200">
+              Back to home
+            </Link>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ✅ Default form stage
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#070b12] to-[#05070d] text-white px-4 py-10">
       <div className="mx-auto w-full max-w-md">
@@ -284,12 +451,6 @@ export default function SignUpPage() {
           {err && (
             <div className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-3 text-rose-100 text-sm">
               {err}
-            </div>
-          )}
-
-          {okMsg && (
-            <div className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-500/10 p-3 text-emerald-100 text-sm">
-              {okMsg}
             </div>
           )}
 
@@ -338,7 +499,6 @@ export default function SignUpPage() {
               </button>
             </div>
 
-            {/* ✅ live password checklist */}
             <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/55 mb-2">
                 Password requirements
