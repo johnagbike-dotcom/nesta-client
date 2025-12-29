@@ -1,9 +1,109 @@
+// src/pages/SignUpPage.js
 import React, { useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  updateProfile,
+  sendEmailVerification,
+  signOut,
+} from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebase";
 import OfficialLogo from "../assets/Official-Logo.jpg";
+
+/* ---------------- Password policy helpers ---------------- */
+
+const MIN_LEN = 10;
+
+// quick deny-list (add more anytime)
+const COMMON_WEAK = new Set([
+  "123456",
+  "1234567",
+  "12345678",
+  "123456789",
+  "1234567890",
+  "password",
+  "password1",
+  "qwerty",
+  "qwerty123",
+  "111111",
+  "000000",
+  "iloveyou",
+  "admin",
+  "welcome",
+  "letmein",
+]);
+
+function normalizePw(pw) {
+  return String(pw || "").trim();
+}
+
+function getPwChecks(pwRaw, emailRaw = "", nameRaw = "") {
+  const pw = normalizePw(pwRaw);
+  const email = String(emailRaw || "").trim().toLowerCase();
+  const name = String(nameRaw || "").trim().toLowerCase();
+
+  const hasMin = pw.length >= MIN_LEN;
+  const hasUpper = /[A-Z]/.test(pw);
+  const hasLower = /[a-z]/.test(pw);
+  const hasNum = /\d/.test(pw);
+  const hasSpecial = /[^A-Za-z0-9]/.test(pw);
+
+  const pwLower = pw.toLowerCase();
+  const isCommon = COMMON_WEAK.has(pwLower);
+
+  // basic personal info checks (simple but effective)
+  const emailUser = email.includes("@") ? email.split("@")[0] : "";
+  const includesEmailUser = emailUser && pwLower.includes(emailUser);
+  const includesEmailFull = email && pwLower.includes(email);
+  const includesName = name && name.length >= 3 && pwLower.includes(name.replace(/\s+/g, ""));
+
+  const noPersonal = !includesEmailUser && !includesEmailFull && !includesName;
+
+  const ok = hasMin && hasUpper && hasLower && hasNum && hasSpecial && !isCommon && noPersonal;
+
+  // message for first failure (used on submit)
+  let firstFail = "";
+  if (!hasMin) firstFail = `Password must be at least ${MIN_LEN} characters.`;
+  else if (!hasUpper) firstFail = "Add at least 1 uppercase letter (A–Z).";
+  else if (!hasLower) firstFail = "Add at least 1 lowercase letter (a–z).";
+  else if (!hasNum) firstFail = "Add at least 1 number (0–9).";
+  else if (!hasSpecial) firstFail = "Add at least 1 special character (e.g. !@#£$).";
+  else if (isCommon) firstFail = "That password is too common. Please choose a stronger one.";
+  else if (!noPersonal) firstFail = "Don’t use your name or email in your password.";
+
+  return {
+    ok,
+    hasMin,
+    hasUpper,
+    hasLower,
+    hasNum,
+    hasSpecial,
+    isCommon,
+    noPersonal,
+    firstFail,
+  };
+}
+
+function CheckLine({ ok, label }) {
+  return (
+    <div className="flex items-center gap-2 text-[12px]">
+      <span
+        className={[
+          "inline-flex h-4 w-4 items-center justify-center rounded-full border",
+          ok
+            ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-200"
+            : "border-white/15 bg-white/5 text-white/40",
+        ].join(" ")}
+      >
+        {ok ? "✓" : "•"}
+      </span>
+      <span className={ok ? "text-emerald-200" : "text-white/55"}>{label}</span>
+    </div>
+  );
+}
+
+/* ---------------- Page ---------------- */
 
 export default function SignUpPage() {
   const nav = useNavigate();
@@ -16,11 +116,13 @@ export default function SignUpPage() {
   const [showPw, setShowPw] = useState(false);
   const [showPw2, setShowPw2] = useState(false);
   const [loading, setLoading] = useState(false);
+
   const [err, setErr] = useState("");
+  const [okMsg, setOkMsg] = useState(""); // ✅ success banner
 
   const nextAfterRole = useMemo(() => state?.next || "/dashboard", [state]);
 
-  async function ensureUserProfile(uid, emailVal, displayName) {
+  async function ensureUserProfile(uid, emailVal, displayName, emailVerified = false) {
     const userRef = doc(db, "users", uid);
     const pubRef = doc(db, "users_public", uid);
 
@@ -34,6 +136,7 @@ export default function SignUpPage() {
       role: "guest",
       isAdmin: false,
       plan: "free",
+      emailVerified: !!emailVerified, // ✅ helpful for guards/admin UI
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -48,20 +151,17 @@ export default function SignUpPage() {
     };
 
     if (!snap.exists()) {
-      // create both docs
       await setDoc(userRef, basePrivate, { merge: true });
       await setDoc(pubRef, basePublic, { merge: true });
     } else {
-      // ensure users_public exists + keep updatedAt fresh
       await setDoc(
         pubRef,
         { displayName: displayName || "User", updatedAt: serverTimestamp() },
         { merge: true }
       );
-
       await setDoc(
         userRef,
-        { updatedAt: serverTimestamp() },
+        { emailVerified: !!emailVerified, updatedAt: serverTimestamp() },
         { merge: true }
       );
     }
@@ -71,22 +171,38 @@ export default function SignUpPage() {
     const code = e?.code || "";
     if (code === "auth/email-already-in-use") return "That email is already in use.";
     if (code === "auth/invalid-email") return "Please enter a valid email address.";
-    if (code === "auth/weak-password") return "Password is too weak. Use at least 6+ characters.";
+    if (code === "auth/weak-password")
+      return "Password is too weak. Please use a stronger password.";
+    if (code === "auth/network-request-failed")
+      return "Network error. Please check your internet connection and try again.";
+    if (code === "auth/too-many-requests")
+      return "Too many attempts. Please wait a moment and try again.";
     return e?.message?.replace(/^Firebase:\s*/i, "") || "Could not create your account.";
   }
+
+  const pwChecks = useMemo(() => getPwChecks(pw, email, name), [pw, email, name]);
+  const confirmOk = pw2.length > 0 && pw === pw2;
+
+  const canSubmit = useMemo(() => {
+    const cleanEmail = email.trim();
+    return !loading && cleanEmail.length > 3 && cleanEmail.includes("@") && pwChecks.ok && confirmOk;
+  }, [email, pwChecks.ok, confirmOk, loading]);
 
   async function onSubmit(e) {
     e.preventDefault();
     setErr("");
+    setOkMsg("");
 
-    if (!email.trim() || !pw) return setErr("Please enter an email and password.");
-    if (pw.length < 6) return setErr("Password must be at least 6 characters.");
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail) return setErr("Please enter an email address.");
+    if (!pw) return setErr("Please enter a password.");
+    if (!pwChecks.ok) return setErr(pwChecks.firstFail || "Please choose a stronger password.");
     if (pw !== pw2) return setErr("Passwords do not match.");
 
     try {
       setLoading(true);
 
-      const cleanEmail = email.trim().toLowerCase();
       const cred = await createUserWithEmailAndPassword(auth, cleanEmail, pw);
 
       const displayName = (name.trim() || cleanEmail.split("@")[0]).slice(0, 60);
@@ -95,9 +211,43 @@ export default function SignUpPage() {
         await updateProfile(cred.user, { displayName });
       } catch {}
 
-      await ensureUserProfile(cred.user.uid, cred.user.email || cleanEmail, displayName);
+      // create user docs first (so admin can see them even if user doesn’t verify)
+      await ensureUserProfile(
+        cred.user.uid,
+        cred.user.email || cleanEmail,
+        displayName,
+        cred.user.emailVerified
+      );
 
-      nav("/role-selection", { replace: true, state: { next: nextAfterRole } });
+      // ✅ send verification email
+      try {
+        await sendEmailVerification(cred.user);
+      } catch (ve) {
+        console.warn("[SignUpPage] sendEmailVerification failed:", ve);
+        // not fatal, but tell the user what to do
+      }
+
+      // ✅ success message
+      setOkMsg(
+        "✅ Account created. Please check your email and verify your account before signing in."
+      );
+
+      // ✅ sign out until verified (keeps platform trusted)
+      try {
+        await signOut(auth);
+      } catch {}
+
+      // redirect to login with a friendly message
+      setTimeout(() => {
+        nav("/login", {
+          replace: true,
+          state: {
+            info:
+              "Account created. Please verify your email (check inbox/spam) before logging in.",
+            next: nextAfterRole,
+          },
+        });
+      }, 1200);
     } catch (e2) {
       console.error(e2);
       setErr(humanizeFirebaseError(e2));
@@ -137,6 +287,12 @@ export default function SignUpPage() {
             </div>
           )}
 
+          {okMsg && (
+            <div className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-500/10 p-3 text-emerald-100 text-sm">
+              {okMsg}
+            </div>
+          )}
+
           <label className="block mb-4">
             <span className="block text-sm text-white/70 mb-1">Full name (optional)</span>
             <input
@@ -161,7 +317,7 @@ export default function SignUpPage() {
             />
           </label>
 
-          <label className="block mb-4">
+          <label className="block mb-2">
             <span className="block text-sm text-white/70 mb-1">Password</span>
             <div className="relative">
               <input
@@ -181,10 +337,25 @@ export default function SignUpPage() {
                 {showPw ? "Hide" : "Show"}
               </button>
             </div>
-            <div className="mt-1 text-[11px] text-white/45">Tip: Use 8+ characters for a stronger account.</div>
+
+            {/* ✅ live password checklist */}
+            <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
+              <div className="text-[11px] uppercase tracking-[0.16em] text-white/55 mb-2">
+                Password requirements
+              </div>
+              <div className="grid gap-1">
+                <CheckLine ok={pwChecks.hasMin} label={`At least ${MIN_LEN} characters`} />
+                <CheckLine ok={pwChecks.hasUpper} label="1 uppercase letter" />
+                <CheckLine ok={pwChecks.hasLower} label="1 lowercase letter" />
+                <CheckLine ok={pwChecks.hasNum} label="1 number" />
+                <CheckLine ok={pwChecks.hasSpecial} label="1 special character" />
+                <CheckLine ok={!pwChecks.isCommon} label="Not a common password" />
+                <CheckLine ok={pwChecks.noPersonal} label="Doesn’t include your name/email" />
+              </div>
+            </div>
           </label>
 
-          <label className="block mb-5">
+          <label className="block mb-5 mt-4">
             <span className="block text-sm text-white/70 mb-1">Confirm password</span>
             <div className="relative">
               <input
@@ -204,13 +375,19 @@ export default function SignUpPage() {
                 {showPw2 ? "Hide" : "Show"}
               </button>
             </div>
+
+            {pw2.length > 0 && (
+              <div className={["mt-2 text-xs", confirmOk ? "text-emerald-200" : "text-rose-200"].join(" ")}>
+                {confirmOk ? "✓ Passwords match" : "Passwords do not match"}
+              </div>
+            )}
           </label>
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={!canSubmit}
             className={`w-full py-3 rounded-2xl font-semibold transition shadow-[0_18px_50px_rgba(0,0,0,.55)] ${
-              loading
+              !canSubmit
                 ? "bg-white/10 border border-white/10 text-white/40 cursor-not-allowed"
                 : "bg-gradient-to-b from-amber-400 to-amber-500 text-black hover:from-amber-300 hover:to-amber-500"
             }`}

@@ -201,50 +201,51 @@ export function AuthProvider({ children }) {
   }, [stopProfileListener]);
 
   // ---------------- MFA: Sign-in challenge flow ----------------
-  // Use this instead of login() in your LoginPage when you're ready.
-  const beginLogin = useCallback(async (email, password) => {
-    setAuthError("");
-    setMfaError("");
-    setMfaRequired(false);
-    setMfaHints([]);
-    mfaResolverRef.current = null;
+// Use this instead of login() in your LoginPage when you're ready.
+const beginLogin = useCallback(async (email, password) => {
+  setAuthError("");
+  setMfaError("");
+  setMfaRequired(false);
+  setMfaHints([]);
+  mfaResolverRef.current = null;
 
-    try {
-      await signInWithEmailAndPassword(
-        auth,
-        String(email || "").trim(),
-        String(password || "").trim()
-      );
-      return { ok: true, mfaRequired: false };
-    } catch (e) {
-      // If user has MFA enabled, Firebase throws: auth/multi-factor-auth-required
-      if (e?.code === "auth/multi-factor-auth-required") {
-        try {
-          const resolver = getMultiFactorResolver(auth, e);
-          mfaResolverRef.current = resolver;
+  try {
+    const cred = await signInWithEmailAndPassword(
+      auth,
+      String(email || "").trim(),
+      String(password || "").trim()
+    );
 
-          // Hints are enrolled factors (phones)
-          const hints = resolver?.hints || [];
-          setMfaHints(
-            hints.map((h) => ({
-              uid: h.uid,
-              factorId: h.factorId,
-              phoneNumber: h.phoneNumber || "",
-            }))
-          );
-          setMfaRequired(true);
+    // ✅ return the signed-in user so LoginPage can check emailVerified
+    return { ok: true, mfaRequired: false, user: cred.user };
+  } catch (e) {
+    // If user has MFA enabled, Firebase throws: auth/multi-factor-auth-required
+    if (e?.code === "auth/multi-factor-auth-required") {
+      try {
+        const resolver = getMultiFactorResolver(auth, e);
+        mfaResolverRef.current = resolver;
 
-          return { ok: false, mfaRequired: true };
-        } catch (e2) {
-          console.error("MFA resolver error:", e2);
-          setMfaError("MFA challenge could not be started. Try again.");
-          return { ok: false, mfaRequired: false };
-        }
+        const hints = resolver?.hints || [];
+        setMfaHints(
+          hints.map((h) => ({
+            uid: h.uid,
+            factorId: h.factorId,
+            phoneNumber: h.phoneNumber || "",
+          }))
+        );
+        setMfaRequired(true);
+
+        return { ok: false, mfaRequired: true };
+      } catch (e2) {
+        console.error("MFA resolver error:", e2);
+        setMfaError("MFA challenge could not be started. Try again.");
+        return { ok: false, mfaRequired: false };
       }
-
-      throw e;
     }
-  }, []);
+
+    throw e;
+  }
+}, []);
 
   // Sends the SMS for the selected enrolled phone factor (default: first factor)
   const sendMfaCode = useCallback(async ({ recaptchaContainerId, hintUid } = {}) => {

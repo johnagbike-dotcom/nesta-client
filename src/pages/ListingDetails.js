@@ -24,6 +24,9 @@ export default function ListingDetails() {
   // lightbox: index of the image being shown, or null when closed
   const [lightboxIndex, setLightboxIndex] = useState(null);
 
+  // ✅ Share UX
+  const [shareMsg, setShareMsg] = useState("");
+
   /* ───────────────── load listing ───────────────── */
 
   useEffect(() => {
@@ -120,10 +123,76 @@ export default function ListingDetails() {
   /* ───────────────── featured badge (luxury rule) ───────────────── */
 
   const nowMs = Date.now();
-
   const featuredActive = useMemo(() => {
     return isFeaturedActive(listing, nowMs);
   }, [listing, nowMs]);
+
+  /* ───────────────── share helpers ───────────────── */
+
+  const listingUrl = useMemo(() => {
+    // Always share the currently-open origin (works on Render, custom domain, localhost)
+    const origin =
+      typeof window !== "undefined" && window.location?.origin
+        ? window.location.origin
+        : "";
+    return `${origin}/listing/${id}`;
+  }, [id]);
+
+  const clearShareMsgSoon = useCallback(() => {
+    window.clearTimeout(clearShareMsgSoon._t);
+    clearShareMsgSoon._t = window.setTimeout(() => setShareMsg(""), 2200);
+  }, []);
+  // tiny hack: attach timer handle
+  // eslint-disable-next-line
+  clearShareMsgSoon._t = clearShareMsgSoon._t || null;
+
+  const onShare = useCallback(async () => {
+    try {
+      setShareMsg("");
+
+      const title = listing?.title ? `Nesta • ${listing.title}` : "Nesta listing";
+      const text = listing?.city
+        ? `Check this stay on Nesta (${listing.city}).`
+        : "Check this stay on Nesta.";
+
+      // Mobile + supported browsers: native share sheet
+      if (navigator.share) {
+        await navigator.share({
+          title,
+          text,
+          url: listingUrl,
+        });
+        setShareMsg("Shared ✅");
+        clearShareMsgSoon();
+        return;
+      }
+
+      // Fallback: copy link
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(listingUrl);
+        setShareMsg("Link copied ✅");
+        clearShareMsgSoon();
+        return;
+      }
+
+      // Old fallback
+      const ta = document.createElement("textarea");
+      ta.value = listingUrl;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+
+      setShareMsg("Link copied ✅");
+      clearShareMsgSoon();
+    } catch (e) {
+      console.warn("[ListingDetails] share failed:", e);
+      setShareMsg("Couldn’t share. Try copying the URL from the address bar.");
+      clearShareMsgSoon();
+    }
+  }, [listing, listingUrl, clearShareMsgSoon]);
 
   /* ───────────────── actions ───────────────── */
 
@@ -218,7 +287,7 @@ export default function ListingDetails() {
     <>
       <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white pt-24 pb-16">
         <div className="max-w-6xl mx-auto px-4 space-y-6">
-          {/* back + id + (host edit) */}
+          {/* back + id + actions */}
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <button
@@ -230,15 +299,33 @@ export default function ListingDetails() {
               <span className="hidden sm:inline text-xs text-white/40 truncate">ID: {listing.id}</span>
             </div>
 
-            {isOwner && (
+            <div className="flex items-center gap-2">
+              {/* ✅ Share button always visible (owners & guests) */}
               <button
-                onClick={() => nav(`/listing/${listing.id}/edit`)}
-                className="px-5 py-2 rounded-full bg-amber-500 text-black font-semibold hover:bg-amber-400 shadow-[0_10px_30px_rgba(0,0,0,0.5)] text-sm"
+                onClick={onShare}
+                className="px-4 py-2 rounded-full bg-white/5 border border-white/15 hover:bg-white/10 text-sm"
+                title="Share this listing"
               >
-                Edit listing
+                Share
               </button>
-            )}
+
+              {isOwner && (
+                <button
+                  onClick={() => nav(`/listing/${listing.id}/edit`)}
+                  className="px-5 py-2 rounded-full bg-amber-500 text-black font-semibold hover:bg-amber-400 shadow-[0_10px_30px_rgba(0,0,0,0.5)] text-sm"
+                >
+                  Edit listing
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* ✅ Share feedback toast */}
+          {shareMsg ? (
+            <div className="rounded-2xl border border-white/10 bg-black/40 px-4 py-2 text-sm text-white/80">
+              {shareMsg}
+            </div>
+          ) : null}
 
           {/* hero / gallery */}
           <div className="grid gap-3 grid-cols-1 lg:grid-cols-[1.1fr,0.9fr]">
