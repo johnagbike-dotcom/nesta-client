@@ -5,8 +5,10 @@ import { useNavigate } from "react-router-dom";
 import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
 
-const API_BASE =
-  process.env.REACT_APP_API_BASE || "http://localhost:4000/api";
+import { useAuth } from "../auth/AuthContext";
+import { getAuth } from "firebase/auth";
+
+const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, "");
 const PAGE_SIZE = 10;
 
 /* ---------- helpers ---------- */
@@ -22,6 +24,7 @@ const fmtDate = (v, withTime = false) => {
         : v instanceof Date
         ? v
         : new Date(v);
+
     return withTime
       ? d.toLocaleString(undefined, {
           year: "numeric",
@@ -46,6 +49,7 @@ const isPast = (checkOut) => {
       typeof checkOut?.toDate === "function"
         ? checkOut.toDate()
         : new Date(checkOut);
+
     const today = new Date();
     d.setHours(0, 0, 0, 0);
     today.setHours(0, 0, 0, 0);
@@ -55,14 +59,11 @@ const isPast = (checkOut) => {
   }
 };
 
-// Refund eligibility (to protect revenue)
-// Rule: booking is confirmed, created ≤ 24h ago, check-in ≥ 7 days away,
-// and canRequestRefund is not explicitly false.
+// Refund eligibility (policy): confirmed, created ≤ 24h ago, check-in ≥ 7 days away
 const isRefundEligible = (b) => {
   try {
     const now = new Date();
 
-    // createdAt
     const created =
       b.createdAt && typeof b.createdAt.toDate === "function"
         ? b.createdAt.toDate()
@@ -70,7 +71,6 @@ const isRefundEligible = (b) => {
         ? new Date(b.createdAt)
         : now;
 
-    // checkIn
     const checkIn =
       b.checkIn && typeof b.checkIn.toDate === "function"
         ? b.checkIn.toDate()
@@ -78,16 +78,12 @@ const isRefundEligible = (b) => {
         ? new Date(b.checkIn)
         : null;
 
-    const hoursSinceCreated = (now - created) / 36e5; // 1000*60*60
+    const hoursSinceCreated = (now - created) / 36e5;
     const daysUntilCheckIn = checkIn ? (checkIn - now) / 864e5 : Infinity;
 
-    if (b.canRequestRefund === false) return false; // manual lock (future use)
+    if (b.canRequestRefund === false) return false;
 
-    // You can tune these numbers later (24h & 7 days)
-    return (
-      hoursSinceCreated <= 24 && // within 24 hours of booking
-      daysUntilCheckIn >= 7 // at least 7 days before check-in
-    );
+    return hoursSinceCreated <= 24 && daysUntilCheckIn >= 7;
   } catch {
     return false;
   }
@@ -97,9 +93,10 @@ const isRefundEligible = (b) => {
 const getFsId = (b) =>
   b.firestoreId || b.fsId || b.fireId || b.fs || b.firestore_id || null;
 
-/* -------------------------------- */
 export default function BookingsPage() {
   const nav = useNavigate();
+  const { user } = useAuth();
+
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -108,28 +105,44 @@ export default function BookingsPage() {
 
   // pagination
   const [page, setPage] = useState(1);
-  const pageSize = PAGE_SIZE;
 
   // per-row cancelling state
   const [cancelling, setCancelling] = useState({});
 
+  // ✅ fetch bookings (token-based, production-safe)
   useEffect(() => {
     let alive = true;
+
     (async () => {
       setLoading(true);
       setErr("");
+
       try {
+        // If your API is protected, this is the reliable approach
+        let token = "";
+        try {
+          const auth = getAuth();
+          token = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+        } catch {
+          token = "";
+        }
+
         const res = await fetch(`${API_BASE}/bookings`, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          // keep include if you also support cookies
           credentials: "include",
         });
+
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!alive) return;
 
-        // Normalize any timestamp-like fields into objects we can render safely
         const norm = (b) => ({
           ...b,
-          // keep raw values; rendering will use fmtDate()
           checkIn: b.checkIn ?? b.checkin ?? b.startDate ?? b.from,
           checkOut: b.checkOut ?? b.checkout ?? b.endDate ?? b.to,
           createdAt: b.createdAt ?? b.created ?? b.created_on,
@@ -138,12 +151,14 @@ export default function BookingsPage() {
         setItems(Array.isArray(data) ? data.map(norm) : []);
       } catch (e) {
         if (!alive) return;
+        // eslint-disable-next-line no-console
         console.error("[Bookings] fetch failed:", e);
         setErr("Could not load bookings. Please try again.");
       } finally {
         if (alive) setLoading(false);
       }
     })();
+
     return () => {
       alive = false;
     };
@@ -160,10 +175,10 @@ export default function BookingsPage() {
   }, [tab, items.length]);
 
   const total = filtered.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const pageSafe = Math.min(Math.max(1, page), totalPages);
-  const sliceStart = (pageSafe - 1) * pageSize;
-  const visible = filtered.slice(sliceStart, sliceStart + pageSize);
+  const sliceStart = (pageSafe - 1) * PAGE_SIZE;
+  const visible = filtered.slice(sliceStart, sliceStart + PAGE_SIZE);
 
   // --- Request cancellation (guest) + mirror to Firestore so host/partner sees it
   async function requestCancel(b) {
@@ -171,46 +186,47 @@ export default function BookingsPage() {
     if (!id) return;
 
     const s = String(b.status || "").toLowerCase();
-    if (
-      isPast(b.checkOut) ||
-      ["cancelled", "cancel_request", "refund_requested"].includes(s)
-    ) {
+
+    if (isPast(b.checkOut) || ["cancelled", "cancel_request", "refund_requested", "refunded"].includes(s)) {
       alert("This booking can’t be cancelled.");
       return;
     }
 
-    if (
-      !window.confirm(
-        `Request cancellation for “${b.listingTitle || "Listing"}”?`
-      )
-    )
-      return;
+    if (!window.confirm(`Request cancellation for “${b.listingTitle || "Listing"}”?`)) return;
 
     // optimistic UI
     const prevItems = items;
     setItems((curr) =>
-      curr.map((x) =>
-        (x.id || x._id) === id ? { ...x, status: "cancel_request" } : x
-      )
+      curr.map((x) => ((x.id || x._id) === id ? { ...x, status: "cancel_request" } : x))
     );
     setCancelling((prev) => ({ ...prev, [id]: true }));
 
     try {
-      // API request: mark as cancellation requested
+      let token = "";
+      try {
+        const auth = getAuth();
+        token = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+      } catch {
+        token = "";
+      }
+
       const res = await fetch(`${API_BASE}/bookings/${id}/cancel`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         credentials: "include",
       });
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      // Firestore mirror (enables partner "Needs attention")
+      // Firestore mirror (partner/admin visibility)
       const fsId = getFsId(b);
       if (fsId) {
         try {
           await updateDoc(doc(db, "bookings", fsId), {
             status: "cancel_request",
-            // keep both flags in sync for all pages
             cancelRequested: true,
             cancellationRequested: true,
             updatedAt: serverTimestamp(),
@@ -221,7 +237,6 @@ export default function BookingsPage() {
             },
           });
         } catch (e) {
-          // Mirror failing shouldn't block the user; log silently
           // eslint-disable-next-line no-console
           console.warn("[Bookings] Firestore mirror failed:", e);
         }
@@ -229,6 +244,7 @@ export default function BookingsPage() {
 
       alert("Cancellation request sent to host/partner.");
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.error("[Request cancel] failed:", e);
       alert("Could not send request. Restoring state.");
       setItems(prevItems);
@@ -238,33 +254,21 @@ export default function BookingsPage() {
   }
 
   function rebook(b) {
-    const listing = {
-      id: b.listingId || b.listing?.id || b.id || "",
-      title: b.listingTitle || b.listing?.title || "Listing",
-      location: b.listingLocation || b.listing?.location || "",
-      pricePerNight: b.pricePerNight || b.listing?.pricePerNight || 0,
-      city: b.city,
-      area: b.area,
-    };
-    nav("/payment", {
+    // ✅ Correct route: you book via /reserve/:id (not /payment)
+    const listingId = b.listingId || b.listing?.id;
+    if (!listingId) {
+      alert("Listing ID missing for this booking.");
+      return;
+    }
+
+    nav(`/reserve/${listingId}`, {
       state: {
-        booking: {
-          listing,
-          listingId: listing.id,
-          // ask user for new dates
-          checkIn: "",
-          checkOut: "",
-          guests: b.guests || 1,
-          // recompute in PaymentPage
-          pricePerNight: listing.pricePerNight || 0,
-          nights: 0,
-          subtotal: 0,
-          fee: 0,
-          total: 0,
-          userEmail: b.userEmail,
-          userId: b.userId,
-        },
-        from: "rebook",
+        id: listingId,
+        title: b.listingTitle || b.listing?.title || "Listing",
+        price: b.pricePerNight || b.listing?.pricePerNight || 0,
+        hostId: b.ownerId || b.hostId || b.partnerUid || null,
+        city: b.city || "",
+        area: b.area || "",
       },
     });
   }
@@ -272,20 +276,22 @@ export default function BookingsPage() {
   function openChatFromBooking(b) {
     const listingId = b.listingId || b.listing?.id;
     const title = b.listingTitle || b.title || b.listing?.title || "Listing";
-    // decide who the counterpart is based on ownershipType
+
     const counterpartUid =
-      (b.ownershipType || "").toLowerCase() === "host"
+      (String(b.ownershipType || "").toLowerCase() === "host"
         ? b.ownerId || b.hostId || null
-        : b.partnerUid || b.ownerId || null;
+        : b.partnerUid || b.ownerId || b.hostId || null);
+
     if (!listingId || !counterpartUid) {
       alert("This booking is missing host/partner info.");
       return;
     }
+
     nav("/chat", {
       state: {
-        partnerUid: counterpartUid, // hostId/ownerId or partnerUid
-        listing: { id: listingId, title }, // minimal listing context
-        bookingId: b.id || b._id, // optional but helpful
+        partnerUid: counterpartUid,
+        listing: { id: listingId, title },
+        bookingId: b.id || b._id,
         from: "bookings",
       },
     });
@@ -295,9 +301,7 @@ export default function BookingsPage() {
     <main className="min-h-screen bg-[#0f1419] text-white px-4 py-10">
       <div className="max-w-6xl mx-auto">
         <header className="flex items-center justify-between mb-6">
-          <h1 className="text-3xl font-extrabold tracking-tight">
-            Your Bookings
-          </h1>
+          <h1 className="text-3xl font-extrabold tracking-tight">Your Bookings</h1>
           <button
             onClick={() => setRefreshKey((k) => k + 1)}
             className="px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10"
@@ -327,17 +331,17 @@ export default function BookingsPage() {
             Loading bookings…
           </div>
         )}
+
         {!loading && err && (
           <div className="rounded-2xl border border-red-400/40 bg-red-500/10 p-6 text-red-200">
             {err}
           </div>
         )}
+
         {!loading && !err && total === 0 && (
           <div className="rounded-2xl border border-white/10 bg-gray-900/60 p-6">
             <p className="mb-2 font-semibold">No bookings found.</p>
-            <p className="text-gray-300">
-              When you book a stay, it’ll appear here.
-            </p>
+            <p className="text-gray-300">When you book a stay, it’ll appear here.</p>
           </div>
         )}
 
@@ -350,39 +354,32 @@ export default function BookingsPage() {
 
                 const refundable = isRefundEligible(b);
 
-// keeps your existing cancel-request detection
-const hasCancelReq =
-  (b.cancellationRequested ||
-    b.cancelRequested ||
-    s === "cancel_request" ||
-    s === "refund_requested") &&
-  !["cancelled", "refunded"].includes(s);
+                const hasCancelReq =
+                  (b.cancellationRequested ||
+                    b.cancelRequested ||
+                    s === "cancel_request" ||
+                    s === "refund_requested") &&
+                  !["cancelled", "refunded"].includes(s);
 
-// ✅ Luxury UX: cancellation request is separate from refund eligibility
-const canRequestCancellation =
-  !isPast(b.checkOut) &&
-  ["confirmed", "paid"].includes(s) &&
-  !["cancelled", "cancel_request", "refund_requested", "refunded"].includes(s) &&
-  !hasCancelReq;
+                const canRequestCancellation =
+                  !isPast(b.checkOut) &&
+                  ["confirmed", "paid"].includes(s) &&
+                  !["cancelled", "cancel_request", "refund_requested", "refunded"].includes(s) &&
+                  !hasCancelReq;
 
-// ✅ Refund request stays strict (policy)
-const canRequestRefund =
-  refundable &&
-  !isPast(b.checkOut) &&
-  ["confirmed", "paid"].includes(s) &&
-  !["cancelled", "cancel_request", "refund_requested", "refunded"].includes(s) &&
-  !hasCancelReq;
+                const canRequestRefund =
+                  refundable &&
+                  !isPast(b.checkOut) &&
+                  ["confirmed", "paid"].includes(s) &&
+                  !["cancelled", "cancel_request", "refund_requested", "refunded"].includes(s) &&
+                  !hasCancelReq;
 
-const canChat = ["confirmed", "paid"].includes(s);
-const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
+                const canChat = ["confirmed", "paid"].includes(s);
+                const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
 
                 let subtitle = b.listingLocation || "";
-                if (s === "refunded") {
-                  subtitle = "Payment has been refunded.";
-                } else if (hasCancelReq) {
-                  subtitle =
-                    "Cancellation requested — awaiting host/partner.";
-                }
+                if (s === "refunded") subtitle = "Payment has been refunded.";
+                else if (hasCancelReq) subtitle = "Cancellation requested — awaiting host/partner.";
 
                 const statusLabel = (() => {
                   switch (s) {
@@ -411,14 +408,8 @@ const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
                     <div className="p-4">
                       <div className="flex items-start justify-between">
                         <div>
-                          <h3 className="text-lg font-semibold">
-                            {b.listingTitle || "Listing"}
-                          </h3>
-                          {subtitle && (
-                            <p className="text-sm text-gray-300">
-                              {subtitle}
-                            </p>
-                          )}
+                          <h3 className="text-lg font-semibold">{b.listingTitle || "Listing"}</h3>
+                          {subtitle && <p className="text-sm text-gray-300">{subtitle}</p>}
                           <p className="text-xs text-gray-400 mt-1">
                             Booked: {fmtDate(b.createdAt, true)}
                           </p>
@@ -437,8 +428,7 @@ const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
                               ? "border-red-400 text-red-300 bg-red-500/10"
                               : s === "refunded"
                               ? "border-amber-400 text-amber-200 bg-amber-500/10"
-                              : s === "cancel_request" ||
-                                s === "refund_requested"
+                              : s === "cancel_request" || s === "refund_requested"
                               ? "border-amber-400 text-amber-200 bg-amber-500/10"
                               : "border-slate-400 text-slate-200 bg-slate-500/10"
                           }`}
@@ -450,24 +440,17 @@ const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
                       <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                         <div className="rounded-xl bg-black/30 border border-white/10 p-3">
                           <div className="text-gray-400">Check-in</div>
-                          <div className="font-medium">
-                            {fmtDate(b.checkIn)}
-                          </div>
+                          <div className="font-medium">{fmtDate(b.checkIn)}</div>
                         </div>
                         <div className="rounded-xl bg-black/30 border border-white/10 p-3">
                           <div className="text-gray-400">Check-out</div>
-                          <div className="font-medium">
-                            {fmtDate(b.checkOut)}
-                          </div>
+                          <div className="font-medium">{fmtDate(b.checkOut)}</div>
                         </div>
                       </div>
 
                       <div className="mt-3 flex items-center justify-between">
                         <div className="text-gray-300">
-                          Guests:{" "}
-                          <span className="font-medium">
-                            {b.guests || 1}
-                          </span>
+                          Guests: <span className="font-medium">{b.guests || 1}</span>
                         </div>
                         <div className="text-lg font-semibold">
                           {ngn(b.total ?? b.amountN ?? b.totalAmount ?? 0)}
@@ -483,27 +466,27 @@ const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
                         </button>
 
                         {canRequestCancellation && (
-  <button
-    disabled={!!cancelling[id]}
-    onClick={() => requestCancel(b)}
-    className={`px-3 py-2 rounded-xl border ${
-      cancelling[id]
-        ? "bg-amber-900/30 border-amber-400/50 text-amber-200 cursor-not-allowed"
-        : "bg-amber-900/30 border-amber-400/60 text-amber-200 hover:bg-amber-900/50"
-    }`}
-  >
-    {cancelling[id] ? "Requesting…" : "Request cancellation"}
-  </button>
-)}
+                          <button
+                            disabled={!!cancelling[id]}
+                            onClick={() => requestCancel(b)}
+                            className={`px-3 py-2 rounded-xl border ${
+                              cancelling[id]
+                                ? "bg-amber-900/30 border-amber-400/50 text-amber-200 cursor-not-allowed"
+                                : "bg-amber-900/30 border-amber-400/60 text-amber-200 hover:bg-amber-900/50"
+                            }`}
+                          >
+                            {cancelling[id] ? "Requesting…" : "Request cancellation"}
+                          </button>
+                        )}
 
-{canRequestRefund && (
-  <button
-    onClick={() => alert("Refund request flow next (we’ll wire server route).")}
-    className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-sm"
-  >
-    Request refund
-  </button>
-)}
+                        {canRequestRefund && (
+                          <button
+                            onClick={() => alert("Refund request flow next (we’ll wire server route).")}
+                            className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-sm"
+                          >
+                            Request refund
+                          </button>
+                        )}
 
                         {canChat && (
                           <button
@@ -514,22 +497,16 @@ const canCheckIn = !isPast(b.checkOut) && ["confirmed", "paid"].includes(s);
                           </button>
                         )}
 
-                        {/* ✅ Open guest receipt */}
                         <button
-                          onClick={() =>
-                            nav("/booking-complete", { state: { booking: b } })
-                          }
+                          onClick={() => nav("/booking-complete", { state: { booking: b } })}
                           className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-sm"
                         >
                           Receipt
                         </button>
 
-                        {/* ✅ Guest check-in guide (only for confirmed & upcoming) */}
                         {canCheckIn && (
                           <button
-                            onClick={() =>
-                              nav(`/checkin/${id}`, { state: { booking: b } })
-                            }
+                            onClick={() => nav(`/checkin/${id}`, { state: { booking: b } })}
                             className="px-3 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/10 text-sm"
                           >
                             Check-in guide

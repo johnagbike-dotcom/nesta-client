@@ -1,5 +1,5 @@
 // src/pages/ReservePage.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../firebase";
@@ -72,6 +72,34 @@ function Stepper({ step }) {
   );
 }
 
+/* ---------- Date helpers ---------- */
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function toYmdLocal(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function addDaysYmd(ymd, days) {
+  if (!ymd) return "";
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + Number(days || 0));
+  return toYmdLocal(dt);
+}
+
+function isPastYmd(ymd) {
+  if (!ymd) return false;
+  const [y, m, d] = ymd.split("-").map(Number);
+  const selected = new Date(y, m - 1, d);
+  selected.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return selected.getTime() < today.getTime();
+}
+
 export default function ReservePage() {
   const { user } = useAuth();
   const { showToast: toast } = useToast();
@@ -79,8 +107,13 @@ export default function ReservePage() {
   const params = useParams();
   const location = useLocation();
   const { profile } = useUserProfile(user?.uid);
+
   const role = (profile?.role || "").toLowerCase();
   const isGuest = role === "guest" || !role;
+
+  // ✅ Normalise API root so we never produce /api/api
+  const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+  const API = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
 
   // state listing (from navigate or direct fetch)
   const state = location.state || {};
@@ -98,14 +131,37 @@ export default function ReservePage() {
   );
   const [loadingListing, setLoadingListing] = useState(!state.id);
 
+  // form state
+  const [step, setStep] = useState(1);
+  const [guests, setGuests] = useState(1);
+  const [checkIn, setCheckIn] = useState("");
+  const [checkOut, setCheckOut] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [holdInfo, setHoldInfo] = useState(null);
+
+  // availability state
+  const [checkingAvail, setCheckingAvail] = useState(false);
+  const [availOk, setAvailOk] = useState(true);
+  const [availMsg, setAvailMsg] = useState("");
+
+  const todayMin = useMemo(() => toYmdLocal(new Date()), []);
+  const checkOutMin = useMemo(() => {
+    if (checkIn) return addDaysYmd(checkIn, 1);
+    return todayMin;
+  }, [checkIn, todayMin]);
+
+  // load listing if needed
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
         if (listing || !params.id) return;
         setLoadingListing(true);
+
         const snap = await getDoc(doc(db, "listings", params.id));
-        if (alive && snap.exists()) {
+        if (!alive) return;
+
+        if (snap.exists()) {
           const d = snap.data();
           setListing({
             id: snap.id,
@@ -115,6 +171,9 @@ export default function ReservePage() {
             city: d.city || "",
             area: d.area || "",
           });
+        } else {
+          toast("Listing not found.", "error");
+          setListing(null);
         }
       } catch (e) {
         console.error(e);
@@ -123,19 +182,12 @@ export default function ReservePage() {
         if (alive) setLoadingListing(false);
       }
     })();
+
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id, listing]);
-
-  // form state
-  const [step, setStep] = useState(1);
-  const [guests, setGuests] = useState(1);
-  const [checkIn, setCheckIn] = useState("");
-  const [checkOut, setCheckOut] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [holdInfo, setHoldInfo] = useState(null);
 
   const nights = useMemo(() => {
     if (!checkIn || !checkOut) return 0;
@@ -146,7 +198,10 @@ export default function ReservePage() {
   }, [checkIn, checkOut]);
 
   const datesValid =
-    Boolean(checkIn && checkOut) && new Date(checkOut) > new Date(checkIn);
+    Boolean(checkIn && checkOut) &&
+    !isPastYmd(checkIn) &&
+    !isPastYmd(checkOut) &&
+    new Date(checkOut) > new Date(checkIn);
 
   const total = useMemo(() => {
     if (!listing) return 0;
@@ -154,43 +209,88 @@ export default function ReservePage() {
     return Math.max(perNight * nights * Number(guests || 0), 0);
   }, [listing, nights, guests]);
 
-  const canGoToStep2 = Boolean(listing && guests > 0 && datesValid && nights > 0);
+  const canGoToStep2 = Boolean(
+    listing && guests > 0 && datesValid && nights > 0 && availOk && !checkingAvail
+  );
   const canGoToStep3 = Boolean(canGoToStep2);
+  const canPay = Boolean(
+    user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail
+  );
 
-  const canPay = Boolean(user && listing && datesValid && total > 0 && guests > 0);
+  // ✅ Server availability (no Firestore permissions issues)
+  const checkAvailability = useCallback(
+    async (ci, co) => {
+      if (!listing?.id) return { ok: true, msg: "" };
+      if (!ci || !co) return { ok: true, msg: "" };
 
-  // Guard – non-guests
-  if (user && !isGuest) {
-    return (
-      <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white grid place-items-center px-4">
-        <div className="max-w-lg w-full rounded-3xl border border-amber-400/30 bg-black/40 p-6 backdrop-blur-sm shadow-[0_24px_70px_rgba(0,0,0,.75)]">
-          <h2
-            className="text-xl font-bold text-amber-300"
-            style={{
-              fontFamily:
-                'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
-            }}
-          >
-            Reservation not available
-          </h2>
-          <p className="mt-2 text-gray-200 text-sm">
-            You’re signed in as <strong>{role}</strong>. Only guests can make
-            reservations.
-          </p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              className="px-4 py-2 rounded-full bg-amber-500 text-black font-semibold hover:bg-amber-400 text-sm"
-              onClick={() => nav(-1)}
-            >
-              ← Back
-            </button>
-          </div>
-        </div>
-      </main>
-    );
-  }
+      if (isPastYmd(ci)) return { ok: false, msg: "Check-in cannot be in the past." };
+      if (isPastYmd(co)) return { ok: false, msg: "Check-out cannot be in the past." };
 
-  // Reserve helpers (SERVER creates hold + reference)
+      setCheckingAvail(true);
+      setAvailMsg("");
+      setAvailOk(true);
+
+      try {
+        const url =
+          `${API}/bookings/availability` +
+          `?listingId=${encodeURIComponent(listing.id)}` +
+          `&checkIn=${encodeURIComponent(ci)}` +
+          `&checkOut=${encodeURIComponent(co)}`;
+
+        const res = await fetch(url, { method: "GET" });
+        const data = await res.json().catch(() => null);
+
+        if (!res.ok) {
+          const message = data?.error || data?.message || "Availability check failed";
+          return { ok: true, msg: `Availability could not be verified. (${message})` };
+        }
+
+        if (data?.available === false) {
+          return { ok: false, msg: "These dates are not available. Please choose different dates." };
+        }
+
+        return { ok: true, msg: "" };
+      } catch (e) {
+        console.error("[ReservePage] server availability check failed:", e);
+        return {
+          ok: true,
+          msg: "Availability could not be verified right now. If payment fails, try again.",
+        };
+      } finally {
+        setCheckingAvail(false);
+      }
+    },
+    [API, listing?.id]
+  );
+
+  // re-check availability when dates change
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!checkIn || !checkOut || !listing?.id) {
+        setAvailOk(true);
+        setAvailMsg("");
+        return;
+      }
+
+      if (isPastYmd(checkIn) || isPastYmd(checkOut)) {
+        setAvailOk(false);
+        setAvailMsg("Past dates are not allowed.");
+        return;
+      }
+
+      const res = await checkAvailability(checkIn, checkOut);
+      if (!alive) return;
+      setAvailOk(res.ok);
+      setAvailMsg(res.msg || "");
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [checkIn, checkOut, listing?.id, checkAvailability]);
+
+  // SERVER creates hold + reference (re-check before hold)
   async function ensureHoldViaServer() {
     if (!user) {
       toast("Please log in first.", "warning");
@@ -198,8 +298,32 @@ export default function ReservePage() {
       return null;
     }
     if (!listing) return null;
+
+    if (!checkIn || !checkOut) {
+      toast("Please select check-in and check-out dates.", "warning");
+      return null;
+    }
+
+    if (isPastYmd(checkIn)) {
+      toast("Check-in cannot be in the past.", "warning");
+      return null;
+    }
+
+    if (isPastYmd(checkOut)) {
+      toast("Check-out cannot be in the past.", "warning");
+      return null;
+    }
+
     if (!datesValid) {
       toast("Select valid dates (check-in before check-out).", "warning");
+      return null;
+    }
+
+    const res = await checkAvailability(checkIn, checkOut);
+    if (!res.ok) {
+      setAvailOk(false);
+      setAvailMsg(res.msg || "These dates are not available.");
+      toast(res.msg || "Selected dates are not available.", "warning");
       return null;
     }
 
@@ -249,10 +373,8 @@ export default function ReservePage() {
       email: user?.email || "guest@example.com",
       amount: amountKobo,
       currency: "NGN",
-      ref: reference, // ✅ server-generated reference, webhook can resolve
+      ref: reference,
       callback: function () {
-        // ✅ Luxury best practice: DO NOT write Firestore here.
-        // Webhook will mark booking paid, credit wallet, create ledger.
         setBusy(false);
         toast("Payment received — confirming…", "info");
         nav("/reserve/success", {
@@ -269,265 +391,334 @@ export default function ReservePage() {
     if (handler?.openIframe) handler.openIframe();
   }
 
+  const showNonGuestBlock = Boolean(user && !isGuest);
+
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white">
-      <div className="max-w-5xl mx-auto px-4 pt-24 pb-10">
-        {/* Header + back */}
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <button
-            className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-xs md:text-sm"
-            onClick={() => nav(-1)}
-          >
-            ← Back to details
-          </button>
-          {listing && (
-            <span className="text-[11px] text-white/40">
-              {listing.city || "Nigeria"} • {listing.area || ""}
-            </span>
-          )}
-        </div>
-
-        {/* Title + stepper */}
-        <div className="mb-6">
-          <h1
-            className="text-2xl md:text-[28px] font-semibold tracking-tight"
-            style={{
-              fontFamily:
-                'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
-            }}
-          >
-            Complete your reservation
-          </h1>
-          <p className="text-sm text-white/70 max-w-xl mt-1">
-            Fast checkout first. ID check-in happens after confirmation to protect both guests and hosts.
-          </p>
-        </div>
-
-        <Stepper step={step} />
-
-        <div className="grid gap-6 md:grid-cols-[minmax(0,1.55fr),minmax(0,1fr)] items-start">
-          {/* LEFT – forms per step */}
-          <div className="space-y-4">
-            {/* Listing title card */}
-            <div className="rounded-3xl bg-gradient-to-r from-[#12151c] via-[#0b0f14] to-[#05070b] border border-white/10 p-4 shadow-[0_20px_60px_rgba(0,0,0,.75)]">
-              {loadingListing ? (
-                <div className="h-6 w-40 rounded-full bg-white/5 animate-pulse" />
-              ) : (
-                <>
-                  <h2
-                    className="text-lg font-semibold"
-                    style={{
-                      fontFamily:
-                        'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
-                    }}
-                  >
-                    {listing?.title || "Listing"}
-                  </h2>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Secure booking on Nesta • contact details remain hidden until booking rules allow.
-                  </p>
-                </>
-              )}
+      {showNonGuestBlock ? (
+        <div className="min-h-screen grid place-items-center px-4">
+          <div className="max-w-lg w-full rounded-3xl border border-amber-400/30 bg-black/40 p-6 backdrop-blur-sm shadow-[0_24px_70px_rgba(0,0,0,.75)]">
+            <h2
+              className="text-xl font-bold text-amber-300"
+              style={{
+                fontFamily:
+                  'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+              }}
+            >
+              Reservation not available
+            </h2>
+            <p className="mt-2 text-gray-200 text-sm">
+              You’re signed in as <strong>{role || "user"}</strong>. Only guests can make
+              reservations.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                className="px-4 py-2 rounded-full bg-amber-500 text-black font-semibold hover:bg-amber-400 text-sm"
+                onClick={() => nav(-1)}
+              >
+                ← Back
+              </button>
             </div>
-
-            {/* Step 1 */}
-            {step === 1 && (
-              <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
-                <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
-                  Step 1 · Dates & guests
-                </h3>
-
-                <Field label="Guests" hint="Max as allowed by host">
-                  <Input
-                    type="number"
-                    min={1}
-                    value={guests}
-                    onChange={(e) =>
-                      setGuests(Math.max(1, Number(e.target.value || 1)))
-                    }
-                  />
-                </Field>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Field label="Check-in">
-                    <Input
-                      type="date"
-                      value={checkIn}
-                      onChange={(e) => setCheckIn(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Check-out">
-                    <Input
-                      type="date"
-                      value={checkOut}
-                      onChange={(e) => setCheckOut(e.target.value)}
-                    />
-                  </Field>
-                </div>
-
-                <p className="text-xs text-gray-400">
-                  Choose valid dates – your check-out must be after check-in.
-                </p>
-
-                <div className="flex justify-between items-center mt-2">
-                  <div className="text-xs text-gray-400">
-                    {datesValid && nights > 0
-                      ? `${nights} night(s) selected`
-                      : "No valid dates yet"}
-                  </div>
-                  <button
-                    type="button"
-                    disabled={!canGoToStep2}
-                    onClick={() => setStep(2)}
-                    className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
-                      canGoToStep2
-                        ? "bg-amber-500 hover:bg-amber-400 text-black shadow-[0_12px_40px_rgba(0,0,0,.6)]"
-                        : "bg-white/5 text-white/35 cursor-not-allowed"
-                    }`}
-                  >
-                    Next →
-                  </button>
-                </div>
-              </div>
+          </div>
+        </div>
+      ) : (
+        <div className="max-w-5xl mx-auto px-4 pt-24 pb-10">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <button
+              className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-xs md:text-sm"
+              onClick={() => nav(-1)}
+            >
+              ← Back to details
+            </button>
+            {listing && (
+              <span className="text-[11px] text-white/40">
+                {listing.city || "Nigeria"} • {listing.area || ""}
+              </span>
             )}
+          </div>
 
-            {/* Step 2 */}
-            {step === 2 && (
-              <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
-                <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
-                  Step 2 · Confirm details
-                </h3>
+          <div className="mb-6">
+            <h1
+              className="text-2xl md:text-[28px] font-semibold tracking-tight"
+              style={{
+                fontFamily:
+                  'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+              }}
+            >
+              Complete your reservation
+            </h1>
+            <p className="text-sm text-white/70 max-w-xl mt-1">
+              Fast checkout first. ID check-in happens after confirmation to protect both guests and hosts.
+            </p>
+          </div>
 
-                <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
-                  <p className="text-white/90 font-semibold">Privacy & security</p>
-                  <p className="text-xs text-white/60 mt-1 leading-relaxed">
-                    Nesta keeps contact details hidden and encourages all communication in-app.
-                    After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
-                  </p>
+          <Stepper step={step} />
+
+          <div className="grid gap-6 md:grid-cols-[minmax(0,1.55fr),minmax(0,1fr)] items-start">
+            <div className="space-y-4">
+              <div className="rounded-3xl bg-gradient-to-r from-[#12151c] via-[#0b0f14] to-[#05070b] border border-white/10 p-4 shadow-[0_20px_60px_rgba(0,0,0,.75)]">
+                {loadingListing ? (
+                  <div className="h-6 w-40 rounded-full bg-white/5 animate-pulse" />
+                ) : (
+                  <>
+                    <h2
+                      className="text-lg font-semibold"
+                      style={{
+                        fontFamily:
+                          'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                      }}
+                    >
+                      {listing?.title || "Listing"}
+                    </h2>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Secure booking on Nesta • contact details remain hidden until booking rules allow.
+                    </p>
+                  </>
+                )}
+              </div>
+
+              {(checkingAvail || availMsg) && (
+                <div
+                  className={`rounded-2xl border p-4 text-xs md:text-sm ${
+                    checkingAvail
+                      ? "border-white/10 bg-white/5 text-white/80"
+                      : availOk
+                      ? "border-amber-300/25 bg-amber-400/5 text-amber-100"
+                      : "border-red-400/25 bg-red-500/10 text-red-100"
+                  }`}
+                >
+                  {checkingAvail
+                    ? "Checking availability…"
+                    : availOk
+                    ? availMsg
+                    : availMsg || "These dates are not available."}
                 </div>
+              )}
 
-                <div className="flex justify-between items-center mt-3">
+              {step === 1 && (
+                <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
+                  <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
+                    Step 1 · Dates & guests
+                  </h3>
+
+                  <Field label="Guests" hint="Max as allowed by host">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={guests}
+                      onChange={(e) => setGuests(Math.max(1, Number(e.target.value || 1)))}
+                    />
+                  </Field>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <Field label="Check-in" hint={`From ${todayMin}`}>
+                      <Input
+                        type="date"
+                        min={todayMin}
+                        value={checkIn}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v && isPastYmd(v)) {
+                            toast("Past dates are not allowed.", "warning");
+                            return;
+                          }
+                          setCheckIn(v);
+                          if (checkOut && v && new Date(checkOut) <= new Date(v)) {
+                            setCheckOut("");
+                          }
+                        }}
+                      />
+                    </Field>
+                    <Field label="Check-out" hint={`From ${checkOutMin}`}>
+                      <Input
+                        type="date"
+                        min={checkOutMin}
+                        value={checkOut}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v && isPastYmd(v)) {
+                            toast("Past dates are not allowed.", "warning");
+                            return;
+                          }
+                          if (checkIn && v && new Date(v) <= new Date(checkIn)) {
+                            toast("Check-out must be after check-in.", "warning");
+                            return;
+                          }
+                          setCheckOut(v);
+                        }}
+                      />
+                    </Field>
+                  </div>
+
+                  <p className="text-xs text-gray-400">
+                    Past dates are blocked. Your check-out must be after check-in.
+                  </p>
+
+                  <div className="flex justify-between items-center mt-2">
+                    <div className="text-xs text-gray-400">
+                      {datesValid && nights > 0 ? `${nights} night(s) selected` : "No valid dates yet"}
+                      {datesValid && !checkingAvail && !availOk ? (
+                        <span className="ml-2 text-red-200">• Unavailable</span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!canGoToStep2}
+                      onClick={() => setStep(2)}
+                      className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
+                        canGoToStep2
+                          ? "bg-amber-500 hover:bg-amber-400 text-black shadow-[0_12px_40px_rgba(0,0,0,.6)]"
+                          : "bg-white/5 text-white/35 cursor-not-allowed"
+                      }`}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {step === 2 && (
+                <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
+                  <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
+                    Step 2 · Confirm details
+                  </h3>
+
+                  <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
+                    <p className="text-white/90 font-semibold">Privacy & security</p>
+                    <p className="text-xs text-white/60 mt-1 leading-relaxed">
+                      Nesta keeps contact details hidden and encourages all communication in-app.
+                      After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
+                    </p>
+                  </div>
+
+                  {!availOk && (
+                    <div className="rounded-2xl border border-red-400/25 bg-red-500/10 p-4 text-xs text-red-100">
+                      Dates unavailable. Please go back and select new dates.
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-center mt-3">
+                    <button
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="px-3 py-1.5 rounded-full text-xs bg-white/5 border border-white/15 hover:bg-white/10"
+                    >
+                      ← Back
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canGoToStep3}
+                      onClick={() => setStep(3)}
+                      className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
+                        canGoToStep3
+                          ? "bg-amber-500 hover:bg-amber-400 text-black shadow-[0_12px_40px_rgba(0,0,0,.6)]"
+                          : "bg-white/5 text-white/35 cursor-not-allowed"
+                      }`}
+                    >
+                      Next: payment →
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {step === 3 && (
+                <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
+                  <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
+                    Step 3 · Payment
+                  </h3>
+                  <p className="text-xs text-gray-400">
+                    We’ll create a temporary reservation hold, then open a secure Paystack window to complete your booking.
+                  </p>
+
+                  {!availOk && (
+                    <div className="rounded-2xl border border-red-400/25 bg-red-500/10 p-4 text-xs text-red-100">
+                      Dates unavailable. Please go back and select new dates.
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <button
+                      onClick={onPaystack}
+                      disabled={!canPay || busy}
+                      className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
+                        canPay
+                          ? "bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-500 text-black shadow-[0_18px_50px_rgba(0,0,0,.7)]"
+                          : "bg-gray-700/80 text-gray-400 cursor-not-allowed"
+                      } ${busy ? "animate-pulse" : ""}`}
+                    >
+                      {busy ? "Processing…" : "Confirm & Pay (Paystack)"}
+                    </button>
+                  </div>
+
+                  {holdInfo?.expiresAt && (
+                    <div className="mt-3 text-xs text-amber-300">
+                      Your provisional hold will expire soon.
+                    </div>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => setStep(1)}
-                    className="px-3 py-1.5 rounded-full text-xs bg-white/5 border border-white/15 hover:bg-white/10"
+                    onClick={() => setStep(2)}
+                    className="mt-3 px-3 py-1.5 rounded-full text-xs bg-white/5 border border-white/15 hover:bg-white/10"
                   >
                     ← Back
                   </button>
-                  <button
-                    type="button"
-                    disabled={!canGoToStep3}
-                    onClick={() => setStep(3)}
-                    className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
-                      canGoToStep3
-                        ? "bg-amber-500 hover:bg-amber-400 text-black shadow-[0_12px_40px_rgba(0,0,0,.6)]"
-                        : "bg-white/5 text-white/35 cursor-not-allowed"
-                    }`}
-                  >
-                    Next: payment →
-                  </button>
                 </div>
-              </div>
-            )}
-
-            {/* Step 3 */}
-            {step === 3 && (
-              <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
-                <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
-                  Step 3 · Payment
-                </h3>
-                <p className="text-xs text-gray-400">
-                  We’ll create a temporary reservation hold, then open a secure
-                  Paystack window to complete your booking.
-                </p>
-
-                <div className="flex flex-wrap gap-2 mt-3">
-                  <button
-                    onClick={onPaystack}
-                    disabled={!canPay || busy}
-                    className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
-                      canPay
-                        ? "bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-500 text-black shadow-[0_18px_50px_rgba(0,0,0,.7)]"
-                        : "bg-gray-700/80 text-gray-400 cursor-not-allowed"
-                    } ${busy ? "animate-pulse" : ""}`}
-                  >
-                    {busy ? "Processing…" : "Confirm & Pay (Paystack)"}
-                  </button>
-                </div>
-
-                {holdInfo?.expiresAt && (
-                  <div className="mt-3 text-xs text-amber-300">
-                    Your provisional hold will expire soon.
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setStep(2)}
-                  className="mt-3 px-3 py-1.5 rounded-full text-xs bg-white/5 border border-white/15 hover:bg-white/10"
-                >
-                  ← Back
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* RIGHT – summary */}
-          <aside className="space-y-4">
-            <div className="rounded-3xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,.8)]">
-              <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">
-                Booking summary
-              </h3>
-              {listing ? (
-                <>
-                  <p className="text-sm text-white/90">{listing.title}</p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    {listing.area || "—"}, {listing.city || "Nigeria"}
-                  </p>
-                  <div className="mt-3 text-sm text-gray-300">
-                    {ngn(listing.pricePerNight || 0)}{" "}
-                    <span className="text-xs text-white/60">/ night</span>
-                  </div>
-                  <div className="mt-3 text-sm">
-                    {nights > 0 ? (
-                      <>
-                        {nights} night(s) · {guests} guest(s)
-                        <br />
-                        <span className="font-semibold text-amber-300">
-                          Total: {ngn(total)}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="text-gray-500 text-xs">
-                        Select dates to see your total.
-                      </span>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="h-16 rounded-xl bg-white/5 animate-pulse" />
               )}
             </div>
 
-            <div className="rounded-3xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
-              <p>
-                Your payment is processed securely via Paystack. Nesta never
-                stores your full card details.
-              </p>
-              <p>
-                After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
-              </p>
-            </div>
-          </aside>
-        </div>
+            <aside className="space-y-4">
+              <div className="rounded-3xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,.8)]">
+                <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">
+                  Booking summary
+                </h3>
+                {listing ? (
+                  <>
+                    <p className="text-sm text-white/90">{listing.title}</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {listing.area || "—"}, {listing.city || "Nigeria"}
+                    </p>
+                    <div className="mt-3 text-sm text-gray-300">
+                      {ngn(listing.pricePerNight || 0)}{" "}
+                      <span className="text-xs text-white/60">/ night</span>
+                    </div>
+                    <div className="mt-3 text-sm">
+                      {nights > 0 ? (
+                        <>
+                          {nights} night(s) · {guests} guest(s)
+                          <br />
+                          <span className="font-semibold text-amber-300">Total: {ngn(total)}</span>
+                          {!checkingAvail && !availOk ? (
+                            <div className="mt-2 text-xs text-red-200">
+                              Dates unavailable — choose different dates.
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="text-gray-500 text-xs">Select dates to see your total.</span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="h-16 rounded-xl bg-white/5 animate-pulse" />
+                )}
+              </div>
 
-        <div className="mt-10 border-t border-white/5 pt-6">
-          <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
-            <span className="text-lg">🔒</span>
-            <span>Secure checkout · Powered by Paystack · Encrypted payment processing</span>
+              <div className="rounded-3xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
+                <p>Your payment is processed securely via Paystack. Nesta never stores your full card details.</p>
+                <p>After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.</p>
+              </div>
+            </aside>
+          </div>
+
+          <div className="mt-10 border-t border-white/5 pt-6">
+            <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
+              <span className="text-lg">🔒</span>
+              <span>Secure checkout · Powered by Paystack · Encrypted payment processing</span>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </main>
   );
 }

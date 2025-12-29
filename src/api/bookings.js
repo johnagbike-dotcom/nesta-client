@@ -21,10 +21,13 @@ import {
 } from "firebase/firestore";
 
 /* ---------------- REST BASE + FETCH ---------------- */
-const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(
-  /\/+$/,
-  ""
-);
+
+// Normalise API root so we NEVER produce /api/api
+// Supports either:
+//   REACT_APP_API_BASE=http://localhost:4000
+//   REACT_APP_API_BASE=http://localhost:4000/api
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
 
 async function getIdToken() {
   const u = auth.currentUser;
@@ -84,20 +87,14 @@ function toIso(v) {
 
 /**
  * Create a booking hold via server (recommended).
- * Server should:
- * - create booking doc (or internal record)
- * - set deterministic reference
- * - store guestUid + listing owner/host uid
- * - status: pending_payment
  * Returns: { ok:true, bookingId, reference, expiresAt?, amountN? }
  */
 export async function createBookingHoldAPI(payload) {
-  const data = await fetchJson(`${API_BASE}/api/bookings/hold`, {
+  const data = await fetchJson(`${API}/bookings/hold`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 
-  // allow either { ok:true, ... } or direct object
   if (data?.ok === false) throw new Error(data?.error || "Failed to create hold");
   return data;
 }
@@ -108,7 +105,7 @@ export async function createBookingHoldAPI(payload) {
  */
 export async function getBookingStatusAPI(bookingId) {
   if (!bookingId) throw new Error("Missing booking id");
-  const data = await fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(bookingId)}`, {
+  const data = await fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}`, {
     method: "GET",
   });
 
@@ -119,11 +116,10 @@ export async function getBookingStatusAPI(bookingId) {
 /**
  * Optional: client “nudge” endpoint after payment callback.
  * NOTE: webhook is source of truth. This is for UX only.
- * Body: { bookingId, provider, reference }
  */
 export async function notifyPaymentReceivedAPI({ bookingId, provider, reference }) {
   if (!bookingId) throw new Error("Missing booking id");
-  return fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(bookingId)}/payment-received`, {
+  return fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}/payment-received`, {
     method: "POST",
     body: JSON.stringify({ provider, reference }),
   });
@@ -169,7 +165,7 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
       checkOut,
     };
 
-    await fetchJson(`${API_BASE}/api/admin/bookings-sync`, {
+    await fetchJson(`${API}/admin/bookings-sync`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -181,14 +177,14 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
 /** Return shape: { data: Booking[] } */
 export async function listBookings(queryStr = "") {
   const q = queryStr ? `?q=${encodeURIComponent(queryStr)}` : "";
-  const data = await fetchJson(`${API_BASE}/api/bookings${q}`, { method: "GET" });
+  const data = await fetchJson(`${API}/bookings${q}`, { method: "GET" });
   return { data: Array.isArray(data) ? data : data?.data ?? [] };
 }
 
-/** Provide URL to download CSV (if your server checks auth, use fetch instead of direct open) */
+/** Provide URL to download CSV */
 export function exportCsvUrl(queryStr = "") {
   const q = queryStr ? `?q=${encodeURIComponent(queryStr)}` : "";
-  return `${API_BASE}/api/bookings/export.csv${q}`;
+  return `${API}/bookings/export.csv${q}`;
 }
 
 /** Real booking via backend API (legacy) */
@@ -201,7 +197,7 @@ export async function createBooking(body) {
     provider: body.provider,
     reference: body.reference,
   };
-  return fetchJson(`${API_BASE}/api/bookings`, {
+  return fetchJson(`${API}/bookings`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -217,7 +213,7 @@ export async function createDemoBooking(body = {}) {
     provider: body.provider || "paystack",
     reference: body.reference || `NST_${Date.now()}`,
   };
-  return fetchJson(`${API_BASE}/api/bookings`, {
+  return fetchJson(`${API}/bookings`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -226,7 +222,7 @@ export async function createDemoBooking(body = {}) {
 /** Optional test booking helper (legacy) */
 export async function createTestBooking() {
   try {
-    return await fetchJson(`${API_BASE}/api/bookings/test`, { method: "POST" });
+    return await fetchJson(`${API}/bookings/test`, { method: "POST" });
   } catch {
     return createDemoBooking({
       email: "test@example.com",
@@ -242,7 +238,7 @@ export async function createTestBooking() {
 /** Update status via server (legacy/admin) */
 export async function setBookingStatus(id, status) {
   if (!id) throw new Error("Missing booking id");
-  return fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(id)}/status`, {
+  return fetchJson(`${API}/bookings/${encodeURIComponent(id)}/status`, {
     method: "PATCH",
     body: JSON.stringify({ status }),
   });
@@ -250,14 +246,14 @@ export async function setBookingStatus(id, status) {
 
 export async function verifyBooking(id) {
   if (!id) throw new Error("Missing booking id");
-  return fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(id)}/verify`, {
+  return fetchJson(`${API}/bookings/${encodeURIComponent(id)}/verify`, {
     method: "POST",
   });
 }
 
 export async function deleteBooking(id) {
   if (!id) throw new Error("Missing booking id");
-  return fetchJson(`${API_BASE}/api/bookings/${encodeURIComponent(id)}`, {
+  return fetchJson(`${API}/bookings/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
 }
@@ -266,10 +262,6 @@ export async function deleteBooking(id) {
    FIRESTORE FLOW (EXISTING) — KEEP ONLY FOR FALLBACK / NON-MONEY UPDATES
    ========================================================================== */
 
-/**
- * Create a PENDING booking *before* opening the payment popup.
- * (Kept for fallback; luxury standard prefers server-created holds.)
- */
 export async function createPendingBookingFS({
   listing,
   user,
@@ -307,22 +299,19 @@ export async function createPendingBookingFS({
     checkOut: checkOut ? new Date(checkOut) : null,
 
     // status/gateway (DO NOT set paid here)
-    status: "pending", // -> paid will be set by webhook/server
+    status: "pending",
     gateway: null,
     provider: null,
     reference: null,
 
-    // optional check-in ID info (kept separate later ideally)
     idCheck: {
       type: idType || null,
       last4: idLast4 || null,
       consent: !!consent,
     },
 
-    // hold expiry
     expiresAt: expiresAt instanceof Date ? Timestamp.fromDate(expiresAt) : null,
 
-    // audit
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -331,10 +320,6 @@ export async function createPendingBookingFS({
   return ref.id;
 }
 
-/**
- * Ensure a single pending hold (with TTL). Returns { id, expiresAt }
- * Luxury guidance: Prefer server; Firestore fallback only.
- */
 export async function ensurePendingHoldFS({
   listing,
   user,
@@ -348,7 +333,6 @@ export async function ensurePendingHoldFS({
   checkOut,
   ttlMinutes = 90,
 }) {
-  // Try reuse latest pending that hasn't expired
   const qy = query(
     collection(db, "bookings"),
     where("userId", "==", user?.uid || null),
@@ -368,7 +352,6 @@ export async function ensurePendingHoldFS({
     }
   }
 
-  // Create a fresh hold
   const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
   const id = await createPendingBookingFS({
     listing,
@@ -386,60 +369,36 @@ export async function ensurePendingHoldFS({
   return { id, expiresAt };
 }
 
-/**
- * IMPORTANT: Deprecated for luxury payment flow.
- * This no longer writes Firestore. It only "nudges" server (optional) + syncs admin view.
- */
 export async function markBookingConfirmedFS(
   bookingId,
   { provider = "paystack", reference = "" } = {}
 ) {
-  // Luxury rule: webhook settles payment; client never writes booking payment state.
   try {
     await notifyPaymentReceivedAPI({ bookingId, provider, reference });
-  } catch {
-    // ignore: webhook still processes payment independently
-  }
+  } catch {}
 
-  // Optional: sync admin ledger snapshot (non-critical)
   try {
     await syncBookingToAdminLedger(bookingId, "paid");
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   return { ok: true };
 }
 
-/**
- * IMPORTANT: Deprecated for luxury payment flow.
- * Client should not write "failed/cancelled" money state.
- * We only notify server (optional).
- */
 export async function markBookingFailedFS(bookingId, reason = "cancelled") {
   try {
-    await fetchJson(
-      `${API_BASE}/api/bookings/${encodeURIComponent(bookingId)}/payment-cancelled`,
-      {
-        method: "POST",
-        body: JSON.stringify({ reason }),
-      }
-    );
-  } catch {
-    // ignore
-  }
+    await fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}/payment-cancelled`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  } catch {}
 
-  // Optional: keep admin ledger in sync
   try {
     await syncBookingToAdminLedger(bookingId, String(reason));
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   return { ok: true };
 }
 
-/** Keep for ops/admin workflows if you still use Firestore directly */
 export async function markBookingRefundedFS(bookingId, note = "manual_refund") {
   const ref = doc(db, "bookings", bookingId);
   await updateDoc(ref, {
@@ -451,7 +410,6 @@ export async function markBookingRefundedFS(bookingId, note = "manual_refund") {
   await syncBookingToAdminLedger(bookingId, "refunded");
 }
 
-/** Release a pending hold (ops/admin only) */
 export async function releaseHoldFS(bookingId, note = "released_by_admin") {
   const ref = doc(db, "bookings", bookingId);
   await updateDoc(ref, {
@@ -463,7 +421,6 @@ export async function releaseHoldFS(bookingId, note = "released_by_admin") {
   await syncBookingToAdminLedger(bookingId, "expired");
 }
 
-/** Auto-expire pending bookings whose expiresAt is in the past (client-side cleanup; optional) */
 export async function expireStaleBookings() {
   try {
     const snap = await getDocs(collection(db, "bookings"));
@@ -547,9 +504,7 @@ export async function convertHoldFS(holdId) {
     if (!holdId) return;
     const ref = doc(db, "holds", holdId);
     await updateDoc(ref, { status: "converted", updatedAt: serverTimestamp() });
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 export async function getHoldFS(holdId) {

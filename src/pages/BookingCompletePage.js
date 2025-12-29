@@ -57,12 +57,15 @@ const diffNights = (checkIn, checkOut) => {
   if (!checkIn || !checkOut) return 0;
   let inD = checkIn,
     outD = checkOut;
+
   if (typeof inD === "object" && typeof inD.seconds === "number")
     inD = new Date(inD.seconds * 1000);
   if (typeof outD === "object" && typeof outD.seconds === "number")
     outD = new Date(outD.seconds * 1000);
+
   inD = inD instanceof Date ? inD : new Date(inD);
   outD = outD instanceof Date ? outD : new Date(outD);
+
   // normalize to noon to avoid DST edges
   const ms = outD.setHours(12, 0, 0, 0) - inD.setHours(12, 0, 0, 0);
   return ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
@@ -77,21 +80,17 @@ export default function BookingCompletePage() {
   // we’ll have a full canonical booking in state.booking.
   const routeBooking =
     state?.booking &&
-    (state.booking.listingTitle ||
-      state.booking.total ||
-      state.booking.amountN)
+    (state.booking.listingTitle || state.booking.total || state.booking.amountN)
       ? state.booking
       : null;
 
   // Tiny ribbon label (where did the user come from?)
-  // For now: routeBooking = existing booking / My Bookings,
-  // otherwise: post-checkout flow.
   const entrySourceRibbon = routeBooking
     ? "My Bookings → Receipt"
     : "Post-checkout summary";
 
   useEffect(() => {
-    // In "receipt mode" (existing booking), we skip the checkout snapshot logic.
+    // In "receipt mode" (existing booking), skip snapshot logic.
     if (routeBooking) return;
 
     // 1) prefer router state
@@ -101,6 +100,7 @@ export default function BookingCompletePage() {
     // 2) fall back to sessionStorage
     let pending = null;
     let tx = null;
+
     try {
       if (!statePending) {
         const raw = sessionStorage.getItem("booking_pending");
@@ -111,6 +111,7 @@ export default function BookingCompletePage() {
     } catch {
       pending = null;
     }
+
     try {
       if (!stateTx) {
         const raw = sessionStorage.getItem("paystack_tx");
@@ -126,8 +127,7 @@ export default function BookingCompletePage() {
     const normalizedTx =
       tx && typeof tx === "object"
         ? {
-            status:
-              (tx.status || tx.message || tx.data?.status || "").toString(),
+            status: (tx.status || tx.message || tx.data?.status || "").toString(),
             reference:
               tx.reference ||
               tx.trxref ||
@@ -158,9 +158,7 @@ export default function BookingCompletePage() {
     if (!p) return null;
 
     const listing = p.listing || {};
-    const nightly = Number(
-      listing.pricePerNight ?? listing.price ?? p.pricePerNight ?? 0
-    );
+    const nightly = Number(listing.pricePerNight ?? listing.price ?? p.pricePerNight ?? 0);
     const checkIn = p.checkIn ?? listing.checkIn ?? null;
     const checkOut = p.checkOut ?? listing.checkOut ?? null;
     const nights = diffNights(checkIn, checkOut);
@@ -198,12 +196,9 @@ export default function BookingCompletePage() {
   if (routeBooking) {
     const b = routeBooking;
 
-    const listingTitle =
-      b.listingTitle || b.listing?.title || b.title || "Listing";
+    const listingTitle = b.listingTitle || b.listing?.title || b.title || "Listing";
     const location =
-      b.listingLocation ||
-      [b.city, b.area].filter(Boolean).join(", ") ||
-      "";
+      b.listingLocation || [b.city, b.area].filter(Boolean).join(", ") || "";
     const ref = b.reference || b.ref || b.id || "";
     const status = (b.status || "").toLowerCase();
 
@@ -217,20 +212,15 @@ export default function BookingCompletePage() {
       b.listing?.pricePerNight ||
       (nights > 0 ? (b.total || b.amountN || 0) / nights : 0);
 
-    const subtotal =
-      b.subtotal ??
-      (nights > 0 ? nights * Number(nightly || 0) : 0);
+    const subtotal = b.subtotal ?? (nights > 0 ? nights * Number(nightly || 0) : 0);
 
     const fee =
       b.fee ??
-      (b.total != null
-        ? Math.max(0, Number(b.total) - subtotal)
-        : 0);
+      (b.total != null ? Math.max(0, Number(b.total) - subtotal) : 0);
 
-    const total =
-      b.total != null ? Number(b.total) : subtotal + fee;
+    const total = b.total != null ? Number(b.total) : subtotal + fee;
 
-    const isSuccess = ["confirmed", "paid", "success"].includes(status);
+    const success = ["confirmed", "paid", "success"].includes(status);
 
     return (
       <main className="dash-bg">
@@ -262,23 +252,17 @@ export default function BookingCompletePage() {
                     width: 42,
                     height: 42,
                     borderRadius: 12,
-                    background: isSuccess
-                      ? "rgba(16,185,129,0.15)"
-                      : "rgba(239,68,68,0.15)",
+                    background: success ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
                     display: "grid",
                     placeItems: "center",
-                    border: isSuccess
-                      ? "1px solid rgba(16,185,129,0.35)"
-                      : "1px solid rgba(239,68,68,0.35)",
+                    border: success ? "1px solid rgba(16,185,129,0.35)" : "1px solid rgba(239,68,68,0.35)",
                   }}
                 >
-                  <span style={{ fontSize: 22 }}>
-                    {isSuccess ? "✅" : "⚠️"}
-                  </span>
+                  <span style={{ fontSize: 22 }}>{success ? "✅" : "⚠️"}</span>
                 </div>
                 <div>
                   <h2 style={{ margin: "0 0 6px" }}>
-                    {isSuccess ? "Booking confirmed" : "Booking receipt"}
+                    {success ? "Booking confirmed" : "Booking receipt"}
                   </h2>
                   <div className="muted" style={{ fontSize: 13 }}>
                     Ref: {safeText(ref) || "—"}
@@ -315,9 +299,7 @@ export default function BookingCompletePage() {
             >
               {/* left: stay details */}
               <section>
-                <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>
-                  {listingTitle}
-                </h3>
+                <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>{listingTitle}</h3>
                 {location && (
                   <p className="muted" style={{ margin: 0 }}>
                     {location}
@@ -336,33 +318,25 @@ export default function BookingCompletePage() {
                     <div className="muted" style={{ fontSize: 13 }}>
                       Check-in
                     </div>
-                    <div style={{ fontWeight: 600 }}>
-                      {fmtDate(b.checkIn)}
-                    </div>
+                    <div style={{ fontWeight: 600 }}>{fmtDate(b.checkIn)}</div>
                   </div>
                   <div>
                     <div className="muted" style={{ fontSize: 13 }}>
                       Check-out
                     </div>
-                    <div style={{ fontWeight: 600 }}>
-                      {fmtDate(b.checkOut)}
-                    </div>
+                    <div style={{ fontWeight: 600 }}>{fmtDate(b.checkOut)}</div>
                   </div>
                   <div>
                     <div className="muted" style={{ fontSize: 13 }}>
                       Nights
                     </div>
-                    <div style={{ fontWeight: 600 }}>
-                      {nights || "—"}
-                    </div>
+                    <div style={{ fontWeight: 600 }}>{nights || "—"}</div>
                   </div>
                   <div>
                     <div className="muted" style={{ fontSize: 13 }}>
                       Guests
                     </div>
-                    <div style={{ fontWeight: 600 }}>
-                      {b.guests || 1}
-                    </div>
+                    <div style={{ fontWeight: 600 }}>{b.guests || 1}</div>
                   </div>
                 </div>
 
@@ -392,35 +366,18 @@ export default function BookingCompletePage() {
                   border: "1px solid rgba(148,163,184,0.4)",
                 }}
               >
-                <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>
-                  Payment summary
-                </h3>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 4,
-                    fontSize: 14,
-                  }}
-                >
-                  <span className="muted">
-                    Nightly rate × {nights || 1}
-                  </span>
-                  <span style={{ fontWeight: 600 }}>
-                    {ngn(subtotal)}
-                  </span>
+                <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>Payment summary</h3>
+
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14 }}>
+                  <span className="muted">Nightly rate × {nights || 1}</span>
+                  <span style={{ fontWeight: 600 }}>{ngn(subtotal)}</span>
                 </div>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 4,
-                    fontSize: 14,
-                  }}
-                >
+
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14 }}>
                   <span className="muted">Service fee</span>
                   <span style={{ fontWeight: 600 }}>{ngn(fee)}</span>
                 </div>
+
                 <div
                   style={{
                     marginTop: 8,
@@ -438,14 +395,7 @@ export default function BookingCompletePage() {
             </div>
 
             {/* footer actions */}
-            <div
-              style={{
-                marginTop: 22,
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 10,
-              }}
-            >
+            <div style={{ marginTop: 22, display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <Link className="btn ghost" to="/bookings">
                 My bookings
               </Link>
@@ -460,16 +410,13 @@ export default function BookingCompletePage() {
   }
 
   /* ---------- PENDING SNAPSHOT / CHECKOUT FLOW ---------- */
-
   if (!snapshot) {
     return (
       <main className="dash-bg">
         <div className="container dash-wrap">
           <div className="card" style={{ padding: 24, borderRadius: 16 }}>
             <h2>Finishing up…</h2>
-            <p className="muted">
-              Please wait while we prepare your booking summary.
-            </p>
+            <p className="muted">Please wait while we prepare your booking summary.</p>
           </div>
         </div>
       </main>
@@ -490,12 +437,9 @@ export default function BookingCompletePage() {
             }}
           >
             <h2 style={{ marginTop: 0 }}>Checkout</h2>
-            <p>
-              We couldn’t find your booking details. Please go back to Browse
-              and select a listing again.
-            </p>
+            <p>We couldn’t find your booking details. Please go back to Explore and select a listing again.</p>
             <div style={{ marginTop: 16 }}>
-              <Link className="btn" to="/browse">
+              <Link className="btn" to="/explore">
                 Explore listings
               </Link>
             </div>
@@ -505,18 +449,7 @@ export default function BookingCompletePage() {
     );
   }
 
-  const {
-    listing,
-    checkIn,
-    checkOut,
-    guests,
-    nights,
-    nightly,
-    subtotal,
-    fee,
-    total,
-    feePct,
-  } = info;
+  const { listing, checkIn, checkOut, guests, nights, nightly, subtotal, fee, total, feePct } = info;
 
   return (
     <main className="dash-bg">
@@ -534,33 +467,20 @@ export default function BookingCompletePage() {
           }}
         >
           {/* header */}
-          <div
-            style={{
-              display: "flex",
-              gap: 18,
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
+          <div style={{ display: "flex", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
             <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
               <div
                 style={{
                   width: 42,
                   height: 42,
                   borderRadius: 12,
-                  background: isSuccess
-                    ? "rgba(16,185,129,0.15)"
-                    : "rgba(239,68,68,0.15)",
+                  background: isSuccess ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
                   display: "grid",
                   placeItems: "center",
-                  border: isSuccess
-                    ? "1px solid rgba(16,185,129,0.35)"
-                    : "1px solid rgba(239,68,68,0.35)",
+                  border: isSuccess ? "1px solid rgba(16,185,129,0.35)" : "1px solid rgba(239,68,68,0.35)",
                 }}
               >
-                <span style={{ fontSize: 22 }}>
-                  {isSuccess ? "✅" : "⚠️"}
-                </span>
+                <span style={{ fontSize: 22 }}>{isSuccess ? "✅" : "⚠️"}</span>
               </div>
               <div>
                 <h2 style={{ margin: "0 0 6px" }}>
@@ -569,8 +489,7 @@ export default function BookingCompletePage() {
                 <div className="muted" style={{ fontSize: 13 }}>
                   {safeText(snapshot?.tx?.reference) ? (
                     <>
-                      Reference:{" "}
-                      <code>{safeText(snapshot.tx.reference)}</code>
+                      Reference: <code>{safeText(snapshot.tx.reference)}</code>
                     </>
                   ) : (
                     <>Completed at {fmtDate(snapshot.when)}</>
@@ -579,7 +498,6 @@ export default function BookingCompletePage() {
               </div>
             </div>
 
-            {/* tiny ribbon */}
             <div>
               <span
                 style={{
@@ -654,19 +572,17 @@ export default function BookingCompletePage() {
                 Total
                 <div style={{ float: "right" }}>{ngn(total)}</div>
               </div>
-              <div style={{ marginTop: 18, display: "flex", gap: 10 }}>
+
+              <div style={{ marginTop: 18, display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <Link className="btn" to="/bookings">
                   View bookings
                 </Link>
                 {safeText(listing.id) && (
-                  <Link
-                    className="btn ghost"
-                    to={`/listing/${safeText(listing.id)}`}
-                  >
+                  <Link className="btn ghost" to={`/listing/${safeText(listing.id)}`}>
                     Open listing
                   </Link>
                 )}
-                <Link className="btn ghost" to="/browse">
+                <Link className="btn ghost" to="/explore">
                   Explore more
                 </Link>
               </div>
