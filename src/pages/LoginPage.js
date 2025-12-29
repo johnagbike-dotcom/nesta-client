@@ -6,8 +6,6 @@ import { useAuth } from "../auth/AuthContext";
 import { auth } from "../firebase";
 import OfficialLogo from "../assets/Official-Logo.jpg";
 
-/* ---------------- helpers ---------------- */
-
 function safeRedirectFromState(state) {
   const from = state?.from;
   if (!from) return null;
@@ -27,29 +25,53 @@ function humanizeAuthError(e) {
   if (code === "auth/wrong-password") return "Incorrect password.";
   if (code === "auth/user-not-found") return "No account found with that email.";
   if (code === "auth/invalid-email") return "Please enter a valid email address.";
-  if (code === "auth/too-many-requests") return "Too many attempts. Please wait and try again.";
-  if (code === "auth/network-request-failed") return "Network error. Check your connection and try again.";
-  if (code === "auth/user-disabled") return "This account has been disabled. Please contact support.";
-
+  if (code === "auth/too-many-requests")
+    return "Too many attempts. Please wait and try again.";
+  if (code === "auth/network-request-failed")
+    return "Network error. Check your connection and try again.";
   return msg || "Login failed";
 }
 
-// ✅ Password users must verify email (Google users are generally trusted as verified)
-function isPasswordProvider(user) {
-  const ids = (user?.providerData || []).map((p) => p?.providerId).filter(Boolean);
-  return ids.includes("password") || ids.length === 0;
-}
+/**
+ * ✅ Robust refresh: emailVerified can lag after clicking verify link (esp. mobile in-app browsers).
+ * We retry a few times before deciding the user is unverified.
+ */
+async function refreshVerifiedStateWithRetry(user, { retries = 6, delayMs = 450 } = {}) {
+  if (!user) return null;
 
-async function reloadSafe(user) {
-  if (!user) return;
-  try {
-    await user.reload();
-  } catch {
-    // ignore (non-fatal)
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      await user.reload();
+    } catch {
+      // ignore
+    }
+
+    // quick exit if verified
+    if (user.emailVerified) return user;
+
+    // force token refresh (helps pull latest claims/user state)
+    try {
+      await user.getIdToken(true);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await user.reload();
+    } catch {
+      // ignore
+    }
+
+    if (user.emailVerified) return user;
+
+    // tiny pause then retry
+    await wait(delayMs);
   }
-}
 
-/* ---------------- page ---------------- */
+  return user;
+}
 
 export default function LoginPage() {
   const { beginLogin, loginWithGoogle, loading, authError } = useAuth();
@@ -65,6 +87,7 @@ export default function LoginPage() {
   const [needsVerify, setNeedsVerify] = useState(false);
   const [verifyEmailToResend, setVerifyEmailToResend] = useState("");
   const [resendBusy, setResendBusy] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
   const [infoMsg, setInfoMsg] = useState("");
 
   const nav = useNavigate();
@@ -84,7 +107,43 @@ export default function LoginPage() {
 
   const disabled = submitting || loading;
 
-  const clearBanners = () => {
+  /**
+   * ✅ Gate using the signed-in user returned by beginLogin()
+   */
+  const runVerifiedGate = async (signedInUser, cleanEmail) => {
+    if (!signedInUser) return { ok: false, reason: "no-user" };
+
+    // Try to get freshest possible state (with retries)
+    const fresh = await refreshVerifiedStateWithRetry(signedInUser);
+
+    const providerIds = (fresh?.providerData || [])
+      .map((p) => p?.providerId)
+      .filter(Boolean);
+
+    const isPasswordUser =
+      providerIds.includes("password") || providerIds.length === 0;
+
+    // If password user still not verified after retries, block
+    if (isPasswordUser && fresh?.emailVerified === false) {
+      setNeedsVerify(true);
+      setVerifyEmailToResend(cleanEmail);
+
+      setError(
+        "Your email is not verified yet. Please check your inbox (and spam) for the verification link, then sign in again."
+      );
+
+      // Sign out so they don’t enter app unverified
+      try {
+        await signOut(auth);
+      } catch {}
+
+      return { ok: false, reason: "not-verified" };
+    }
+
+    return { ok: true };
+  };
+
+  const resetMessages = () => {
     setError("");
     setInfoMsg("");
     setNeedsVerify(false);
@@ -93,50 +152,28 @@ export default function LoginPage() {
 
   const onSubmit = async (e) => {
     e.preventDefault();
-    clearBanners();
+    resetMessages();
 
     const cleanEmail = email.trim().toLowerCase();
 
     try {
       setSubmitting(true);
 
-      // 1) Sign in (supports MFA flow via beginLogin)
+      // 1) sign in (supports MFA)
       const res = await beginLogin(cleanEmail, password);
 
-      // ✅ MFA route
       if (res?.mfaRequired) {
         nav("/mfa", { replace: true, state: { redirectTo } });
         return;
       }
 
-      // 2) Always check *fresh* currentUser + reload so emailVerified is accurate
-      let u = auth.currentUser;
+      const signedInUser = res?.user;
 
-      if (!u) {
-        // Rare edge case: auth.currentUser not ready instantly
-        await new Promise((r) => setTimeout(r, 150));
-        u = auth.currentUser;
-      }
+      // 2) verification gate
+      const gate = await runVerifiedGate(signedInUser, cleanEmail);
+      if (!gate.ok) return;
 
-      await reloadSafe(u);
-      const freshUser = auth.currentUser;
-
-      // 3) Gate only password users
-      if (freshUser && isPasswordProvider(freshUser) && freshUser.emailVerified === false) {
-        setNeedsVerify(true);
-        setVerifyEmailToResend(cleanEmail);
-
-        setError(
-          "Your email is not verified yet. Please check your inbox (and spam) for the verification link, then sign in again."
-        );
-
-        // ✅ sign out cleanly using auth instance
-        try {
-          await signOut(auth);
-        } catch {}
-        return;
-      }
-
+      // 3) continue
       nav(redirectTo, { replace: true });
     } catch (err) {
       console.error(err);
@@ -147,7 +184,7 @@ export default function LoginPage() {
   };
 
   const onGoogle = async () => {
-    clearBanners();
+    resetMessages();
 
     try {
       setSubmitting(true);
@@ -166,8 +203,6 @@ export default function LoginPage() {
     setInfoMsg("");
 
     const cleanEmail = verifyEmailToResend || email.trim().toLowerCase();
-
-    // We need password to authenticate in order to send verification via client SDK
     if (!cleanEmail || !password) {
       setError("Enter your email and password, then tap Resend verification.");
       return;
@@ -176,22 +211,21 @@ export default function LoginPage() {
     try {
       setResendBusy(true);
 
-      // Sign in so Firebase can send the verification email
       const res = await beginLogin(cleanEmail, password);
       if (res?.mfaRequired) {
         setError("This account has MFA enabled. Please finish sign-in first.");
         return;
       }
 
-      const u = auth.currentUser;
-      if (!u) {
+      const signedInUser = res?.user;
+      if (!signedInUser) {
         setError("Could not authenticate to resend verification. Please try again.");
         return;
       }
 
-      await reloadSafe(u);
+      const fresh = await refreshVerifiedStateWithRetry(signedInUser, { retries: 3, delayMs: 250 });
 
-      if (auth.currentUser?.emailVerified) {
+      if (fresh?.emailVerified) {
         setInfoMsg("✅ Your email is already verified. Please sign in.");
         setNeedsVerify(false);
         try {
@@ -200,13 +234,9 @@ export default function LoginPage() {
         return;
       }
 
-      // ✅ Send verification link
-      await sendEmailVerification(u);
-
+      await sendEmailVerification(signedInUser);
       setInfoMsg("✅ Verification email sent. Please check inbox/spam.");
-      setNeedsVerify(true);
 
-      // sign out again (keeps your verified-only access clean)
       try {
         await signOut(auth);
       } catch {}
@@ -218,10 +248,49 @@ export default function LoginPage() {
     }
   };
 
+  const refreshVerificationStatus = async () => {
+    setError("");
+    setInfoMsg("");
+
+    const cleanEmail = verifyEmailToResend || email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
+      setError("Enter your email and password, then tap Refresh status.");
+      return;
+    }
+
+    try {
+      setRefreshBusy(true);
+
+      const res = await beginLogin(cleanEmail, password);
+      if (res?.mfaRequired) {
+        setError("This account has MFA enabled. Please finish sign-in first.");
+        return;
+      }
+
+      const signedInUser = res?.user;
+
+      // Run the full retry gate here too
+      const gate = await runVerifiedGate(signedInUser, cleanEmail);
+      if (!gate.ok) return;
+
+      setInfoMsg("✅ Verification detected. You can now sign in.");
+      try {
+        await signOut(auth);
+      } catch {}
+    } catch (e) {
+      console.error(e);
+      setError(stripFirebasePrefix(e?.message) || "Could not refresh status.");
+      try {
+        await signOut(auth);
+      } catch {}
+    } finally {
+      setRefreshBusy(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#070b12] to-[#05070d] text-white px-4 py-10">
       <div className="mx-auto w-full max-w-md">
-        {/* Brand / header */}
         <div className="mb-6 text-center">
           <div className="mx-auto mb-3 h-14 w-14 rounded-2xl bg-white/5 border border-white/10 grid place-items-center overflow-hidden">
             <img src={OfficialLogo} alt="Nesta" className="h-full w-full object-cover" />
@@ -240,7 +309,6 @@ export default function LoginPage() {
           </p>
         </div>
 
-        {/* Card */}
         <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 shadow-[0_24px_70px_rgba(0,0,0,.7)]">
           {infoMsg ? (
             <div className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-500/10 p-3 text-emerald-100 text-sm">
@@ -304,12 +372,13 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Resend verification (only shows when needed) */}
           {needsVerify && (
             <div className="mt-4 rounded-2xl border border-amber-200/20 bg-amber-400/10 p-4">
-              <div className="text-sm text-amber-100 font-semibold">Email verification required</div>
+              <div className="text-sm text-amber-100 font-semibold">
+                Email verification required
+              </div>
               <div className="text-xs text-white/70 mt-1">
-                We’ve blocked access until your email is verified. If you can’t find the link, resend it below.
+                If you can’t find the link, resend it below. If you already verified, refresh your status.
               </div>
 
               <button
@@ -325,8 +394,21 @@ export default function LoginPage() {
                 {resendBusy ? "Resending…" : "Resend verification email"}
               </button>
 
+              <button
+                type="button"
+                onClick={refreshVerificationStatus}
+                disabled={refreshBusy || disabled}
+                className={`mt-2 w-full py-2.5 rounded-2xl font-semibold transition ${
+                  refreshBusy || disabled
+                    ? "bg-white/10 border border-white/10 text-white/40 cursor-not-allowed"
+                    : "bg-white/5 border border-white/15 hover:bg-white/10 text-white"
+                }`}
+              >
+                {refreshBusy ? "Refreshing…" : "Refresh verification status"}
+              </button>
+
               <div className="mt-2 text-[11px] text-white/55">
-                Tip: check spam/junk. Some providers delay delivery by a few minutes.
+                Tip: Gmail may open the verify link in an in-app browser. After verifying, come back and tap Refresh status.
               </div>
             </div>
           )}
@@ -346,11 +428,17 @@ export default function LoginPage() {
           </div>
 
           <div className="mt-5 flex items-center justify-between text-sm">
-            <Link to="/reset" className="text-white/70 hover:text-amber-200 underline decoration-dotted">
+            <Link
+              to="/reset"
+              className="text-white/70 hover:text-amber-200 underline decoration-dotted"
+            >
               Forgot password?
             </Link>
 
-            <Link to="/signup" className="text-white/70 hover:text-amber-200 underline decoration-dotted">
+            <Link
+              to="/signup"
+              className="text-white/70 hover:text-amber-200 underline decoration-dotted"
+            >
               Create account
             </Link>
           </div>

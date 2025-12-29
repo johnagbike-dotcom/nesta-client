@@ -58,24 +58,18 @@ export function AuthProvider({ children }) {
 
   // Ensure persistence across reloads
   useEffect(() => {
-    setPersistence(auth, browserLocalPersistence).catch(() => {
-      // non-fatal
-    });
+    setPersistence(auth, browserLocalPersistence).catch(() => {});
   }, []);
 
-  // Stop any previous profile listener
   const stopProfileListener = useCallback(() => {
     try {
       if (profileUnsubRef.current) {
         profileUnsubRef.current();
         profileUnsubRef.current = null;
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
 
-  // Ensure users/{uid} exists (seed), then subscribe to it
   const ensureAndSubscribeProfile = useCallback(
     async (uid) => {
       if (!uid) {
@@ -88,7 +82,6 @@ export function AuthProvider({ children }) {
 
       const uref = doc(db, "users", uid);
 
-      // seed if missing
       const snap = await getDoc(uref);
       if (!snap.exists()) {
         const seed = {
@@ -103,7 +96,6 @@ export function AuthProvider({ children }) {
         await setDoc(uref, seed, { merge: true });
       }
 
-      // subscribe live (this is the key fix)
       profileUnsubRef.current = onSnapshot(
         uref,
         (docSnap) => {
@@ -111,17 +103,14 @@ export function AuthProvider({ children }) {
             setProfile(null);
             return;
           }
-          const next = { id: uid, ...docSnap.data() };
-          setProfile(next);
+          setProfile({ id: uid, ...docSnap.data() });
         },
         (err) => {
           console.error("Profile snapshot error:", err);
-          // keep user signed in, but show no profile until recovered
           setProfile(null);
         }
       );
 
-      // return latest immediately (optional)
       const snap2 = await getDoc(uref);
       const next = snap2.exists() ? { id: uid, ...snap2.data() } : null;
       setProfile(next);
@@ -130,7 +119,6 @@ export function AuthProvider({ children }) {
     [stopProfileListener]
   );
 
-  // Subscribe to auth change
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       try {
@@ -161,7 +149,6 @@ export function AuthProvider({ children }) {
     };
   }, [ensureAndSubscribeProfile, stopProfileListener]);
 
-  // Force profile refresh (pull once; snapshot will still keep it live)
   const refreshProfile = useCallback(async (explicitUid) => {
     const uid = explicitUid || auth.currentUser?.uid;
     if (!uid) return null;
@@ -201,53 +188,55 @@ export function AuthProvider({ children }) {
   }, [stopProfileListener]);
 
   // ---------------- MFA: Sign-in challenge flow ----------------
-// Use this instead of login() in your LoginPage when you're ready.
-const beginLogin = useCallback(async (email, password) => {
-  setAuthError("");
-  setMfaError("");
-  setMfaRequired(false);
-  setMfaHints([]);
-  mfaResolverRef.current = null;
+  // Use this instead of login() in your LoginPage
+  const beginLogin = useCallback(async (email, password) => {
+    setAuthError("");
+    setMfaError("");
+    setMfaRequired(false);
+    setMfaHints([]);
+    mfaResolverRef.current = null;
 
-  try {
-    const cred = await signInWithEmailAndPassword(
-      auth,
-      String(email || "").trim(),
-      String(password || "").trim()
-    );
+    try {
+      const cred = await signInWithEmailAndPassword(
+        auth,
+        String(email || "").trim(),
+        String(password || "").trim()
+      );
 
-    // ✅ return the signed-in user so LoginPage can check emailVerified
-    return { ok: true, mfaRequired: false, user: cred.user };
-  } catch (e) {
-    // If user has MFA enabled, Firebase throws: auth/multi-factor-auth-required
-    if (e?.code === "auth/multi-factor-auth-required") {
+      // ✅ IMPORTANT: refresh user state immediately after sign-in
       try {
-        const resolver = getMultiFactorResolver(auth, e);
-        mfaResolverRef.current = resolver;
+        await cred.user.reload();
+      } catch {}
 
-        const hints = resolver?.hints || [];
-        setMfaHints(
-          hints.map((h) => ({
-            uid: h.uid,
-            factorId: h.factorId,
-            phoneNumber: h.phoneNumber || "",
-          }))
-        );
-        setMfaRequired(true);
+      return { ok: true, mfaRequired: false, user: cred.user };
+    } catch (e) {
+      if (e?.code === "auth/multi-factor-auth-required") {
+        try {
+          const resolver = getMultiFactorResolver(auth, e);
+          mfaResolverRef.current = resolver;
 
-        return { ok: false, mfaRequired: true };
-      } catch (e2) {
-        console.error("MFA resolver error:", e2);
-        setMfaError("MFA challenge could not be started. Try again.");
-        return { ok: false, mfaRequired: false };
+          const hints = resolver?.hints || [];
+          setMfaHints(
+            hints.map((h) => ({
+              uid: h.uid,
+              factorId: h.factorId,
+              phoneNumber: h.phoneNumber || "",
+            }))
+          );
+          setMfaRequired(true);
+
+          return { ok: false, mfaRequired: true };
+        } catch (e2) {
+          console.error("MFA resolver error:", e2);
+          setMfaError("MFA challenge could not be started. Try again.");
+          return { ok: false, mfaRequired: false };
+        }
       }
+
+      throw e;
     }
+  }, []);
 
-    throw e;
-  }
-}, []);
-
-  // Sends the SMS for the selected enrolled phone factor (default: first factor)
   const sendMfaCode = useCallback(async ({ recaptchaContainerId, hintUid } = {}) => {
     setMfaError("");
     const resolver = mfaResolverRef.current;
@@ -263,7 +252,6 @@ const beginLogin = useCallback(async (email, password) => {
       return { ok: false };
     }
 
-    // Create / reuse reCAPTCHA
     const containerId = recaptchaContainerId || "mfa-recaptcha";
     if (!recaptchaRef.current) {
       recaptchaRef.current = new RecaptchaVerifier(auth, containerId, {
@@ -276,10 +264,7 @@ const beginLogin = useCallback(async (email, password) => {
 
       const phoneAuthProvider = new PhoneAuthProvider(auth);
       const verificationId = await phoneAuthProvider.verifyPhoneNumber(
-        {
-          multiFactorHint: hint,
-          session: resolver.session,
-        },
+        { multiFactorHint: hint, session: resolver.session },
         recaptchaRef.current
       );
 
@@ -296,7 +281,6 @@ const beginLogin = useCallback(async (email, password) => {
     }
   }, []);
 
-  // Completes MFA sign-in with the SMS code
   const verifyMfa = useCallback(
     async (code) => {
       setMfaError("");
@@ -317,7 +301,6 @@ const beginLogin = useCallback(async (email, password) => {
 
         await resolver.resolveSignIn(assertion);
 
-        // Clear MFA state
         setMfaRequired(false);
         setMfaHints([]);
         setMfaVerificationId(null);
@@ -345,8 +328,7 @@ const beginLogin = useCallback(async (email, password) => {
     mfaResolverRef.current = null;
   }, []);
 
-  // ---------------- MFA: Enrollment (enable MFA after login) ----------------
-  // Start enroll: sends SMS to new phone number
+  // ---------------- MFA: Enrollment ----------------
   const startMfaEnrollment = useCallback(
     async (phoneNumber, recaptchaContainerId = "enroll-recaptcha") => {
       setMfaError("");
@@ -358,7 +340,6 @@ const beginLogin = useCallback(async (email, password) => {
       try {
         setMfaPending(true);
 
-        // Ensure / reuse invisible recaptcha
         if (!recaptchaRef.current) {
           recaptchaRef.current = new RecaptchaVerifier(auth, recaptchaContainerId, {
             size: "invisible",
@@ -388,7 +369,6 @@ const beginLogin = useCallback(async (email, password) => {
     []
   );
 
-  // Finish enroll: confirm code
   const finishMfaEnrollment = useCallback(
     async (code, friendlyName = "My phone") => {
       setMfaError("");
@@ -408,7 +388,6 @@ const beginLogin = useCallback(async (email, password) => {
 
         await multiFactor(auth.currentUser).enroll(assertion, friendlyName);
 
-        // Clear pending
         setMfaVerificationId(null);
         return { ok: true };
       } catch (e) {
@@ -452,13 +431,11 @@ const beginLogin = useCallback(async (email, password) => {
       loading,
       authError,
 
-      // existing auth
       login,
       loginWithGoogle,
       logout,
       refreshProfile,
 
-      // MFA sign-in flow
       beginLogin,
       mfaRequired,
       mfaHints,
@@ -468,7 +445,6 @@ const beginLogin = useCallback(async (email, password) => {
       verifyMfa,
       clearMfaState,
 
-      // MFA enrollment
       startMfaEnrollment,
       finishMfaEnrollment,
       unenrollMfa,
