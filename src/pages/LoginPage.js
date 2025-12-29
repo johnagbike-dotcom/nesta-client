@@ -1,10 +1,12 @@
 // src/pages/LoginPage.js
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { sendEmailVerification, signOut } from "firebase/auth";
 import { useAuth } from "../auth/AuthContext";
 import { auth } from "../firebase";
 import OfficialLogo from "../assets/Official-Logo.jpg";
+
+/* ---------------- helpers ---------------- */
 
 function safeRedirectFromState(state) {
   const from = state?.from;
@@ -18,9 +20,36 @@ function stripFirebasePrefix(msg) {
   return String(msg || "").replace(/^Firebase:\s*/i, "").trim();
 }
 
-function stripEmail(s) {
-  return String(s || "").trim().toLowerCase();
+function humanizeAuthError(e) {
+  const code = e?.code || "";
+  const msg = stripFirebasePrefix(e?.message || "");
+
+  if (code === "auth/wrong-password") return "Incorrect password.";
+  if (code === "auth/user-not-found") return "No account found with that email.";
+  if (code === "auth/invalid-email") return "Please enter a valid email address.";
+  if (code === "auth/too-many-requests") return "Too many attempts. Please wait and try again.";
+  if (code === "auth/network-request-failed") return "Network error. Check your connection and try again.";
+  if (code === "auth/user-disabled") return "This account has been disabled. Please contact support.";
+
+  return msg || "Login failed";
 }
+
+// ✅ Password users must verify email (Google users are generally trusted as verified)
+function isPasswordProvider(user) {
+  const ids = (user?.providerData || []).map((p) => p?.providerId).filter(Boolean);
+  return ids.includes("password") || ids.length === 0;
+}
+
+async function reloadSafe(user) {
+  if (!user) return;
+  try {
+    await user.reload();
+  } catch {
+    // ignore (non-fatal)
+  }
+}
+
+/* ---------------- page ---------------- */
 
 export default function LoginPage() {
   const { beginLogin, loginWithGoogle, loading, authError } = useAuth();
@@ -32,7 +61,7 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  // resend verification UX
+  // Verification UX
   const [needsVerify, setNeedsVerify] = useState(false);
   const [verifyEmailToResend, setVerifyEmailToResend] = useState("");
   const [resendBusy, setResendBusy] = useState(false);
@@ -41,7 +70,6 @@ export default function LoginPage() {
   const nav = useNavigate();
   const location = useLocation();
 
-  // message passed from SignUpPage -> LoginPage
   const incomingInfo = location.state?.info || "";
 
   const redirectTo = useMemo(() => {
@@ -49,56 +77,52 @@ export default function LoginPage() {
     return from || "/role-selection";
   }, [location.state]);
 
-  // show info banner once (if present)
   useEffect(() => {
     if (incomingInfo) setInfoMsg(String(incomingInfo));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function humanizeAuthError(e) {
-    const code = e?.code || "";
-    const msg = stripFirebasePrefix(e?.message || "");
+  const disabled = submitting || loading;
 
-    if (code === "auth/wrong-password") return "Incorrect password.";
-    if (code === "auth/user-not-found") return "No account found with that email.";
-    if (code === "auth/invalid-email") return "Please enter a valid email address.";
-    if (code === "auth/too-many-requests")
-      return "Too many attempts. Please wait a moment and try again.";
-    if (code === "auth/network-request-failed")
-      return "Network error. Check your internet connection and try again.";
-
-    return msg || "Login failed";
-  }
-
-  const onSubmit = async (e) => {
-    e.preventDefault();
+  const clearBanners = () => {
     setError("");
     setInfoMsg("");
     setNeedsVerify(false);
     setVerifyEmailToResend("");
+  };
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    clearBanners();
+
+    const cleanEmail = email.trim().toLowerCase();
 
     try {
       setSubmitting(true);
 
-      const cleanEmail = stripEmail(email);
+      // 1) Sign in (supports MFA flow via beginLogin)
       const res = await beginLogin(cleanEmail, password);
 
-      // MFA route
+      // ✅ MFA route
       if (res?.mfaRequired) {
         nav("/mfa", { replace: true, state: { redirectTo } });
         return;
       }
 
-      // HARD GATE: password users must verify email
-      const loggedInUser = res?.user || auth.currentUser;
+      // 2) Always check *fresh* currentUser + reload so emailVerified is accurate
+      let u = auth.currentUser;
 
-      const providerIds = (loggedInUser?.providerData || [])
-        .map((p) => p?.providerId)
-        .filter(Boolean);
+      if (!u) {
+        // Rare edge case: auth.currentUser not ready instantly
+        await new Promise((r) => setTimeout(r, 150));
+        u = auth.currentUser;
+      }
 
-      const isPasswordUser = providerIds.includes("password") || providerIds.length === 0;
+      await reloadSafe(u);
+      const freshUser = auth.currentUser;
 
-      if (isPasswordUser && loggedInUser && loggedInUser.emailVerified === false) {
+      // 3) Gate only password users
+      if (freshUser && isPasswordProvider(freshUser) && freshUser.emailVerified === false) {
         setNeedsVerify(true);
         setVerifyEmailToResend(cleanEmail);
 
@@ -106,12 +130,10 @@ export default function LoginPage() {
           "Your email is not verified yet. Please check your inbox (and spam) for the verification link, then sign in again."
         );
 
-        // ✅ ALWAYS sign out using the app auth instance
+        // ✅ sign out cleanly using auth instance
         try {
           await signOut(auth);
-        } catch {
-          // ignore
-        }
+        } catch {}
         return;
       }
 
@@ -125,10 +147,7 @@ export default function LoginPage() {
   };
 
   const onGoogle = async () => {
-    setError("");
-    setInfoMsg("");
-    setNeedsVerify(false);
-    setVerifyEmailToResend("");
+    clearBanners();
 
     try {
       setSubmitting(true);
@@ -146,33 +165,34 @@ export default function LoginPage() {
     setError("");
     setInfoMsg("");
 
+    const cleanEmail = verifyEmailToResend || email.trim().toLowerCase();
+
+    // We need password to authenticate in order to send verification via client SDK
+    if (!cleanEmail || !password) {
+      setError("Enter your email and password, then tap Resend verification.");
+      return;
+    }
+
     try {
       setResendBusy(true);
 
-      // need email + password to authenticate, then send verification
-      const cleanEmail = stripEmail(verifyEmailToResend || email);
-      if (!cleanEmail || !password) {
-        setError("Enter your email and password, then tap Resend verification.");
-        return;
-      }
-
+      // Sign in so Firebase can send the verification email
       const res = await beginLogin(cleanEmail, password);
-
-      // If MFA is required, they must complete MFA before we can send verification
       if (res?.mfaRequired) {
-        setError("This account has MFA enabled. Please sign in normally to complete verification.");
+        setError("This account has MFA enabled. Please finish sign-in first.");
         return;
       }
 
-      const loggedInUser = res?.user || auth.currentUser;
-
-      if (!loggedInUser) {
+      const u = auth.currentUser;
+      if (!u) {
         setError("Could not authenticate to resend verification. Please try again.");
         return;
       }
 
-      if (loggedInUser.emailVerified) {
-        setInfoMsg("Your email is already verified. You can sign in now.");
+      await reloadSafe(u);
+
+      if (auth.currentUser?.emailVerified) {
+        setInfoMsg("✅ Your email is already verified. Please sign in.");
         setNeedsVerify(false);
         try {
           await signOut(auth);
@@ -180,10 +200,13 @@ export default function LoginPage() {
         return;
       }
 
-      await sendEmailVerification(loggedInUser);
-      setInfoMsg("✅ Verification email sent. Please check your inbox/spam.");
+      // ✅ Send verification link
+      await sendEmailVerification(u);
 
-      // sign out again for safety
+      setInfoMsg("✅ Verification email sent. Please check inbox/spam.");
+      setNeedsVerify(true);
+
+      // sign out again (keeps your verified-only access clean)
       try {
         await signOut(auth);
       } catch {}
@@ -194,8 +217,6 @@ export default function LoginPage() {
       setResendBusy(false);
     }
   };
-
-  const disabled = submitting || loading;
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#070b12] to-[#05070d] text-white px-4 py-10">
@@ -305,7 +326,7 @@ export default function LoginPage() {
               </button>
 
               <div className="mt-2 text-[11px] text-white/55">
-                Tip: Check your spam/junk folder. Some email providers delay delivery by a few minutes.
+                Tip: check spam/junk. Some providers delay delivery by a few minutes.
               </div>
             </div>
           )}
