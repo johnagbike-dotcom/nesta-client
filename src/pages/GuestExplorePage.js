@@ -216,6 +216,7 @@ export default function GuestExplorePage() {
   const [minN, setMinN] = useState("");
   const [maxN, setMaxN] = useState("");
   const [sortBy, setSortBy] = useState("newest"); // newest | price_low | price_high | premium
+  const [minRating, setMinRating] = useState("all"); // all | 4.5 | 4.0 | 3.0
 
   // ✅ used by FavButton when not logged in
   const requireLogin = useCallback(() => {
@@ -243,7 +244,6 @@ export default function GuestExplorePage() {
         if (live) setRows(list);
       } catch (e) {
         console.error("GuestExplorePage listings error:", e);
-        if (error) setError(e);
         if (live) {
           setRows([]);
           setError(e);
@@ -278,6 +278,9 @@ export default function GuestExplorePage() {
     const min = minN ? Number(minN) : null;
     const max = maxN ? Number(maxN) : null;
 
+    const ratingFloor =
+      minRating === "all" ? null : Number.isFinite(Number(minRating)) ? Number(minRating) : null;
+
     const base = rows.filter((r) => {
       const price = Number(r.pricePerNight || r.nightlyRate || r.price || 0);
 
@@ -293,7 +296,10 @@ export default function GuestExplorePage() {
       const okMin = min == null || price >= min;
       const okMax = max == null || price <= max;
 
-      return inCity && inText && okMin && okMax;
+      const { avg } = getRatingData(r);
+      const okRating = ratingFloor == null || (avg > 0 && avg >= ratingFloor);
+
+      return inCity && inText && okMin && okMax && okRating;
     });
 
     base.sort((a, b) => {
@@ -321,7 +327,7 @@ export default function GuestExplorePage() {
     });
 
     return base;
-  }, [rows, kw, cityKey, minN, maxN, sortBy]);
+  }, [rows, kw, cityKey, minN, maxN, sortBy, minRating]);
 
   const featuredInSearch = useMemo(() => {
     const nowMs = Date.now();
@@ -352,6 +358,7 @@ export default function GuestExplorePage() {
     setMinN("");
     setMaxN("");
     setSortBy("newest");
+    setMinRating("all");
   };
 
   const nowMsForBadges = Date.now();
@@ -378,13 +385,12 @@ export default function GuestExplorePage() {
               </h1>
               <p className="text-gray-200/80 max-w-2xl">
                 Lekki high-rises, Ikoyi penthouses, Abuja retreats. Filter by city,
-                budget, and vibe — then reserve in a few taps.
+                budget, and rating — then reserve in a few taps.
               </p>
             </div>
 
             <div className="flex flex-col items-end gap-2">
               <div className="flex items-center gap-2">
-                {/* ✅ MUST MATCH YOUR AppRouter route */}
                 <button
                   onClick={() => nav("/favourites")}
                   className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white/90 hover:bg-white/10 text-sm"
@@ -406,7 +412,7 @@ export default function GuestExplorePage() {
           </div>
 
           {/* filters row */}
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-[1.4fr,1fr,1fr,1fr,auto] gap-3">
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-[1.4fr,1fr,1fr,1fr,auto,auto] gap-3">
             <input
               value={kw}
               onChange={(e) => setKw(e.target.value)}
@@ -444,6 +450,18 @@ export default function GuestExplorePage() {
               placeholder="Max ₦/night"
               className="bg-black/30 border border-white/10 rounded-xl px-4 py-2 outline-none focus:border-amber-400/70 text-sm"
             />
+
+            <select
+              value={minRating}
+              onChange={(e) => setMinRating(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded-xl px-3 py-2 text-xs md:text-sm outline-none focus:border-amber-400/70"
+              title="Minimum rating"
+            >
+              <option value="all">Any rating</option>
+              <option value="4.5">4.5+ stars</option>
+              <option value="4.0">4.0+ stars</option>
+              <option value="3.0">3.0+ stars</option>
+            </select>
 
             <select
               value={sortBy}
@@ -503,7 +521,7 @@ export default function GuestExplorePage() {
         ) : filtered.length === 0 ? (
           <div className="rounded-2xl border border-amber-300/20 bg-amber-400/5 p-6 text-center">
             <h2 className="text-lg font-semibold mb-1">No listings match your filters.</h2>
-            <p className="text-gray-200 text-sm">Try another city or clear the min/max price.</p>
+            <p className="text-gray-200 text-sm">Try another city, rating, or clear min/max price.</p>
           </div>
         ) : (
           <>
@@ -542,7 +560,6 @@ export default function GuestExplorePage() {
                         loading="lazy"
                       />
 
-                      {/* ✅ favourite overlay (does NOT navigate) */}
                       <div className="absolute top-2 right-2 z-10">
                         <FavButton listingId={l.id} compact onRequireLogin={requireLogin} />
                       </div>
@@ -568,6 +585,7 @@ export default function GuestExplorePage() {
                         </p>
                       </div>
 
+                      {/* ✅ stars visible on every card (if any reviews exist) */}
                       <Stars value={avg} count={count} />
 
                       <div className="flex flex-wrap gap-2 text-[11px] text-white/60">
@@ -609,38 +627,21 @@ export default function GuestExplorePage() {
                             Edit
                           </Link>
                         ) : (
-                          <>
-                            <button
-                              onClick={() =>
-                                nav(`/reserve/${l.id}`, {
-                                  state: {
-                                    id: l.id,
-                                    title: l.title,
-                                    price,
-                                    hostId: l.ownerId || l.hostId || l.partnerUid || null,
-                                  },
-                                })
-                              }
-                              className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
-                            >
-                              Reserve
-                            </button>
-
-                            <button
-                              onClick={() =>
-                                nav("/chat", {
-                                  state: {
-                                    partnerUid: l.partnerUid || l.hostId || l.ownerId || null,
-                                    listing: { id: l.id, title: l.title || "Listing" },
-                                    from: "explore",
-                                  },
-                                })
-                              }
-                              className="px-3 py-1.5 rounded-xl bg-white/0 border border-white/5 text-sm hover:bg-white/5"
-                            >
-                              Chat
-                            </button>
-                          </>
+                          <button
+                            onClick={() =>
+                              nav(`/reserve/${l.id}`, {
+                                state: {
+                                  id: l.id,
+                                  title: l.title,
+                                  price,
+                                  hostId: l.ownerId || l.hostId || l.partnerUid || null,
+                                },
+                              })
+                            }
+                            className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
+                          >
+                            Reserve
+                          </button>
                         )}
                       </div>
                     </div>

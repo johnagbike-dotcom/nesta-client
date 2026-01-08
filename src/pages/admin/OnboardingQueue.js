@@ -189,9 +189,39 @@ function Modal({ open, onClose, title, children }) {
   );
 }
 
-/* -------------------- Storage docs loader -------------------- */
-async function listDocsForPossibleKeys(storage, possibleKeys = []) {
+/* -------------------- Storage docs loader (RECURSIVE) -------------------- */
+
+/**
+ * Firebase listAll() does NOT recurse.
+ * This helper walks subfolders too (governmentId/, liveSelfie/, proofOfAddress/, etc.).
+ */
+async function listAllFilesRecursively(folderRef) {
+  const res = await listAll(folderRef);
+  let files = [...(res.items || [])];
+
+  for (const sub of res.prefixes || []) {
+    const nested = await listAllFilesRecursively(sub);
+    files = files.concat(nested);
+  }
+  return files;
+}
+
+/**
+ * Creates a nicer label for UI:
+ * - from: kyc/{uid}/governmentId/file.png
+ * - to:   governmentId: file.png
+ */
+function prettyNameFromFullPath(fullPath) {
+  const parts = String(fullPath || "").split("/").filter(Boolean);
+  // parts: ["kyc", "{uid}", "governmentId", "file.png"]
+  const label = parts.length >= 3 ? parts[parts.length - 2] : "document";
+  const file = parts.length ? parts[parts.length - 1] : "file";
+  return `${label}: ${file}`;
+}
+
+async function listDocsForPossibleKeys(storageInstance, possibleKeys = []) {
   const tried = [];
+
   for (const key of possibleKeys) {
     const k = String(key || "").trim();
     if (!k) continue;
@@ -199,19 +229,27 @@ async function listDocsForPossibleKeys(storage, possibleKeys = []) {
     const p = `kyc/${k}`;
     tried.push(p);
 
-    const baseRef = ref(storage, p);
-    const res = await listAll(baseRef);
+    const baseRef = ref(storageInstance, p);
 
-    if (res?.items?.length) {
+    // ✅ recursive fetch (items in subfolders included)
+    const fileRefs = await listAllFilesRecursively(baseRef);
+
+    if (fileRefs?.length) {
       const items = await Promise.all(
-        res.items.map(async (it) => ({
-          name: it.name,
+        fileRefs.map(async (it) => ({
+          name: prettyNameFromFullPath(it.fullPath),
           url: await getDownloadURL(it),
+          fullPath: it.fullPath,
         }))
       );
+
+      // Stable order: by path then name
+      items.sort((a, b) => String(a.fullPath).localeCompare(String(b.fullPath)));
+
       return { items, path: p, tried };
     }
   }
+
   return { items: [], path: "", tried };
 }
 
@@ -355,7 +393,7 @@ export default function OnboardingQueue() {
       const msg = String(e?.message || e);
       if (/storage\/unauthorized|permission|unauthorized/i.test(msg)) {
         setDocsError(
-          "Storage access denied by rules. Allow admins to read the kyc/* path, or use a Cloud Function to proxy access."
+          "Storage access denied by rules. Ensure your admin claim is set (request.auth.token.admin == true) and Storage rules allow admins to read kyc/*."
         );
       } else {
         setDocsError("Could not load Storage documents: " + msg);
@@ -400,7 +438,6 @@ export default function OnboardingQueue() {
       });
 
       // 3) update kycProfiles/{uid} so the user page shows correct final status
-      //    (if doc exists; setDoc merge won't fail if it doesn't)
       await setDoc(
         doc(db, "kycProfiles", userKey),
         {
@@ -421,7 +458,6 @@ export default function OnboardingQueue() {
       );
 
       // 4) mirror into users/{uid} for gating + ROLE PROMOTION
-      //    This is what makes them stop being "guest"
       const roleToSet =
         row.type === "partner" ? "verified_partner" : "verified_host";
 
@@ -445,7 +481,6 @@ export default function OnboardingQueue() {
         updatedAt: serverTimestamp(),
       };
 
-      // Only promote role on APPROVED
       if (nextUpper === "APPROVED") {
         userPatch.role = roleToSet;
       }

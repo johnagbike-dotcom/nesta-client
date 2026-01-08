@@ -12,6 +12,9 @@ import OfficialLogo from "../assets/Official-Logo.jpg";
 const TOPBAR_H_MOBILE = 72;
 const TOPBAR_H_DESKTOP = 88;
 
+// ✅ single source of truth for "List your home" route
+const LIST_YOUR_HOME_ROUTE = "/onboarding/kyc/apply";
+
 // helper: set CSS var so pages can use padding-top: var(--topbar-h)
 function useTopbarCssVar() {
   useEffect(() => {
@@ -19,7 +22,10 @@ function useTopbarCssVar() {
 
     const apply = () => {
       const isMobile = window.matchMedia("(max-width: 640px)").matches;
-      root.style.setProperty("--topbar-h", `${isMobile ? TOPBAR_H_MOBILE : TOPBAR_H_DESKTOP}px`);
+      root.style.setProperty(
+        "--topbar-h",
+        `${isMobile ? TOPBAR_H_MOBILE : TOPBAR_H_DESKTOP}px`
+      );
     };
 
     apply();
@@ -32,8 +38,7 @@ function BrandButton({ onClick }) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-2 cursor-pointer px-1 py-1
-                 transition-all duration-300 hover:opacity-90 hover:scale-[1.02]"
+      className="flex items-center gap-2 cursor-pointer px-1 py-1 transition-all duration-300 hover:opacity-90 hover:scale-[1.02]"
       aria-label="Go to homepage"
     >
       <img
@@ -50,9 +55,56 @@ function NavItem({ to, children, end }) {
   const active = "text-[#f5b301]";
   const idle = "text-gray-200/80 hover:text-white";
   return (
-    <NavLink to={to} end={end} className={({ isActive }) => `${base} ${isActive ? active : idle}`}>
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) => `${base} ${isActive ? active : idle}`}
+    >
       {children}
     </NavLink>
+  );
+}
+
+function VerifiedBadge({ isKycApproved, isHost, isPartner }) {
+  if (!isKycApproved || (!isHost && !isPartner)) return null;
+  return (
+    <span className="hidden lg:inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-50 text-[11px]">
+      <span className="w-2 h-2 rounded-full bg-emerald-400" />
+      {isHost ? "Verified host" : "Verified partner"}
+    </span>
+  );
+}
+
+function AttentionReservationsLink({ to, label, uid }) {
+  const nav = useNavigate();
+  const attentionCount = useReservationsAttentionCount(uid || null);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => nav(to)}
+        className="px-3 py-2 rounded-md text-sm font-medium transition-colors text-gray-200/80 hover:text-white"
+      >
+        {label}
+      </button>
+      {attentionCount > 0 && (
+        <span className="absolute -top-1 -right-2 min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[11px] font-bold grid place-items-center">
+          {attentionCount}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function AttentionReservationsLinkMobile({ to, label }) {
+  const nav = useNavigate();
+  return (
+    <button
+      onClick={() => nav(to)}
+      className="text-left px-3 py-2 rounded-md text-sm font-medium transition-colors text-gray-200/80 hover:text-white bg-white/0"
+    >
+      {label}
+    </button>
   );
 }
 
@@ -74,20 +126,13 @@ export default function Header() {
 
   const roleRaw = (profile?.role || "").toLowerCase();
   const kyc = (profile?.kycStatus || "").toLowerCase();
-  const isKycApproved = kyc === "approved" || kyc === "verified" || kyc === "complete";
+  const isKycApproved =
+    kyc === "approved" || kyc === "verified" || kyc === "complete";
 
-  const isGuest = !!user && (!roleRaw || roleRaw === "guest");
   const isHost = !!user && (roleRaw === "host" || roleRaw === "verified_host");
-  const isPartner = !!user && (roleRaw === "partner" || roleRaw === "verified_partner");
+  const isPartner =
+    !!user && (roleRaw === "partner" || roleRaw === "verified_partner");
   const isAdmin = !!user && roleRaw === "admin";
-
-  const VerifiedBadge = () =>
-    isKycApproved && (isHost || isPartner) ? (
-      <span className="hidden lg:inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-50 text-[11px]">
-        <span className="w-2 h-2 rounded-full bg-emerald-400" />
-        {isHost ? "Verified host" : "Verified partner"}
-      </span>
-    ) : null;
 
   const rightEmailPill = user?.email ? (
     <span className="hidden md:inline-flex truncate bg-white/5 px-3 py-1 rounded-full text-xs text-white/80">
@@ -124,45 +169,57 @@ export default function Header() {
     </div>
   );
 
-  // role nav definitions (luxury wording)
+  // ✅ Inbox must NEVER show “(soon)”
+  const inboxLabel = `Inbox${unread > 0 ? ` (${unread})` : ""}`;
+
   const navLinks = useMemo(() => {
+    // visitor
     if (!user) {
       return [
         { to: "/explore", label: "Browse", end: true },
         { to: "/about", label: "About" },
-        { to: "/post", label: "List your home" },
+        // ✅ FIX: align with homepage CTA
+        { to: LIST_YOUR_HOME_ROUTE, label: "List your home" },
       ];
     }
+
+    // admin
     if (isAdmin) {
       return [
         { to: "/admin", label: "Admin", end: true },
-        { to: "/inbox", label: `Inbox${unread > 0 ? ` (${unread})` : ""}` },
+        { to: "/inbox", label: inboxLabel },
       ];
     }
+
+    // host
     if (isHost) {
       return [
         { to: "/host", label: "Host dashboard", end: true },
         { to: "/host-reservations", label: "Reservations", attention: true },
         { to: "/host-listings", label: "Manage listings" },
-        { to: "/inbox", label: `Inbox${unread > 0 ? ` (${unread})` : ""}` },
+        { to: "/inbox", label: inboxLabel },
       ];
     }
+
+    // partner
     if (isPartner) {
       return [
         { to: "/partner", label: "Partner dashboard", end: true },
         { to: "/reservations", label: "Reservations", attention: true },
         { to: "/partner-listings", label: "My portfolio" },
-        { to: "/inbox", label: `Inbox${unread > 0 ? ` (${unread})` : ""}` },
+        { to: "/inbox", label: inboxLabel },
       ];
     }
+
     // guest
     return [
       { to: "/explore", label: "Browse", end: true },
       { to: "/bookings", label: "Bookings" },
-      { to: "/post", label: "List your home" },
-      { to: "/inbox", label: `Inbox${unread > 0 ? ` (${unread})` : ""}` },
+      // ✅ FIX: align with homepage CTA
+      { to: LIST_YOUR_HOME_ROUTE, label: "List your home" },
+      { to: "/inbox", label: inboxLabel },
     ];
-  }, [user, isAdmin, isHost, isPartner, unread]);
+  }, [user, isAdmin, isHost, isPartner, inboxLabel]);
 
   return (
     <header
@@ -176,7 +233,12 @@ export default function Header() {
         <nav className="hidden md:flex items-center gap-1">
           {navLinks.map((l) =>
             l.attention ? (
-              <AttentionReservationsLink key={l.to} to={l.to} label={l.label} />
+              <AttentionReservationsLink
+                key={l.to}
+                to={l.to}
+                label={l.label}
+                uid={user?.uid}
+              />
             ) : (
               <NavItem key={l.to} to={l.to} end={l.end}>
                 {l.label}
@@ -190,7 +252,11 @@ export default function Header() {
           {user ? (
             <>
               {rightEmailPill}
-              <VerifiedBadge />
+              <VerifiedBadge
+                isKycApproved={isKycApproved}
+                isHost={isHost}
+                isPartner={isPartner}
+              />
               {logoutBtn}
             </>
           ) : (
@@ -200,25 +266,14 @@ export default function Header() {
 
         {/* Mobile: hamburger */}
         <div className="md:hidden flex items-center gap-2">
-          {user ? (
-            <button
-              onClick={() => setOpen((v) => !v)}
-              className="px-3 py-2 rounded-full bg-white/5 border border-white/10 text-white text-sm"
-              aria-expanded={open ? "true" : "false"}
-              aria-label="Open menu"
-            >
-              ☰
-            </button>
-          ) : (
-            <button
-              onClick={() => setOpen((v) => !v)}
-              className="px-3 py-2 rounded-full bg-white/5 border border-white/10 text-white text-sm"
-              aria-expanded={open ? "true" : "false"}
-              aria-label="Open menu"
-            >
-              ☰
-            </button>
-          )}
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="px-3 py-2 rounded-full bg-white/5 border border-white/10 text-white text-sm"
+            aria-expanded={open ? "true" : "false"}
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
         </div>
       </div>
 
@@ -228,14 +283,19 @@ export default function Header() {
           <div className="max-w-6xl mx-auto px-3 py-3 grid gap-2">
             {user?.email ? (
               <div className="text-xs text-white/70 px-2">
-                Signed in as <span className="text-white/90">{user.email}</span>
+                Signed in as{" "}
+                <span className="text-white/90">{user.email}</span>
               </div>
             ) : null}
 
             <div className="grid gap-1">
               {navLinks.map((l) =>
                 l.attention ? (
-                  <AttentionReservationsLinkMobile key={l.to} to={l.to} label={l.label} />
+                  <AttentionReservationsLinkMobile
+                    key={l.to}
+                    to={l.to}
+                    label={l.label}
+                  />
                 ) : (
                   <NavItem key={l.to} to={l.to} end={l.end}>
                     {l.label}
@@ -247,7 +307,11 @@ export default function Header() {
             <div className="pt-2 flex gap-2">
               {user ? (
                 <>
-                  <VerifiedBadge />
+                  <VerifiedBadge
+                    isKycApproved={isKycApproved}
+                    isHost={isHost}
+                    isPartner={isPartner}
+                  />
                   {logoutBtn}
                 </>
               ) : (
@@ -258,45 +322,5 @@ export default function Header() {
         </div>
       )}
     </header>
-  );
-}
-
-/* helper for reservations bubble */
-function AttentionReservationsLink({ to, label }) {
-  // note: uid is read inside hook from auth in your existing code pattern, but we keep your signature simple:
-  // if you need uid-specific, switch to: useReservationsAttentionCount(uid)
-  // For now, we call it without uid to avoid breaking if uid is not passed.
-  const nav = useNavigate();
-  const { user } = useAuth?.() || {}; // safe guard if hook signature differs
-  const attentionCount = useReservationsAttentionCount(user?.uid || null);
-
-  // If your useAuth is not available here (depends on your setup), use the old uid prop approach instead.
-  // If this line errors, tell me and I’ll switch back to your original prop signature.
-  return (
-    <div className="relative">
-      <button
-        onClick={() => nav(to)}
-        className="px-3 py-2 rounded-md text-sm font-medium transition-colors text-gray-200/80 hover:text-white"
-      >
-        {label}
-      </button>
-      {attentionCount > 0 && (
-        <span className="absolute -top-1 -right-2 min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[11px] font-bold grid place-items-center">
-          {attentionCount}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function AttentionReservationsLinkMobile({ to, label }) {
-  const nav = useNavigate();
-  return (
-    <button
-      onClick={() => nav(to)}
-      className="text-left px-3 py-2 rounded-md text-sm font-medium transition-colors text-gray-200/80 hover:text-white bg-white/0"
-    >
-      {label}
-    </button>
   );
 }

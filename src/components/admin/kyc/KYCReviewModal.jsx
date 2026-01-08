@@ -1,4 +1,4 @@
-// src/components/admin/kyc/KYCReviewModal.tsx
+// src/components/admin/kyc/KYCReviewModal.jsx
 import React, { useEffect, useState } from "react";
 import {
   doc,
@@ -10,14 +10,34 @@ import {
 } from "firebase/firestore";
 import { listAll, ref, getDownloadURL } from "firebase/storage";
 
+/**
+ * Recursively list ALL files under a storage folder (including subfolders).
+ * Firebase listAll() does NOT recurse by default.
+ */
+async function listAllFilesRecursively(folderRef) {
+  const res = await listAll(folderRef);
+
+  // files directly inside this folder
+  let files = [...res.items];
+
+  // recurse into subfolders
+  for (const subfolder of res.prefixes) {
+    const subFiles = await listAllFilesRecursively(subfolder);
+    files = files.concat(subFiles);
+  }
+
+  return files;
+}
+
 function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
   const [loading, setLoading] = useState(true);
   const [onboarding, setOnboarding] = useState(null);
-  const [files, setFiles] = useState([]);
+  const [files, setFiles] = useState([]); // [{ url, name, fullPath }]
   const [notes, setNotes] = useState("");
 
   useEffect(() => {
     if (!open || !userId) return;
+
     (async () => {
       setLoading(true);
       try {
@@ -29,13 +49,25 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
           setOnboarding(null);
         }
 
-        // Load uploaded files from Storage
+        // Load uploaded files from Storage (RECURSIVE)
         const folder = ref(storage, `kyc/${userId}`);
-        const res = await listAll(folder);
-        const urls = await Promise.all(res.items.map((i) => getDownloadURL(i)));
-        setFiles(urls);
+        const allFileRefs = await listAllFilesRecursively(folder);
+
+        const withUrls = await Promise.all(
+          allFileRefs.map(async (fileRef) => ({
+            name: fileRef.name,
+            fullPath: fileRef.fullPath,
+            url: await getDownloadURL(fileRef),
+          }))
+        );
+
+        // Optional: stable order (by folder then filename)
+        withUrls.sort((a, b) => a.fullPath.localeCompare(b.fullPath));
+
+        setFiles(withUrls);
       } catch (e) {
         console.error("KYC review load error:", e);
+        setFiles([]);
       }
       setLoading(false);
     })();
@@ -86,7 +118,8 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
           width: "min(900px,94vw)",
           borderRadius: 16,
           border: "1px solid rgba(255,255,255,.14)",
-          background: "linear-gradient(180deg, rgba(255,255,255,.05), rgba(0,0,0,.40))",
+          background:
+            "linear-gradient(180deg, rgba(255,255,255,.05), rgba(0,0,0,.40))",
           backdropFilter: "blur(14px)",
           boxShadow: "0 24px 48px rgba(0,0,0,.45)",
           padding: 18,
@@ -104,7 +137,13 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
           </div>
         ) : (
           <div style={{ display: "grid", gap: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 8 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "160px 1fr",
+                gap: 8,
+              }}
+            >
               <div className="muted">User ID</div>
               <div>{onboarding.userId || userId}</div>
 
@@ -112,15 +151,21 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
               <div>{onboarding.email || "—"}</div>
 
               <div className="muted">Type</div>
-              <div style={{ textTransform: "capitalize" }}>{onboarding.type}</div>
+              <div style={{ textTransform: "capitalize" }}>
+                {onboarding.type}
+              </div>
 
               <div className="muted">Status</div>
-              <div style={{ textTransform: "capitalize" }}>{onboarding.status}</div>
+              <div style={{ textTransform: "capitalize" }}>
+                {onboarding.status}
+              </div>
 
               <div className="muted">Submitted</div>
               <div>
                 {onboarding.submittedAt
-                  ? new Date(onboarding.submittedAt.seconds * 1000).toLocaleString()
+                  ? new Date(
+                      onboarding.submittedAt.seconds * 1000
+                    ).toLocaleString()
                   : "—"}
               </div>
             </div>
@@ -128,7 +173,9 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
             <hr style={{ opacity: 0.2 }} />
 
             <h3 style={{ fontWeight: 800 }}>Uploaded Documents</h3>
-            {files.length === 0 && <div style={{ color: "#aaa" }}>No documents uploaded.</div>}
+            {files.length === 0 && (
+              <div style={{ color: "#aaa" }}>No documents uploaded.</div>
+            )}
 
             <div
               style={{
@@ -137,24 +184,45 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
                 gap: 12,
               }}
             >
-              {files.map((url, i) => (
+              {files.map((f, i) => (
                 <a
-                  key={i}
-                  href={url}
+                  key={f.fullPath || i}
+                  href={f.url}
                   target="_blank"
                   rel="noreferrer"
+                  title={f.fullPath}
                   style={{
                     display: "block",
                     borderRadius: 8,
                     overflow: "hidden",
                     border: "1px solid rgba(255,255,255,.12)",
+                    textDecoration: "none",
+                    color: "inherit",
                   }}
                 >
                   <img
-                    src={url}
-                    alt="KYC file"
-                    style={{ width: "100%", height: 120, objectFit: "cover" }}
+                    src={f.url}
+                    alt={f.name || "KYC file"}
+                    style={{
+                      width: "100%",
+                      height: 120,
+                      objectFit: "cover",
+                      display: "block",
+                    }}
                   />
+                  <div
+                    style={{
+                      padding: "8px 10px",
+                      fontSize: 12,
+                      color: "#cbd5e1",
+                      background: "rgba(0,0,0,.25)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {f.fullPath?.split("/").slice(-2).join(" / ") || f.name}
+                  </div>
                 </a>
               ))}
             </div>
@@ -162,7 +230,9 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
             <hr style={{ opacity: 0.2 }} />
 
             <div style={{ display: "grid", gap: 8 }}>
-              <label style={{ fontWeight: 700 }}>Reviewer Notes (Optional)</label>
+              <label style={{ fontWeight: 700 }}>
+                Reviewer Notes (Optional)
+              </label>
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
@@ -178,10 +248,26 @@ function KYCReviewModal({ open, onClose, userId, db, storage, onChanged }) {
               />
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 12 }}>
-              <button onClick={onClose} style={btn("slate")}>Close</button>
-              <button onClick={() => doUpdate("rejected")} style={btn("ruby")}>Reject</button>
-              <button onClick={() => doUpdate("approved")} style={btn("emerald")}>Approve</button>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+                marginTop: 12,
+              }}
+            >
+              <button onClick={onClose} style={btn("slate")}>
+                Close
+              </button>
+              <button onClick={() => doUpdate("rejected")} style={btn("ruby")}>
+                Reject
+              </button>
+              <button
+                onClick={() => doUpdate("approved")}
+                style={btn("emerald")}
+              >
+                Approve
+              </button>
             </div>
           </div>
         )}

@@ -21,9 +21,33 @@ import useUserProfile from "../hooks/useUserProfile";
 import "../styles/polish.css";
 import "../styles/motion.css";
 
-const QUICK_GUEST = ["Hello 👋", "Is this place available on my dates?", "Can I get a flexible check-in?", "Please share house rules."];
-const QUICK_HOST = ["Hi there 👋 How can I help?", "Your dates are available ✅", "Check-in is from 2pm; we can be flexible.", "Here are the house rules:"];
-const QUICK_PARTNER = ["Hello 👋 thanks for your interest.", "We manage similar properties if you’d like options.", "Corporate/long-stay rates are available.", "I’ll share the application/verification steps."];
+/**
+ * Feature flag:
+ * - Missing -> default OFF (safe)
+ * - Set REACT_APP_CHAT_ENABLED=true to enable chat.
+ * NOTE: We DO NOT show any admin instructions in UI.
+ */
+const CHAT_ENABLED =
+  String(process.env.REACT_APP_CHAT_ENABLED || "").trim().toLowerCase() === "true";
+
+const QUICK_GUEST = [
+  "Hello 👋",
+  "Is this place available on my dates?",
+  "Can I get a flexible check-in?",
+  "Please share house rules.",
+];
+const QUICK_HOST = [
+  "Hi there 👋 How can I help?",
+  "Your dates are available ✅",
+  "Check-in is from 2pm; we can be flexible.",
+  "Here are the house rules:",
+];
+const QUICK_PARTNER = [
+  "Hello 👋 thanks for your interest.",
+  "We manage similar properties if you’d like options.",
+  "Corporate/long-stay rates are available.",
+  "I’ll share the application/verification steps.",
+];
 
 const ONLINE_WINDOW_MS = 60 * 1000;
 
@@ -46,6 +70,10 @@ function safeMillis(ts) {
 }
 
 export default function ChatPage() {
+  const nav = useNavigate();
+  const params = useParams();
+  const { state } = useLocation();
+
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
 
@@ -57,10 +85,6 @@ export default function ChatPage() {
       ? QUICK_HOST
       : QUICK_PARTNER;
 
-  const nav = useNavigate();
-  const params = useParams();
-  const { state } = useLocation();
-
   const forcedChatId = state?.chatId || state?.threadId || null;
   const paramUid = params?.uid || null;
 
@@ -68,9 +92,9 @@ export default function ChatPage() {
   const listingFromState = state?.listing || null; // { id, title }
 
   const [chatId, setChatId] = useState(forcedChatId || null);
-  const [headerTitle, setHeaderTitle] = useState("Chat with Host/Partner");
-  const [counterUid, setCounterUid] = useState(partnerUidFromState);
-  const [listing, setListing] = useState(listingFromState);
+  const [headerTitle, setHeaderTitle] = useState("Chat");
+  const [counterUid] = useState(partnerUidFromState);
+  const [listing] = useState(listingFromState);
 
   const [chatMeta, setChatMeta] = useState(null);
   const [counterProfile, setCounterProfile] = useState(null);
@@ -79,12 +103,20 @@ export default function ChatPage() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [pageError, setPageError] = useState("");
 
   const listRef = useRef(null);
   const otherIdRef = useRef(null);
   const typingIdleRef = useRef(null);
   const myPresenceRef = useRef(null);
   const otherPresenceRef = useRef(null);
+
+  const canRunChat = useMemo(() => {
+    if (!CHAT_ENABLED) return false;
+    if (!user?.uid) return false;
+    if (forcedChatId) return true;
+    return !!(counterUid && listing?.id);
+  }, [user?.uid, forcedChatId, counterUid, listing?.id]);
 
   const scrollToBottom = useCallback(() => {
     if (!listRef.current) return;
@@ -117,19 +149,23 @@ export default function ChatPage() {
   const otherIdForSeen = otherIdRef.current || null;
   const otherLastReadMs = otherIdForSeen ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen]) : 0;
   const lastMineCreatedMs = safeMillis(lastMineMsg?.createdAt);
-  const showSeen = !!lastMineMsg && otherLastReadMs > 0 && lastMineCreatedMs > 0 && otherLastReadMs >= lastMineCreatedMs;
+  const showSeen =
+    !!lastMineMsg && otherLastReadMs > 0 && lastMineCreatedMs > 0 && otherLastReadMs >= lastMineCreatedMs;
 
-  // Resolve/create chat thread
+  // Resolve/create thread
   useEffect(() => {
     let cancelled = false;
 
     async function resolveThread() {
+      if (!canRunChat) return;
+
       try {
+        setPageError("");
+
         if (forcedChatId) {
           if (!cancelled) setChatId(forcedChatId);
           return;
         }
-        if (!user?.uid || !counterUid || !listing?.id) return;
 
         const id = stableChatId(listing.id, user.uid, counterUid);
         const ref = doc(db, "chats", id);
@@ -140,14 +176,10 @@ export default function ChatPage() {
             participants: [user.uid, counterUid],
             listingId: listing.id,
             listingTitle: listing.title || "Listing",
-            // keep optional; UI doesn’t depend on it
-            counterpartRole: "host",
-
             archived: {},
             pinned: {},
             lastReadAt: {},
             unreadFor: [],
-
             lastMessage: null,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -156,11 +188,11 @@ export default function ChatPage() {
 
         if (!cancelled) {
           setChatId(id);
-          setHeaderTitle(listing.title || "Chat with Host/Partner");
+          setHeaderTitle(listing.title || "Chat");
         }
       } catch (e) {
         console.error("Resolve/create chat failed:", e);
-        alert("Couldn’t open chat. Please try again.");
+        if (!cancelled) setPageError("Couldn’t open messages. Please try again.");
       }
     }
 
@@ -168,11 +200,11 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [forcedChatId, user?.uid, counterUid, listing?.id, listing?.title]);
+  }, [canRunChat, forcedChatId, user?.uid, counterUid, listing?.id, listing?.title, listing]);
 
-  // Chat doc listener + presence refs + remove me from unreadFor (only if needed)
+  // Chat doc listener
   useEffect(() => {
-    if (!chatId || !user?.uid) return;
+    if (!canRunChat || !chatId) return;
 
     const chatRef = doc(db, "chats", chatId);
     const unsub = onSnapshot(
@@ -181,7 +213,7 @@ export default function ChatPage() {
         if (!snap.exists()) return;
         const d = snap.data() || {};
         setChatMeta(d);
-        setHeaderTitle(d.listingTitle || "Chat with Host/Partner");
+        setHeaderTitle(d.listingTitle || "Chat");
 
         const parts = Array.isArray(d.participants) ? d.participants : [];
         const otherId = parts.find((p) => p !== user.uid) || counterUid || null;
@@ -190,22 +222,24 @@ export default function ChatPage() {
         myPresenceRef.current = doc(db, "chats", chatId, "presence", user.uid);
         otherPresenceRef.current = otherId ? doc(db, "chats", chatId, "presence", otherId) : null;
 
-        // Only update if I'm actually in unreadFor (avoids noisy writes)
         if (Array.isArray(d.unreadFor) && d.unreadFor.includes(user.uid)) {
           updateDoc(chatRef, { unreadFor: arrayRemove(user.uid) }).catch(() => {});
         }
       },
-      (e) => console.error("chat doc listen:", e)
+      (e) => {
+        console.error("chat doc listen:", e);
+        setPageError("Messages failed to load. Please try again.");
+      }
     );
 
     return () => unsub();
-  }, [chatId, user?.uid, counterUid]);
+  }, [canRunChat, chatId, user?.uid, counterUid]);
 
   // Other presence listener
   useEffect(() => {
-    if (!chatId || !user?.uid) return;
-    let unsubPresence = () => {};
+    if (!canRunChat || !chatId) return;
 
+    let unsubPresence = () => {};
     if (otherPresenceRef.current) {
       unsubPresence = onSnapshot(
         otherPresenceRef.current,
@@ -222,13 +256,14 @@ export default function ChatPage() {
       clearTimeout(typingIdleRef.current);
       unsubPresence();
     };
-  }, [chatId, user?.uid]);
+  }, [canRunChat, chatId]);
 
   // Load counter profile
   useEffect(() => {
     let alive = true;
+
     async function load() {
-      if (!counterUid) return;
+      if (!canRunChat || !counterUid) return;
       try {
         const snap = await getDoc(doc(db, "users_public", counterUid));
         if (!alive) return;
@@ -237,15 +272,17 @@ export default function ChatPage() {
         console.error("loadCounterProfile:", e);
       }
     }
+
     load();
     return () => {
       alive = false;
     };
-  }, [counterUid]);
+  }, [canRunChat, counterUid]);
 
   // Messages listener
   useEffect(() => {
-    if (!chatId) return;
+    if (!canRunChat || !chatId) return;
+
     const qRef = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
     const unsub = onSnapshot(
       qRef,
@@ -255,23 +292,26 @@ export default function ChatPage() {
       },
       (err) => console.error(err)
     );
-    return () => unsub();
-  }, [chatId, scrollToBottom]);
 
-  // Update lastReadAt periodically
+    return () => unsub();
+  }, [canRunChat, chatId, scrollToBottom]);
+
+  // Update lastReadAt
   useEffect(() => {
-    if (!chatId || !user?.uid) return;
+    if (!canRunChat || !chatId) return;
+
     const t = setInterval(() => {
       updateDoc(doc(db, "chats", chatId), {
         [`lastReadAt.${user.uid}`]: serverTimestamp(),
       }).catch(() => {});
     }, 15000);
-    return () => clearInterval(t);
-  }, [chatId, user?.uid]);
 
-  // SEND
+    return () => clearInterval(t);
+  }, [canRunChat, chatId, user?.uid]);
+
   const onSend = useCallback(async () => {
-    if (!user?.uid || !chatId) return;
+    if (!canRunChat || !user?.uid || !chatId) return;
+
     const text = message.trim();
     if (!text) return;
 
@@ -279,6 +319,7 @@ export default function ChatPage() {
 
     try {
       setBusy(true);
+      setPageError("");
 
       await addDoc(collection(db, "chats", chatId, "messages"), {
         text,
@@ -298,20 +339,20 @@ export default function ChatPage() {
       setTimeout(scrollToBottom, 0);
     } catch (e) {
       console.error(e);
-      alert("Couldn’t send message. Please try again.");
+      setPageError("Couldn’t send message. Please try again.");
     } finally {
       setBusy(false);
     }
-  }, [user?.uid, chatId, message, scrollToBottom, counterUid]);
+  }, [canRunChat, user?.uid, chatId, message, scrollToBottom, counterUid]);
 
-  // Typing (presence) — self-only writes (matches rules)
   const onChangeMessage = (e) => {
     const v = e.target.value;
     setMessage(v);
 
-    if (!myPresenceRef.current || !user?.uid) return;
+    if (!canRunChat || !myPresenceRef.current || !user?.uid) return;
 
     setDoc(myPresenceRef.current, { typing: true, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+
     clearTimeout(typingIdleRef.current);
     typingIdleRef.current = setTimeout(() => {
       setDoc(myPresenceRef.current, { typing: false, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
@@ -330,13 +371,43 @@ export default function ChatPage() {
     setTimeout(onSend, 20);
   };
 
-  // Guards
+  // RENDER (no hook below this line)
+
+  if (!CHAT_ENABLED) {
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white pt-24 px-4 motion-fade-in">
+        <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-white/5 p-6 motion-pop">
+          <h1 className="text-xl font-extrabold tracking-tight">Messaging</h1>
+          <p className="text-white/70 mt-2 text-sm leading-relaxed">
+            Messaging is available after a booking is confirmed. Please proceed with{" "}
+            <span className="text-white/90 font-semibold">Reserve / Book</span>.
+          </p>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              onClick={() => nav(-1)}
+              className="px-4 py-2 rounded-full bg-white/5 border border-white/15 hover:bg-white/10 text-sm"
+            >
+              ← Go back
+            </button>
+            <button
+              onClick={() => nav("/explore")}
+              className="px-4 py-2 rounded-full bg-amber-500 text-black font-semibold hover:bg-amber-400 text-sm"
+            >
+              Explore stays
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   if (!user) {
     return (
       <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
-          <h2 className="text-2xl font-bold mb-2">Chat</h2>
-          <p className="text-gray-300">Please sign in to start chatting.</p>
+          <h2 className="text-2xl font-bold mb-2">Messages</h2>
+          <p className="text-gray-300">Please sign in to view messages.</p>
         </div>
       </main>
     );
@@ -346,14 +417,15 @@ export default function ChatPage() {
     return (
       <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
-          <h2 className="text-2xl font-bold mb-2">Chat with Host/Partner</h2>
-          <p className="text-gray-300">Open a conversation from your Inbox or Bookings.</p>
+          <h2 className="text-2xl font-bold mb-2">Messages</h2>
+          <p className="text-gray-300">Open a conversation from your Bookings.</p>
         </div>
       </main>
     );
   }
 
-  const counterDisplayName = counterProfile?.displayName || counterProfile?.name || counterProfile?.email || "Host/Partner";
+  const counterDisplayName =
+    counterProfile?.displayName || counterProfile?.name || counterProfile?.email || "Host/Partner";
   const avatarUrl = counterProfile?.photoURL || counterProfile?.avatarUrl || counterProfile?.avatar || null;
 
   return (
@@ -362,7 +434,7 @@ export default function ChatPage() {
         <div className="flex items-center justify-between mb-3 motion-slide-up">
           <div className="min-w-0">
             <h1 className="text-xl font-extrabold tracking-tight flex items-center gap-3">
-              <span className="truncate">{headerTitle || "Chat with Host/Partner"}</span>
+              <span className="truncate">{headerTitle || "Messages"}</span>
             </h1>
 
             <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
@@ -390,33 +462,24 @@ export default function ChatPage() {
             </div>
           </div>
 
-          <button onClick={() => nav(-1)} className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-sm">
+          <button
+            onClick={() => nav(-1)}
+            className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-sm"
+          >
             ← Back
           </button>
         </div>
 
-        {listing?.id ? (
-          <div className="mb-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-2 text-sm flex items-center gap-3">
-            <span className="text-amber-200 text-lg">🏡</span>
-            <div className="flex-1 min-w-0">
-              <div className="text-amber-100/90 truncate">
-                This chat is about: <span className="font-semibold">{listing.title}</span>
-              </div>
-              <div className="text-amber-100/50 text-xs">Keep all booking info in this thread.</div>
-            </div>
-            <button
-              onClick={() => nav(`/listing/${listing.id}`)}
-              className="px-3 py-1 rounded-lg bg-amber-500/90 text-black text-xs font-semibold hover:bg-amber-400"
-            >
-              View listing
-            </button>
+        {pageError ? (
+          <div className="mb-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-4 py-2 text-sm text-rose-100">
+            {pageError}
           </div>
         ) : null}
 
         <div className="rounded-2xl border border-white/10 bg-gray-900/60 overflow-hidden motion-pop">
           <div ref={listRef} className="h-[460px] overflow-y-auto p-4 nesta-chat-scroll" style={{ scrollBehavior: "smooth" }}>
             {messages.length === 0 ? (
-              <div className="text-gray-300 text-sm">No messages yet. Say hello 👋</div>
+              <div className="text-gray-300 text-sm">No messages yet.</div>
             ) : (
               messages.map((m) => {
                 const mine = m.senderId === user.uid;

@@ -1,8 +1,13 @@
 // src/pages/admin/KycReviewPage.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import dayjs from "dayjs";
 import axios from "axios";
 import { getAuth } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { db, storage } from "../../firebase"; // ✅ storage added
+
+import { ref as sRef, listAll, getDownloadURL } from "firebase/storage"; // ✅ storage helpers
+
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
 import { useToast } from "../../components/Toast";
@@ -123,12 +128,11 @@ async function downloadCsv(href, fallbackName) {
 
 /* ------------------------------ Docs extraction ------------------------------ */
 /**
- * Your server returns kycProfiles docs via /admin/kyc, and the row already includes:
- * - uploads: { docType: { url, name, ... } }
- * - documents: { docType: [ { url, name }, ... ] }
- * So admin UI should use row.uploads/documents directly (no client Firestore/Storage reads).
+ * Preferred: your admin API returns kycProfiles rows with:
+ *  - uploads: { docType: { url, name, ... } }
+ *  - documents: { docType: [ { url, name }, ... ] }
  */
-function docsFromKycRow(row) {
+function docsFromApiRow(row) {
   const out = [];
 
   const uploads = row?.uploads && typeof row.uploads === "object" ? row.uploads : null;
@@ -160,6 +164,7 @@ function docsFromKycRow(row) {
     });
   }
 
+  // Deduplicate by url
   const seen = new Set();
   return out.filter((d) => {
     if (!d.url) return false;
@@ -167,6 +172,82 @@ function docsFromKycRow(row) {
     seen.add(d.url);
     return true;
   });
+}
+
+/**
+ * Firestore fallback: kycProfiles/{uid}.documents
+ * documents: { docType: [{name,url,...}, ...] }
+ */
+function docsFromKycProfilesDoc(data) {
+  const out = [];
+  const documents = data?.documents && typeof data.documents === "object" ? data.documents : null;
+  if (!documents) return out;
+
+  Object.entries(documents).forEach(([docType, arr]) => {
+    const list = Array.isArray(arr) ? arr : [];
+    list.forEach((x, idx) => {
+      if (x?.url) {
+        out.push({
+          name: `${docType}: ${x?.name || `file_${idx + 1}`}`,
+          url: x.url,
+          source: "firestore_kycProfiles",
+        });
+      }
+    });
+  });
+
+  const seen = new Set();
+  return out.filter((d) => {
+    if (!d.url) return false;
+    if (seen.has(d.url)) return false;
+    seen.add(d.url);
+    return true;
+  });
+}
+
+/**
+ * Legacy Firestore fallback: kyc/{uid}.files
+ * files: [{name,url,path,uploadedAt}, ...]
+ */
+function docsFromLegacyKycDoc(data) {
+  const out = [];
+  const files = Array.isArray(data?.files) ? data.files : [];
+  files.forEach((f, idx) => {
+    if (f?.url) {
+      out.push({
+        name: `document: ${f?.name || `file_${idx + 1}`}`,
+        url: f.url,
+        source: "firestore_legacy_kyc",
+      });
+    }
+  });
+
+  const seen = new Set();
+  return out.filter((d) => {
+    if (!d.url) return false;
+    if (seen.has(d.url)) return false;
+    seen.add(d.url);
+    return true;
+  });
+}
+
+/* ------------------------------ Storage fallback (NEW) ------------------------------ */
+async function listAllFilesRecursively(folderRef) {
+  const res = await listAll(folderRef);
+  let files = [...res.items];
+  for (const subfolder of res.prefixes) {
+    const subFiles = await listAllFilesRecursively(subfolder);
+    files = files.concat(subFiles);
+  }
+  return files;
+}
+
+function niceDocNameFromPath(fullPath) {
+  // fullPath: kyc/{uid}/governmentId/filename.png
+  const parts = String(fullPath || "").split("/").filter(Boolean);
+  const label = parts.length >= 2 ? parts[parts.length - 2] : "document";
+  const file = parts.length ? parts[parts.length - 1] : "file";
+  return `${label}: ${file}`;
 }
 
 /* ------------------------------ Modal ------------------------------ */
@@ -245,10 +326,11 @@ export default function KycReviewPage() {
   const [sel, setSel] = useState(null);
   const [docs, setDocs] = useState([]);
   const [docsNote, setDocsNote] = useState("");
+  const [docsLoading, setDocsLoading] = useState(false);
 
   const lastPage = Math.max(1, Math.ceil((total || 0) / perPage));
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = { page, limit: perPage };
@@ -269,12 +351,11 @@ export default function KycReviewPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, perPage, tab, q]); // eslint-disable-line
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, page, perPage]);
+  }, [load]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -282,8 +363,7 @@ export default function KycReviewPage() {
       load();
     }, 250);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q]);
+  }, [q, load]);
 
   const counts = useMemo(() => {
     const c = { all: total || 0, pending: 0, approved: 0, rejected: 0 };
@@ -294,33 +374,100 @@ export default function KycReviewPage() {
     return c;
   }, [rows, total]);
 
-  const openReview = async (row) => {
-    setSel(row);
-    setOpen(true);
-    setDocs([]);
-    setDocsNote("");
-
-    // ✅ Use what the admin API already returned (uploads/documents)
-    const fromApi = docsFromKycRow(row);
-    if (fromApi.length) {
-      setDocs(fromApi);
-      setDocsNote("");
-      return;
-    }
-
-    // If none present, show a clear message (this means KYC submit didn't store urls)
-    const uid = row?.userId || row?.uid || row?.id || "—";
-    setDocsNote(
-      `No documents found on this KYC record.\n\nThis admin screen no longer reads Storage directly (rules can block it).\nPlease confirm KYC submit stored uploads/documents under kycProfiles/${uid}.`
-    );
-  };
-
   const closeReview = () => {
     setOpen(false);
     setSel(null);
     setDocs([]);
     setDocsNote("");
+    setDocsLoading(false);
   };
+
+  const resolveUidFromRow = (row) => row?.userId || row?.uid || row?.id || null;
+
+  const openReview = useCallback(async (row) => {
+    setSel(row);
+    setOpen(true);
+    setDocs([]);
+    setDocsNote("");
+    setDocsLoading(true);
+
+    try {
+      // 1) Prefer API docs (fast)
+      const fromApi = docsFromApiRow(row);
+      if (fromApi.length) {
+        setDocs(fromApi);
+        setDocsLoading(false);
+        return;
+      }
+
+      const uid = resolveUidFromRow(row);
+      if (!uid) {
+        setDocsNote("Missing userId on this record — cannot resolve document location.");
+        setDocsLoading(false);
+        return;
+      }
+
+      // 2) Firestore fallback: kycProfiles/{uid}
+      try {
+        const snap = await getDoc(doc(db, "kycProfiles", uid));
+        if (snap.exists()) {
+          const fromProfiles = docsFromKycProfilesDoc(snap.data());
+          if (fromProfiles.length) {
+            setDocs(fromProfiles);
+            setDocsLoading(false);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn("[KycReviewPage] kycProfiles read failed:", e?.message || e);
+      }
+
+      // 3) Legacy Firestore fallback: kyc/{uid}
+      try {
+        const snap2 = await getDoc(doc(db, "kyc", uid));
+        if (snap2.exists()) {
+          const fromLegacy = docsFromLegacyKycDoc(snap2.data());
+          if (fromLegacy.length) {
+            setDocs(fromLegacy);
+            setDocsLoading(false);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn("[KycReviewPage] legacy kyc read failed:", e?.message || e);
+      }
+
+      // 4) ✅ Storage fallback: list under kyc/{uid}/** (recursive)
+      try {
+        const folder = sRef(storage, `kyc/${uid}`);
+        const allRefs = await listAllFilesRecursively(folder);
+
+        if (allRefs.length) {
+          const storageDocs = await Promise.all(
+            allRefs.map(async (fileRef) => ({
+              name: niceDocNameFromPath(fileRef.fullPath),
+              url: await getDownloadURL(fileRef),
+              source: "storage_kyc",
+            }))
+          );
+
+          // stable sort
+          storageDocs.sort((a, b) => a.name.localeCompare(b.name));
+          setDocs(storageDocs);
+          setDocsLoading(false);
+          return;
+        }
+      } catch (e) {
+        console.warn("[KycReviewPage] storage kyc read failed:", e?.message || e);
+      }
+
+      setDocsNote(
+        `No documents found for this KYC.\n\nChecked:\n• API row.uploads / row.documents\n• Firestore: kycProfiles/${uid}.documents\n• Firestore: kyc/${uid}.files\n• Storage: kyc/${uid}/**\n\nIf Storage has files but this still fails, your admin user may be missing the custom claim (admin=true) and Storage rules will block access.`
+      );
+    } finally {
+      setDocsLoading(false);
+    }
+  }, []);
 
   const setStatus = async (row, nextStatus) => {
     const id = row?.id;
@@ -344,11 +491,11 @@ export default function KycReviewPage() {
 
   const exportCsv = async () => {
     try {
-      const href = `/admin/kyc/export.csv?${new URLSearchParams({
-        ...(tab !== "all" ? { status: tab } : {}),
-        ...(q.trim() ? { q: q.trim() } : {}),
-      }).toString()}`;
+      const params = new URLSearchParams();
+      if (tab !== "all") params.set("status", tab);
+      if (q.trim()) params.set("q", q.trim());
 
+      const href = `/admin/kyc/export.csv?${params.toString()}`;
       await downloadCsv(href, `kyc-${Date.now()}.csv`);
       notify("KYC CSV exported.", "success");
     } catch (e) {
@@ -501,7 +648,12 @@ export default function KycReviewPage() {
                           <LuxeBtn small onClick={() => openReview(r)}>
                             Review
                           </LuxeBtn>
-                          <LuxeBtn small kind="emerald" disabled={busyId === r.id} onClick={() => setStatus(r, "approved")}>
+                          <LuxeBtn
+                            small
+                            kind="emerald"
+                            disabled={busyId === r.id}
+                            onClick={() => setStatus(r, "approved")}
+                          >
                             Approve
                           </LuxeBtn>
                           <LuxeBtn small kind="ruby" disabled={busyId === r.id} onClick={() => setStatus(r, "rejected")}>
@@ -631,7 +783,9 @@ export default function KycReviewPage() {
             <div style={{ borderTop: "1px solid rgba(255,255,255,.08)", paddingTop: 10 }}>
               <div style={{ fontWeight: 900, marginBottom: 8, color: "#f8fafc" }}>Documents</div>
 
-              {docs.length === 0 ? (
+              {docsLoading ? (
+                <div style={{ color: "#94a3b8" }}>Loading documents…</div>
+              ) : docs.length === 0 ? (
                 <div style={{ color: "#94a3b8", whiteSpace: "pre-wrap" }}>
                   {docsNote || "No documents attached to this record."}
                 </div>
@@ -678,9 +832,7 @@ export default function KycReviewPage() {
                       >
                         <span style={{ fontSize: 12, opacity: 0.75 }}>Open</span>
                       </div>
-                      <div style={{ marginTop: 8, fontSize: 11, opacity: 0.6 }}>
-                        source: {a.source}
-                      </div>
+                      <div style={{ marginTop: 8, fontSize: 11, opacity: 0.6 }}>source: {a.source}</div>
                     </a>
                   ))}
                 </div>

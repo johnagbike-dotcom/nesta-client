@@ -1,6 +1,6 @@
 // src/pages/BookingCompletePage.js
 import React, { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 /* ---------- helpers ---------- */
 const safeText = (v) => {
@@ -71,9 +71,35 @@ const diffNights = (checkIn, checkOut) => {
   return ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
 };
 
+function isBookingConfirmed(statusRaw) {
+  const s = String(statusRaw || "").toLowerCase().trim();
+  // keep this generous to match different data shapes
+  return ["confirmed", "paid", "success", "completed"].includes(s) || s.includes("success");
+}
+
+function resolveHostUidFromBooking(b) {
+  if (!b || typeof b !== "object") return null;
+  // try common field names used across Nesta pages
+  return (
+    b.hostId ||
+    b.hostUid ||
+    b.partnerUid ||
+    b.partnerId ||
+    b.ownerId ||
+    b.ownerUid ||
+    b.listing?.hostId ||
+    b.listing?.hostUid ||
+    b.listing?.partnerUid ||
+    b.listing?.partnerId ||
+    b.listing?.ownerId ||
+    null
+  );
+}
+
 /* ---------- page ---------- */
 export default function BookingCompletePage() {
   const { state } = useLocation();
+  const nav = useNavigate();
   const [snapshot, setSnapshot] = useState(null);
 
   // If we were navigated here from BookingDetailsPage or BookingsPage,
@@ -158,7 +184,9 @@ export default function BookingCompletePage() {
     if (!p) return null;
 
     const listing = p.listing || {};
-    const nightly = Number(listing.pricePerNight ?? listing.price ?? p.pricePerNight ?? 0);
+    const nightly = Number(
+      listing.pricePerNight ?? listing.price ?? p.pricePerNight ?? 0
+    );
     const checkIn = p.checkIn ?? listing.checkIn ?? null;
     const checkOut = p.checkOut ?? listing.checkOut ?? null;
     const nights = diffNights(checkIn, checkOut);
@@ -175,6 +203,16 @@ export default function BookingCompletePage() {
         city: safeText(listing.city),
         area: safeText(listing.area),
       },
+      // For post-booking chat unlock later, keep host id if present
+      hostId:
+        safeText(
+          listing.hostId ||
+            listing.hostUid ||
+            listing.partnerUid ||
+            listing.partnerId ||
+            listing.ownerId ||
+            ""
+        ) || "",
       checkIn,
       checkOut,
       guests,
@@ -196,7 +234,8 @@ export default function BookingCompletePage() {
   if (routeBooking) {
     const b = routeBooking;
 
-    const listingTitle = b.listingTitle || b.listing?.title || b.title || "Listing";
+    const listingTitle =
+      b.listingTitle || b.listing?.title || b.title || "Listing";
     const location =
       b.listingLocation || [b.city, b.area].filter(Boolean).join(", ") || "";
     const ref = b.reference || b.ref || b.id || "";
@@ -212,7 +251,8 @@ export default function BookingCompletePage() {
       b.listing?.pricePerNight ||
       (nights > 0 ? (b.total || b.amountN || 0) / nights : 0);
 
-    const subtotal = b.subtotal ?? (nights > 0 ? nights * Number(nightly || 0) : 0);
+    const subtotal =
+      b.subtotal ?? (nights > 0 ? nights * Number(nightly || 0) : 0);
 
     const fee =
       b.fee ??
@@ -220,7 +260,11 @@ export default function BookingCompletePage() {
 
     const total = b.total != null ? Number(b.total) : subtotal + fee;
 
-    const success = ["confirmed", "paid", "success"].includes(status);
+    const confirmed = isBookingConfirmed(status);
+    const hostUid = resolveHostUidFromBooking(b);
+    const listingId = safeText(b.listingId || b.listing?.id || b.id || "");
+
+    const canChat = !!(confirmed && hostUid && listingId);
 
     return (
       <main className="dash-bg">
@@ -252,17 +296,23 @@ export default function BookingCompletePage() {
                     width: 42,
                     height: 42,
                     borderRadius: 12,
-                    background: success ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                    background: confirmed
+                      ? "rgba(16,185,129,0.15)"
+                      : "rgba(239,68,68,0.15)",
                     display: "grid",
                     placeItems: "center",
-                    border: success ? "1px solid rgba(16,185,129,0.35)" : "1px solid rgba(239,68,68,0.35)",
+                    border: confirmed
+                      ? "1px solid rgba(16,185,129,0.35)"
+                      : "1px solid rgba(239,68,68,0.35)",
                   }}
                 >
-                  <span style={{ fontSize: 22 }}>{success ? "✅" : "⚠️"}</span>
+                  <span style={{ fontSize: 22 }}>
+                    {confirmed ? "✅" : "⚠️"}
+                  </span>
                 </div>
                 <div>
                   <h2 style={{ margin: "0 0 6px" }}>
-                    {success ? "Booking confirmed" : "Booking receipt"}
+                    {confirmed ? "Booking confirmed" : "Booking receipt"}
                   </h2>
                   <div className="muted" style={{ fontSize: 13 }}>
                     Ref: {safeText(ref) || "—"}
@@ -299,7 +349,9 @@ export default function BookingCompletePage() {
             >
               {/* left: stay details */}
               <section>
-                <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>{listingTitle}</h3>
+                <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>
+                  {listingTitle}
+                </h3>
                 {location && (
                   <p className="muted" style={{ margin: 0 }}>
                     {location}
@@ -355,6 +407,33 @@ export default function BookingCompletePage() {
                     </span>
                   </div>
                 </div>
+
+                {/* ✅ Chat unlocks only after confirmed */}
+                {canChat ? (
+                  <div style={{ marginTop: 14 }}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        nav("/chat", {
+                          state: {
+                            partnerUid: hostUid,
+                            listing: {
+                              id: listingId,
+                              title: listingTitle,
+                            },
+                          },
+                        })
+                      }
+                      className="btn"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                    >
+                      Message host
+                    </button>
+                    <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                      Chat is available for confirmed bookings only.
+                    </div>
+                  </div>
+                ) : null}
               </section>
 
               {/* right: totals */}
@@ -366,14 +445,30 @@ export default function BookingCompletePage() {
                   border: "1px solid rgba(148,163,184,0.4)",
                 }}
               >
-                <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>Payment summary</h3>
+                <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>
+                  Payment summary
+                </h3>
 
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 4,
+                    fontSize: 14,
+                  }}
+                >
                   <span className="muted">Nightly rate × {nights || 1}</span>
                   <span style={{ fontWeight: 600 }}>{ngn(subtotal)}</span>
                 </div>
 
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 4,
+                    fontSize: 14,
+                  }}
+                >
                   <span className="muted">Service fee</span>
                   <span style={{ fontWeight: 600 }}>{ngn(fee)}</span>
                 </div>
@@ -395,7 +490,14 @@ export default function BookingCompletePage() {
             </div>
 
             {/* footer actions */}
-            <div style={{ marginTop: 22, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <div
+              style={{
+                marginTop: 22,
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+              }}
+            >
               <Link className="btn ghost" to="/bookings">
                 My bookings
               </Link>
@@ -416,7 +518,9 @@ export default function BookingCompletePage() {
         <div className="container dash-wrap">
           <div className="card" style={{ padding: 24, borderRadius: 16 }}>
             <h2>Finishing up…</h2>
-            <p className="muted">Please wait while we prepare your booking summary.</p>
+            <p className="muted">
+              Please wait while we prepare your booking summary.
+            </p>
           </div>
         </div>
       </main>
@@ -437,7 +541,10 @@ export default function BookingCompletePage() {
             }}
           >
             <h2 style={{ marginTop: 0 }}>Checkout</h2>
-            <p>We couldn’t find your booking details. Please go back to Explore and select a listing again.</p>
+            <p>
+              We couldn’t find your booking details. Please go back to Explore
+              and select a listing again.
+            </p>
             <div style={{ marginTop: 16 }}>
               <Link className="btn" to="/explore">
                 Explore listings
@@ -450,6 +557,9 @@ export default function BookingCompletePage() {
   }
 
   const { listing, checkIn, checkOut, guests, nights, nightly, subtotal, fee, total, feePct } = info;
+
+  // In checkout snapshot flow, chat should NOT be shown here by default.
+  // It will appear later inside My Bookings receipt (confirmed booking) once status is confirmed.
 
   return (
     <main className="dash-bg">
@@ -467,17 +577,28 @@ export default function BookingCompletePage() {
           }}
         >
           {/* header */}
-          <div style={{ display: "flex", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 18,
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
             <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
               <div
                 style={{
                   width: 42,
                   height: 42,
                   borderRadius: 12,
-                  background: isSuccess ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                  background: isSuccess
+                    ? "rgba(16,185,129,0.15)"
+                    : "rgba(239,68,68,0.15)",
                   display: "grid",
                   placeItems: "center",
-                  border: isSuccess ? "1px solid rgba(16,185,129,0.35)" : "1px solid rgba(239,68,68,0.35)",
+                  border: isSuccess
+                    ? "1px solid rgba(16,185,129,0.35)"
+                    : "1px solid rgba(239,68,68,0.35)",
                 }}
               >
                 <span style={{ fontSize: 22 }}>{isSuccess ? "✅" : "⚠️"}</span>

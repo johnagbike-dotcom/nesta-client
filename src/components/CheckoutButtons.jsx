@@ -1,136 +1,117 @@
 // src/components/CheckoutButtons.jsx
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
 
-/** ENV + defaults */
-const API_BASE =
-  process.env.REACT_APP_API_BASE?.replace(/\/+$/, "") || "http://localhost:4000/api";
-const PAYSTACK_KEY = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "";
-const FLW_KEY = process.env.REACT_APP_FLW_PUBLIC_KEY || "";
-const SANDBOX = String(process.env.REACT_APP_SANDBOX || "1") === "1";
+/**
+ * CheckoutButtons (Guest CTA)
+ * - SINGLE action only: Reserve / Book
+ * - Paystack is handled inside ReservePage (step 3).
+ *
+ * Backward compatible with older props:
+ *  - listing (object) + nights + email
+ *
+ * New preferred props:
+ *  - listingId (string), title, amountN (number), city, area
+ */
+export default function CheckoutButtons({
+  // NEW style
+  listingId,
+  title,
+  amountN,
+  city,
+  area,
 
-export default function CheckoutButtons({ listing, nights = 1, email }) {
-  const [busy, setBusy] = useState(false);
+  // OLD style (backward compat)
+  listing,
+  nights = 1,
+  email,
+}) {
+  const nav = useNavigate();
+  const { user } = useAuth();
 
-  const safeEmail = email || "guest@example.com";
-  const priceN = Number(listing?.price || 0);
-  const qty = Math.max(1, Number(nights) || 1);
-  const amountN = useMemo(() => priceN * qty, [priceN, qty]);
+  // Resolve listing id from either prop style
+  const resolvedId =
+    listingId ||
+    listing?.id ||
+    listing?.listingId ||
+    listing?._id ||
+    null;
 
-  /**
-   * Save a booking to our API before opening any gateway.
-   * NOTE: API_BASE is a module constant; it must NOT be a dependency.
-   */
-  const saveBooking = useCallback(
-    async (provider, reference) => {
-      const body = {
-        email: safeEmail,
-        title: listing?.title || "Unknown stay",
-        nights: qty,
-        amountN,
-        provider,
-        reference,
-      };
+  // Resolve title/price from either prop style
+  const resolvedTitle = title || listing?.title || "Listing";
 
-      const res = await fetch(`${API_BASE}/bookings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+  // If old style passed listing.price, treat as per-night
+  const perNightFromListing =
+    Number(listing?.pricePerNight || listing?.price || 0);
 
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`Save booking failed: ${txt}`);
-      }
-      return res.json();
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [amountN, qty, safeEmail, listing?.title]
-  );
+  const computedAmount = useMemo(() => {
+    // if amountN explicitly provided, use it
+    if (Number.isFinite(Number(amountN))) return Number(amountN);
 
-  /** ---------------- PAYSTACK ---------------- */
-  const onPaystack = useCallback(async () => {
-    try {
-      if (!amountN || amountN <= 0) {
-        alert("Invalid amount — cannot start Paystack checkout.");
-        return;
-      }
-      setBusy(true);
+    // else compute from listing price * nights (old behaviour)
+    const qty = Math.max(1, Number(nights) || 1);
+    return Math.max(perNightFromListing * qty, 0);
+  }, [amountN, nights, perNightFromListing]);
 
-      const pendingRef = `PST_${Date.now()}`;
-      await saveBooking("paystack", pendingRef);
+  const resolvedCity = city || listing?.city || "";
+  const resolvedArea = area || listing?.area || "";
 
-      // sandbox or missing key -> simulate success
-      if (!PAYSTACK_KEY || SANDBOX) {
-        console.info("[Paystack] SANDBOX success for", pendingRef);
-        alert("Paystack success — booking recorded.");
-        setBusy(false);
-        return;
-      }
+  const goReserve = useCallback(() => {
+    if (!resolvedId) {
+      alert("Listing ID missing — cannot open reservation.");
+      return;
+    }
 
-      if (!window.PaystackPop || typeof window.PaystackPop.setup !== "function") {
-        setBusy(false);
-        alert("Paystack library not loaded.");
-        return;
-      }
+    const statePayload = {
+      id: resolvedId,
+      title: resolvedTitle,
+      price: computedAmount, // ReservePage treats this as baseline price (it will refetch anyway if needed)
+      city: resolvedCity,
+      area: resolvedArea,
+      hostId:
+        listing?.partnerUid ||
+        listing?.partnerId ||
+        listing?.hostId ||
+        listing?.hostUid ||
+        listing?.ownerId ||
+        listing?.ownerUid ||
+        null,
+      email: email || user?.email || null,
+    };
 
-      const amountKobo = Math.round(amountN * 100);
-
-      // Explicit functions so SDK never receives undefined
-      const handleSuccess = (response) => {
-        console.log("[Paystack] success:", response);
-        alert("Paystack success — booking recorded.");
-        setBusy(false);
-      };
-      const handleClose = () => {
-        console.log("[Paystack] popup closed");
-        setBusy(false);
-      };
-
-      const handler = window.PaystackPop.setup({
-        key: PAYSTACK_KEY,
-        email: safeEmail,
-        amount: amountKobo, // in kobo
-        currency: "NGN",
-        ref: pendingRef,
-        callback: handleSuccess,
-        onClose: handleClose,
-        metadata: {
-          custom_fields: [
-            {
-              display_name: "Stay",
-              variable_name: "stay_title",
-              value: listing?.title || "Unknown stay",
-            },
-            {
-              display_name: "Nights",
-              variable_name: "nights",
-              value: String(qty),
-            },
-          ],
+    // If not logged in, go login first and return to reserve flow
+    if (!user) {
+      nav("/login", {
+        state: {
+          from: `/reserve/${resolvedId}`,
+          intent: "reserve",
+          listing: statePayload,
         },
       });
-
-      if (handler && typeof handler.openIframe === "function") {
-        handler.openIframe();
-      } else {
-        handleClose();
-      }
-    } catch (err) {
-      console.error("[Paystack] error:", err);
-      alert("Paystack error. Please try again.");
-      setBusy(false);
+      return;
     }
-  }, [amountN, qty, saveBooking, safeEmail, listing?.title]);
 
- 
+    nav(`/reserve/${resolvedId}`, { state: statePayload });
+  }, [
+    resolvedId,
+    resolvedTitle,
+    computedAmount,
+    resolvedCity,
+    resolvedArea,
+    listing,
+    email,
+    user,
+    nav,
+  ]);
+
   return (
-    <div style={{ display: "flex", gap: 12 }}>
+    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
       <button
-        onClick={onPaystack}
-        disabled={busy}
-        className="px-4 py-2 rounded bg-[#2563eb] disabled:opacity-60"
+        onClick={goReserve}
+        className="px-5 py-2 rounded-full bg-gradient-to-b from-amber-400 to-amber-500 text-black font-semibold hover:from-amber-300 hover:to-amber-500 transition shadow-[0_12px_40px_rgba(0,0,0,.65)] text-sm"
       >
-        {busy ? "Please wait…" : "Pay with Paystack"}
+        Reserve / Book
       </button>
     </div>
   );

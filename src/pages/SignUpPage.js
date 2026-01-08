@@ -1,5 +1,5 @@
 // src/pages/SignUpPage.js
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   createUserWithEmailAndPassword,
@@ -70,14 +70,16 @@ function getPwChecks(pwRaw, emailRaw = "", nameRaw = "") {
     !isCommon &&
     noPersonal;
 
+  // NOTE: We still enforce "common password" + "no personal info",
+  // but we no longer show them as separate checklist lines (less texty UI).
   let firstFail = "";
   if (!hasMin) firstFail = `Password must be at least ${MIN_LEN} characters.`;
   else if (!hasUpper) firstFail = "Add at least 1 uppercase letter (A–Z).";
   else if (!hasLower) firstFail = "Add at least 1 lowercase letter (a–z).";
   else if (!hasNum) firstFail = "Add at least 1 number (0–9).";
   else if (!hasSpecial) firstFail = "Add at least 1 special character (e.g. !@#£$).";
-  else if (isCommon) firstFail = "That password is too common. Please choose a stronger one.";
-  else if (!noPersonal) firstFail = "Don’t use your name or email in your password.";
+  else if (isCommon) firstFail = "Please choose a less predictable password.";
+  else if (!noPersonal) firstFail = "Avoid using personal information in your password.";
 
   return {
     ok,
@@ -92,20 +94,25 @@ function getPwChecks(pwRaw, emailRaw = "", nameRaw = "") {
   };
 }
 
-function CheckLine({ ok, label }) {
+function CheckLine({ status, label }) {
+  const isOk = status === "ok";
+  const isIdle = status === "idle";
+
   return (
     <div className="flex items-center gap-2 text-[12px]">
       <span
         className={[
           "inline-flex h-4 w-4 items-center justify-center rounded-full border",
-          ok
+          isOk
             ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-200"
             : "border-white/15 bg-white/5 text-white/40",
         ].join(" ")}
       >
-        {ok ? "✓" : "•"}
+        {isOk ? "✓" : "•"}
       </span>
-      <span className={ok ? "text-emerald-200" : "text-white/55"}>{label}</span>
+      <span className={isOk ? "text-emerald-200" : isIdle ? "text-white/55" : "text-white/55"}>
+        {label}
+      </span>
     </div>
   );
 }
@@ -118,7 +125,7 @@ function stripFirebasePrefix(msg) {
 
 export default function SignUpPage() {
   const nav = useNavigate();
-  const { state } = useLocation(); // optional { next: "/host-dashboard" }
+  const { state } = useLocation(); // optional { next: "/dashboard" }
 
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -130,16 +137,27 @@ export default function SignUpPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // ✅ Polished success stage
+  // success stage
   const [stage, setStage] = useState("form"); // form | success
   const [okMsg, setOkMsg] = useState("");
   const [successEmail, setSuccessEmail] = useState("");
   const [resendBusy, setResendBusy] = useState(false);
   const [cooldown, setCooldown] = useState(0);
 
-  const cooldownTimerRef = useRef(null);
+  // ✅ show checks after user starts typing
+  const pwStarted = normalizePw(pw).length > 0;
 
+  const cooldownTimerRef = useRef(null);
   const nextAfterRole = useMemo(() => state?.next || "/dashboard", [state]);
+
+  useEffect(() => {
+    return () => {
+      if (cooldownTimerRef.current) {
+        clearInterval(cooldownTimerRef.current);
+        cooldownTimerRef.current = null;
+      }
+    };
+  }, []);
 
   async function ensureUserProfile(uid, emailVal, displayName, emailVerified = false) {
     const userRef = doc(db, "users", uid);
@@ -172,16 +190,8 @@ export default function SignUpPage() {
       await setDoc(userRef, basePrivate, { merge: true });
       await setDoc(pubRef, basePublic, { merge: true });
     } else {
-      await setDoc(
-        pubRef,
-        { displayName: displayName || "User", updatedAt: serverTimestamp() },
-        { merge: true }
-      );
-      await setDoc(
-        userRef,
-        { emailVerified: !!emailVerified, updatedAt: serverTimestamp() },
-        { merge: true }
-      );
+      await setDoc(pubRef, { displayName: displayName || "User", updatedAt: serverTimestamp() }, { merge: true });
+      await setDoc(userRef, { emailVerified: !!emailVerified, updatedAt: serverTimestamp() }, { merge: true });
     }
   }
 
@@ -190,8 +200,10 @@ export default function SignUpPage() {
     if (code === "auth/email-already-in-use") return "That email is already in use.";
     if (code === "auth/invalid-email") return "Please enter a valid email address.";
     if (code === "auth/weak-password") return "Password is too weak. Please use a stronger password.";
-    if (code === "auth/network-request-failed") return "Network error. Please check your internet connection and try again.";
-    if (code === "auth/too-many-requests") return "Too many attempts. Please wait a moment and try again.";
+    if (code === "auth/network-request-failed")
+      return "Network error. Please check your internet connection and try again.";
+    if (code === "auth/too-many-requests")
+      return "Too many attempts. Please wait a moment and try again.";
     return stripFirebasePrefix(e?.message) || "Could not create your account.";
   }
 
@@ -230,7 +242,6 @@ export default function SignUpPage() {
     if (!u) return;
 
     const actionCodeSettings = {
-      // ✅ critical: always send users back to YOUR handler
       url: `${window.location.origin}/action`,
       handleCodeInApp: false,
     };
@@ -260,7 +271,6 @@ export default function SignUpPage() {
         await updateProfile(cred.user, { displayName });
       } catch {}
 
-      // Create user docs first
       await ensureUserProfile(
         cred.user.uid,
         cred.user.email || cleanEmail,
@@ -268,14 +278,12 @@ export default function SignUpPage() {
         cred.user.emailVerified
       );
 
-      // ✅ send verification email (to /action)
       try {
         await sendVerificationForCurrentUser();
       } catch (ve) {
         console.warn("[SignUpPage] sendEmailVerification failed:", ve);
       }
 
-      // ✅ Success stage (more polished than instant redirect)
       setSuccessEmail(cleanEmail);
       setOkMsg("✅ Account created. Please verify your email to continue.");
       setStage("success");
@@ -307,7 +315,6 @@ export default function SignUpPage() {
   }
 
   async function goToLogin() {
-    // ✅ Keep platform trusted: sign out before login flow
     try {
       await signOut(auth);
     } catch {}
@@ -315,8 +322,7 @@ export default function SignUpPage() {
     nav("/login", {
       replace: true,
       state: {
-        info:
-          "Please verify your email (check inbox/spam). After verifying, come back and sign in.",
+        info: "Please verify your email (check inbox/spam). After verifying, come back and sign in.",
         next: nextAfterRole,
       },
     });
@@ -362,7 +368,7 @@ export default function SignUpPage() {
             <div className="text-sm text-white/70 leading-relaxed">
               Open your email, click <span className="text-white/90 font-semibold">Verify</span>, then return here.
               <div className="mt-2 text-xs text-white/55">
-                Tip: Check spam/junk. On mobile, Gmail may open the link in an in-app browser — that’s fine.
+                Tip: Check spam/junk.
               </div>
             </div>
 
@@ -422,7 +428,7 @@ export default function SignUpPage() {
     );
   }
 
-  // ✅ Default form stage
+  // ✅ Form stage
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#070b12] to-[#05070d] text-white px-4 py-10">
       <div className="mx-auto w-full max-w-md">
@@ -499,18 +505,33 @@ export default function SignUpPage() {
               </button>
             </div>
 
+            {/* ✅ Less texty: keep only the 5 core requirements visible */}
             <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/55 mb-2">
                 Password requirements
               </div>
+
               <div className="grid gap-1">
-                <CheckLine ok={pwChecks.hasMin} label={`At least ${MIN_LEN} characters`} />
-                <CheckLine ok={pwChecks.hasUpper} label="1 uppercase letter" />
-                <CheckLine ok={pwChecks.hasLower} label="1 lowercase letter" />
-                <CheckLine ok={pwChecks.hasNum} label="1 number" />
-                <CheckLine ok={pwChecks.hasSpecial} label="1 special character" />
-                <CheckLine ok={!pwChecks.isCommon} label="Not a common password" />
-                <CheckLine ok={pwChecks.noPersonal} label="Doesn’t include your name/email" />
+                <CheckLine
+                  status={!pwStarted ? "idle" : pwChecks.hasMin ? "ok" : "bad"}
+                  label={`At least ${MIN_LEN} characters`}
+                />
+                <CheckLine
+                  status={!pwStarted ? "idle" : pwChecks.hasUpper ? "ok" : "bad"}
+                  label="1 uppercase letter"
+                />
+                <CheckLine
+                  status={!pwStarted ? "idle" : pwChecks.hasLower ? "ok" : "bad"}
+                  label="1 lowercase letter"
+                />
+                <CheckLine
+                  status={!pwStarted ? "idle" : pwChecks.hasNum ? "ok" : "bad"}
+                  label="1 number"
+                />
+                <CheckLine
+                  status={!pwStarted ? "idle" : pwChecks.hasSpecial ? "ok" : "bad"}
+                  label="1 special character"
+                />
               </div>
             </div>
           </label>

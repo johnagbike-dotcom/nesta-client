@@ -376,11 +376,16 @@ export default function ReservePage() {
       ref: reference,
       callback: function () {
         setBusy(false);
-        toast("Payment received — confirming…", "info");
+        toast("Payment received ✅ Next: ID check opens 24hrs before arrival.", "success");
         nav("/reserve/success", {
-          replace: true,
-          state: { bookingId, listing },
-        });
+  replace: true,
+  state: {
+    bookingId,
+    listing,
+    checkIn,
+    checkOut,
+  },
+});
       },
       onClose: function () {
         setBusy(false);
@@ -448,8 +453,8 @@ export default function ReservePage() {
               Complete your reservation
             </h1>
             <p className="text-sm text-white/70 max-w-xl mt-1">
-              Fast checkout first. ID check-in happens after confirmation to protect both guests and hosts.
-            </p>
+  Pay securely to confirm. ID check opens <strong>24hrs before arrival</strong> to unlock check-in details.
+</p>
           </div>
 
           <Stepper step={step} />
@@ -586,9 +591,8 @@ export default function ReservePage() {
                   <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
                     <p className="text-white/90 font-semibold">Privacy & security</p>
                     <p className="text-xs text-white/60 mt-1 leading-relaxed">
-                      Nesta keeps contact details hidden and encourages all communication in-app.
-                      After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
-                    </p>
+  Contact details stay private. <strong>ID check opens 24hrs before arrival</strong> to unlock check-in details.
+</p>
                   </div>
 
                   {!availOk && (
