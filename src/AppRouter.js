@@ -63,6 +63,7 @@ import EditListing from "./pages/EditListing";
 import Withdrawals from "./pages/Withdrawals";
 import ManageMyListings from "./pages/ManageMyListings";
 import SubscribePage from "./pages/SubscribePage";
+import PayoutSetup from "./pages/PayoutSetup";
 
 // Admin router
 import AdminRouter from "./pages/admin/AdminRouter";
@@ -120,10 +121,7 @@ export default function AppRouter() {
               <Route path="/help" element={<HelpPage />} />
               <Route path="/terms" element={<Terms />} />
               <Route path="/privacy" element={<Privacy />} />
-              <Route
-                path="/cancellation-policy"
-                element={<CancellationPolicyPage />}
-              />
+              <Route path="/cancellation-policy" element={<CancellationPolicyPage />} />
               <Route path="/complaints" element={<ComplaintsPage />} />
               <Route path="/trust-and-safety" element={<TrustSafetyPage />} />
               <Route path="/security" element={<SecurityPage />} />
@@ -327,9 +325,23 @@ export default function AppRouter() {
               <Route path="/favorites" element={<Navigate to="/favourites" replace />} />
 
               {/* =========================================================
+                  ✅ ONLY HOST/PARTNER/ADMIN CAN SET PAYOUT DETAILS
+                  (Do NOT require KYC here; it can be done while KYC is pending)
+                  ========================================================= */}
+              <Route
+                path="/payout-setup"
+                element={
+                  <RequireAuth>
+                    <RequireRole roles={["host", "partner", "admin"]}>
+                      <PayoutSetup />
+                    </RequireRole>
+                  </RequireAuth>
+                }
+              />
+
+              {/* =========================================================
                   ✅ ONLY HOST/PARTNER/ADMIN CAN LIST PROPERTIES
                   ========================================================= */}
-
               <Route
                 path="/post"
                 element={
@@ -445,14 +457,8 @@ export default function AppRouter() {
                 }
               />
 
-              <Route
-                path="/host-listings"
-                element={<Navigate to="/manage-listings" replace />}
-              />
-              <Route
-                path="/partner-listings"
-                element={<Navigate to="/manage-listings" replace />}
-              />
+              <Route path="/host-listings" element={<Navigate to="/manage-listings" replace />} />
+              <Route path="/partner-listings" element={<Navigate to="/manage-listings" replace />} />
 
               {/* ---------- Admin (consolidated) ---------- */}
               <Route

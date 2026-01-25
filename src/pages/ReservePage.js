@@ -62,9 +62,7 @@ function Stepper({ step }) {
               {done ? "✓" : s.id}
             </div>
             <div className="text-xs md:text-sm text-white/70">{s.label}</div>
-            {idx < steps.length - 1 && (
-              <div className="w-6 h-px bg-white/10 hidden md:block" />
-            )}
+            {idx < steps.length - 1 && <div className="w-6 h-px bg-white/10 hidden md:block" />}
           </div>
         );
       })}
@@ -100,6 +98,10 @@ function isPastYmd(ymd) {
   return selected.getTime() < today.getTime();
 }
 
+function safeLower(v) {
+  return String(v ?? "").trim().toLowerCase();
+}
+
 export default function ReservePage() {
   const { user } = useAuth();
   const { showToast: toast } = useToast();
@@ -108,7 +110,8 @@ export default function ReservePage() {
   const location = useLocation();
   const { profile } = useUserProfile(user?.uid);
 
-  const role = (profile?.role || "").toLowerCase();
+  // Guests only can reserve
+  const role = safeLower(profile?.role || "");
   const isGuest = role === "guest" || !role;
 
   // ✅ Normalise API root so we never produce /api/api
@@ -143,6 +146,9 @@ export default function ReservePage() {
   const [checkingAvail, setCheckingAvail] = useState(false);
   const [availOk, setAvailOk] = useState(true);
   const [availMsg, setAvailMsg] = useState("");
+
+  // payment provider (default to Flutterwave if Paystack isn't ready)
+  const [payProvider, setPayProvider] = useState("flutterwave"); // "flutterwave" | "paystack"
 
   const todayMin = useMemo(() => toYmdLocal(new Date()), []);
   const checkOutMin = useMemo(() => {
@@ -209,13 +215,33 @@ export default function ReservePage() {
     return Math.max(perNight * nights * Number(guests || 0), 0);
   }, [listing, nights, guests]);
 
-  const canGoToStep2 = Boolean(
-    listing && guests > 0 && datesValid && nights > 0 && availOk && !checkingAvail
-  );
+  const canGoToStep2 = Boolean(listing && guests > 0 && datesValid && nights > 0 && availOk && !checkingAvail);
   const canGoToStep3 = Boolean(canGoToStep2);
-  const canPay = Boolean(
-    user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail
-  );
+  const canPay = Boolean(user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail);
+
+  async function getIdTokenOrNull() {
+    try {
+      if (!user) return "";
+      return await user.getIdToken();
+    } catch {
+      return "";
+    }
+  }
+
+  function buildRedirectUrl(provider = "flutterwave") {
+    // You can change these later; just keep it consistent with your routes.
+    // Must be an absolute URL for Flutterwave.
+    const origin = window.location.origin;
+    const qp = new URLSearchParams();
+    qp.set("provider", provider);
+    qp.set("listingId", listing?.id || "");
+    qp.set("checkIn", checkIn || "");
+    qp.set("checkOut", checkOut || "");
+    qp.set("guests", String(guests || 1));
+    qp.set("nights", String(nights || 1));
+    qp.set("amountN", String(total || 0));
+    return `${origin}/reserve/success?${qp.toString()}`;
+  }
 
   // ✅ Server availability (no Firestore permissions issues)
   const checkAvailability = useCallback(
@@ -376,16 +402,17 @@ export default function ReservePage() {
       ref: reference,
       callback: function () {
         setBusy(false);
-        toast("Payment received ✅ Next: ID check opens 24hrs before arrival.", "success");
+        toast("Payment received ✅ Redirecting…", "success");
         nav("/reserve/success", {
-  replace: true,
-  state: {
-    bookingId,
-    listing,
-    checkIn,
-    checkOut,
-  },
-});
+          replace: true,
+          state: {
+            bookingId,
+            listing,
+            checkIn,
+            checkOut,
+            provider: "paystack",
+          },
+        });
       },
       onClose: function () {
         setBusy(false);
@@ -394,6 +421,55 @@ export default function ReservePage() {
     });
 
     if (handler?.openIframe) handler.openIframe();
+  }
+
+  async function onFlutterwave() {
+    const hold = await ensureHoldViaServer();
+    if (!hold) return;
+
+    const { bookingId } = hold;
+
+    try {
+      setBusy(true);
+
+      const token = await getIdTokenOrNull();
+      if (!token) {
+        toast("Please log in again.", "warning");
+        nav("/login", { state: { from: location.pathname } });
+        return;
+      }
+
+      const redirectUrl = buildRedirectUrl("flutterwave");
+
+      const res = await fetch(`${API}/flutterwave/init`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          type: "booking",
+          bookingId,
+          redirectUrl,
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.ok || !data?.link) {
+        const msg = data?.message || "flutterwave_init_failed";
+        toast(`Flutterwave init failed: ${msg}`, "error");
+        return;
+      }
+
+      // Redirect to Flutterwave hosted payment page
+      window.location.href = data.link;
+    } catch (e) {
+      console.error(e);
+      toast(e?.message || "Could not start Flutterwave checkout.", "error");
+    } finally {
+      setBusy(false);
+    }
   }
 
   const showNonGuestBlock = Boolean(user && !isGuest);
@@ -413,8 +489,7 @@ export default function ReservePage() {
               Reservation not available
             </h2>
             <p className="mt-2 text-gray-200 text-sm">
-              You’re signed in as <strong>{role || "user"}</strong>. Only guests can make
-              reservations.
+              You’re signed in as <strong>{role || "user"}</strong>. Only guests can make reservations.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -453,8 +528,8 @@ export default function ReservePage() {
               Complete your reservation
             </h1>
             <p className="text-sm text-white/70 max-w-xl mt-1">
-  Pay securely to confirm. ID check opens <strong>24hrs before arrival</strong> to unlock check-in details.
-</p>
+              Pay securely to confirm. ID check opens <strong>24hrs before arrival</strong> to unlock check-in details.
+            </p>
           </div>
 
           <Stepper step={step} />
@@ -476,7 +551,7 @@ export default function ReservePage() {
                       {listing?.title || "Listing"}
                     </h2>
                     <p className="text-xs text-gray-400 mt-1">
-                      Secure booking on Nesta • contact details remain hidden until booking rules allow.
+                      Secure booking on NestaNg • contact details remain hidden until booking rules allow.
                     </p>
                   </>
                 )}
@@ -555,16 +630,12 @@ export default function ReservePage() {
                     </Field>
                   </div>
 
-                  <p className="text-xs text-gray-400">
-                    Past dates are blocked. Your check-out must be after check-in.
-                  </p>
+                  <p className="text-xs text-gray-400">Past dates are blocked. Your check-out must be after check-in.</p>
 
                   <div className="flex justify-between items-center mt-2">
                     <div className="text-xs text-gray-400">
                       {datesValid && nights > 0 ? `${nights} night(s) selected` : "No valid dates yet"}
-                      {datesValid && !checkingAvail && !availOk ? (
-                        <span className="ml-2 text-red-200">• Unavailable</span>
-                      ) : null}
+                      {datesValid && !checkingAvail && !availOk ? <span className="ml-2 text-red-200">• Unavailable</span> : null}
                     </div>
                     <button
                       type="button"
@@ -591,8 +662,8 @@ export default function ReservePage() {
                   <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
                     <p className="text-white/90 font-semibold">Privacy & security</p>
                     <p className="text-xs text-white/60 mt-1 leading-relaxed">
-  Contact details stay private. <strong>ID check opens 24hrs before arrival</strong> to unlock check-in details.
-</p>
+                      Contact details stay private. <strong>ID check opens 24hrs before arrival</strong> to unlock check-in details.
+                    </p>
                   </div>
 
                   {!availOk && (
@@ -627,11 +698,9 @@ export default function ReservePage() {
 
               {step === 3 && (
                 <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
-                  <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
-                    Step 3 · Payment
-                  </h3>
+                  <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">Step 3 · Payment</h3>
                   <p className="text-xs text-gray-400">
-                    We’ll create a temporary reservation hold, then open a secure Paystack window to complete your booking.
+                    We’ll create a temporary reservation hold, then start secure checkout. Use Flutterwave if Paystack is not yet activated.
                   </p>
 
                   {!availOk && (
@@ -640,25 +709,61 @@ export default function ReservePage() {
                     </div>
                   )}
 
-                  <div className="flex flex-wrap gap-2 mt-3">
+                  {/* Provider toggle */}
+                  <div className="flex flex-wrap gap-2">
                     <button
-                      onClick={onPaystack}
-                      disabled={!canPay || busy}
-                      className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
-                        canPay
-                          ? "bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-500 text-black shadow-[0_18px_50px_rgba(0,0,0,.7)]"
-                          : "bg-gray-700/80 text-gray-400 cursor-not-allowed"
-                      } ${busy ? "animate-pulse" : ""}`}
+                      type="button"
+                      onClick={() => setPayProvider("flutterwave")}
+                      className={`px-3 py-2 rounded-full text-xs font-semibold border ${
+                        payProvider === "flutterwave"
+                          ? "border-amber-300/60 bg-amber-400/10 text-amber-200"
+                          : "border-white/15 bg-white/5 text-white/60 hover:bg-white/10"
+                      }`}
                     >
-                      {busy ? "Processing…" : "Confirm & Pay (Paystack)"}
+                      Flutterwave
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPayProvider("paystack")}
+                      className={`px-3 py-2 rounded-full text-xs font-semibold border ${
+                        payProvider === "paystack"
+                          ? "border-amber-300/60 bg-amber-400/10 text-amber-200"
+                          : "border-white/15 bg-white/5 text-white/60 hover:bg-white/10"
+                      }`}
+                    >
+                      Paystack
                     </button>
                   </div>
 
-                  {holdInfo?.expiresAt && (
-                    <div className="mt-3 text-xs text-amber-300">
-                      Your provisional hold will expire soon.
-                    </div>
-                  )}
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {payProvider === "flutterwave" ? (
+                      <button
+                        onClick={onFlutterwave}
+                        disabled={!canPay || busy}
+                        className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
+                          canPay
+                            ? "bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-500 text-black shadow-[0_18px_50px_rgba(0,0,0,.7)]"
+                            : "bg-gray-700/80 text-gray-400 cursor-not-allowed"
+                        } ${busy ? "animate-pulse" : ""}`}
+                      >
+                        {busy ? "Processing…" : "Confirm & Pay (Flutterwave)"}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={onPaystack}
+                        disabled={!canPay || busy}
+                        className={`px-4 py-2 rounded-full text-xs md:text-sm font-semibold ${
+                          canPay
+                            ? "bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-500 text-black shadow-[0_18px_50px_rgba(0,0,0,.7)]"
+                            : "bg-gray-700/80 text-gray-400 cursor-not-allowed"
+                        } ${busy ? "animate-pulse" : ""}`}
+                      >
+                        {busy ? "Processing…" : "Confirm & Pay (Paystack)"}
+                      </button>
+                    )}
+                  </div>
+
+                  {holdInfo?.expiresAt && <div className="mt-3 text-xs text-amber-300">Your provisional hold will expire soon.</div>}
 
                   <button
                     type="button"
@@ -673,9 +778,7 @@ export default function ReservePage() {
 
             <aside className="space-y-4">
               <div className="rounded-3xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,.8)]">
-                <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">
-                  Booking summary
-                </h3>
+                <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">Booking summary</h3>
                 {listing ? (
                   <>
                     <p className="text-sm text-white/90">{listing.title}</p>
@@ -683,8 +786,7 @@ export default function ReservePage() {
                       {listing.area || "—"}, {listing.city || "Nigeria"}
                     </p>
                     <div className="mt-3 text-sm text-gray-300">
-                      {ngn(listing.pricePerNight || 0)}{" "}
-                      <span className="text-xs text-white/60">/ night</span>
+                      {ngn(listing.pricePerNight || 0)} <span className="text-xs text-white/60">/ night</span>
                     </div>
                     <div className="mt-3 text-sm">
                       {nights > 0 ? (
@@ -693,9 +795,7 @@ export default function ReservePage() {
                           <br />
                           <span className="font-semibold text-amber-300">Total: {ngn(total)}</span>
                           {!checkingAvail && !availOk ? (
-                            <div className="mt-2 text-xs text-red-200">
-                              Dates unavailable — choose different dates.
-                            </div>
+                            <div className="mt-2 text-xs text-red-200">Dates unavailable — choose different dates.</div>
                           ) : null}
                         </>
                       ) : (
@@ -709,7 +809,7 @@ export default function ReservePage() {
               </div>
 
               <div className="rounded-3xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
-                <p>Your payment is processed securely via Paystack. Nesta never stores your full card details.</p>
+                <p>Your payment is processed securely via Flutterwave/Paystack. NestaNg never stores your full card details.</p>
                 <p>After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.</p>
               </div>
             </aside>
@@ -718,7 +818,7 @@ export default function ReservePage() {
           <div className="mt-10 border-t border-white/5 pt-6">
             <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
               <span className="text-lg">🔒</span>
-              <span>Secure checkout · Powered by Paystack · Encrypted payment processing</span>
+              <span>Secure checkout · Powered by Flutterwave/Paystack · Encrypted payment processing</span>
             </div>
           </div>
         </div>

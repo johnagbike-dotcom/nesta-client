@@ -21,7 +21,7 @@ api.interceptors.request.use(async (config) => {
   const auth = getAuth();
   const u = auth.currentUser;
   if (u) {
-    const token = await u.getIdToken();
+    const token = await u.getIdToken(true);
     config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -41,6 +41,8 @@ const getArray = (data) => {
 const pretty = (s) =>
   !s ? "—" : String(s).charAt(0).toUpperCase() + String(s).slice(1).toLowerCase();
 
+const safeLower = (v, fallback = "") => String(v ?? fallback).toLowerCase();
+
 const Badge = ({ label, tone = "slate" }) => {
   const map = {
     green: { bg: "#0ea75a", text: "#e8fff3", ring: "#0a7e43" },
@@ -49,6 +51,9 @@ const Badge = ({ label, tone = "slate" }) => {
     slate: { bg: "#6b7280", text: "#eef2ff", ring: "#555b66" },
     blue: { bg: "#2563eb", text: "#dbeafe", ring: "#1d4ed8" },
     purple: { bg: "#7c3aed", text: "#f3e8ff", ring: "#6d28d9" }, // super admin
+    gold: { bg: "#b58b2a", text: "#fff4d6", ring: "#8e6b16" }, // verified badge
+    teal: { bg: "#0f766e", text: "#d1fae5", ring: "#115e59" }, // application approved
+    rose: { bg: "#be123c", text: "#ffe4e6", ring: "#9f1239" }, // application rejected
   };
   const c = map[tone] || map.slate;
 
@@ -65,10 +70,11 @@ const Badge = ({ label, tone = "slate" }) => {
         background: c.bg,
         color: c.text,
         border: `1px solid ${c.ring}`,
-        fontWeight: 700,
+        fontWeight: 800,
         fontSize: 13,
         boxShadow: "inset 0 0 0 1px rgba(255,255,255,.06)",
         textTransform: "capitalize",
+        whiteSpace: "nowrap",
       }}
     >
       {label}
@@ -76,9 +82,9 @@ const Badge = ({ label, tone = "slate" }) => {
   );
 };
 
-const toneForRole = (role, adminLevel) => {
-  const r = String(role || "guest").toLowerCase();
-  if (r === "admin" && String(adminLevel || "").toLowerCase() === "super") return "purple";
+const toneForAccountType = (accountType, adminLevel) => {
+  const r = safeLower(accountType || "guest");
+  if (r === "admin" && safeLower(adminLevel) === "super") return "purple";
   if (r === "admin") return "red";
   if (r === "host") return "blue";
   if (r === "partner") return "amber";
@@ -86,9 +92,17 @@ const toneForRole = (role, adminLevel) => {
 };
 
 const toneForStatus = (status) => {
-  const s = String(status || "active").toLowerCase();
+  const s = safeLower(status || "active");
   if (s === "active") return "green";
   if (s === "disabled" || s === "suspended") return "red";
+  return "slate";
+};
+
+const toneForApplication = (appStatus) => {
+  const s = safeLower(appStatus || "");
+  if (s === "approved") return "teal";
+  if (s === "rejected") return "rose";
+  if (s === "pending") return "amber";
   return "slate";
 };
 
@@ -97,10 +111,14 @@ function ActionMenu({
   row,
   isSuperAdmin,
   busy,
-  onSetRole,
+  onSetAccountType,
   onToggleStatus,
   onMakeAdminStaff,
   onMakeSuperAdmin,
+  onRemoveAdminToGuest,
+  onToggleVerify,
+  onApproveApplication,
+  onRejectApplication,
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -150,8 +168,11 @@ function ActionMenu({
     opacity: busy ? 0.6 : 1,
   };
 
-  const isRowAdmin = String(row.role || "").toLowerCase() === "admin";
-  const isRowSuper = String(row.adminLevel || "").toLowerCase() === "super";
+  const isRowAdmin = safeLower(row.accountType) === "admin";
+  const isRowSuper = safeLower(row.adminLevel) === "super";
+  const isVerified = safeLower(row.verificationStatus) === "verified";
+  const appStatus = safeLower(row.applicationStatus);
+  const hasPendingApp = appStatus === "pending";
 
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
@@ -170,7 +191,7 @@ function ActionMenu({
             position: "absolute",
             top: "42px",
             right: 0,
-            minWidth: 220,
+            minWidth: 260,
             borderRadius: 14,
             background: "rgba(22,22,26,.98)",
             border: "1px solid rgba(255,255,255,.10)",
@@ -190,7 +211,7 @@ function ActionMenu({
               borderBottom: "1px solid rgba(255,255,255,.06)",
             }}
           >
-            Set role
+            Account type
           </div>
 
           {[
@@ -200,17 +221,17 @@ function ActionMenu({
           ].map((opt) => (
             <button
               key={opt.key}
-              disabled={busy || isRowAdmin} // admin locked by backend PATCH
+              disabled={busy || isRowAdmin}
               onClick={() => {
-                onSetRole(opt.key);
+                onSetAccountType(opt.key);
                 setOpen(false);
               }}
               style={menuBtn}
               onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              title={isRowAdmin ? "Admins are locked by backend PATCH" : ""}
+              title={isRowAdmin ? "Admins are locked. Use Admin controls to demote." : ""}
             >
-              {opt.label}
+              Set: {opt.label}
             </button>
           ))}
 
@@ -241,6 +262,83 @@ function ActionMenu({
             </button>
           </div>
 
+          {/* Verification */}
+          <div
+            style={{
+              padding: "10px 10px",
+              fontSize: 11,
+              letterSpacing: ".04em",
+              textTransform: "uppercase",
+              color: "rgba(255,255,255,.55)",
+              borderTop: "1px solid rgba(255,255,255,.06)",
+            }}
+          >
+            Verification
+          </div>
+
+          <button
+            disabled={busy || isRowAdmin}
+            onClick={() => {
+              onToggleVerify();
+              setOpen(false);
+            }}
+            style={{
+              ...menuBtn,
+              color: isVerified ? "#ffd5d5" : "#d1fae5",
+              fontWeight: 900,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            title={isRowAdmin ? "Admins do not use verification badge." : ""}
+          >
+            {isVerified ? "Mark Unverified (Remove Badge)" : "Mark Verified (Grant Badge)"}
+          </button>
+
+          {/* Application */}
+          {hasPendingApp && (
+            <>
+              <div
+                style={{
+                  padding: "10px 10px",
+                  fontSize: 11,
+                  letterSpacing: ".04em",
+                  textTransform: "uppercase",
+                  color: "rgba(255,255,255,.55)",
+                  borderTop: "1px solid rgba(255,255,255,.06)",
+                }}
+              >
+                Application
+              </div>
+
+              <button
+                disabled={busy || isRowAdmin}
+                onClick={() => {
+                  onApproveApplication();
+                  setOpen(false);
+                }}
+                style={{ ...menuBtn, fontWeight: 900 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                Approve Application
+              </button>
+
+              <button
+                disabled={busy || isRowAdmin}
+                onClick={() => {
+                  const ok = window.confirm("Reject this application?");
+                  if (ok) onRejectApplication();
+                  setOpen(false);
+                }}
+                style={{ ...menuBtn, color: "#ffd5d5", fontWeight: 900 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,84,106,.12)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                Reject Application
+              </button>
+            </>
+          )}
+
           {/* SUPER ADMIN ONLY */}
           {isSuperAdmin && (
             <>
@@ -264,16 +362,7 @@ function ActionMenu({
                     onMakeAdminStaff();
                     setOpen(false);
                   }}
-                  style={{
-                    width: "100%",
-                    padding: "12px 12px",
-                    border: "none",
-                    background: "transparent",
-                    color: "#e6e9ef",
-                    fontWeight: 900,
-                    cursor: busy ? "not-allowed" : "pointer",
-                    textAlign: "left",
-                  }}
+                  style={{ ...menuBtn, fontWeight: 900 }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
@@ -288,21 +377,34 @@ function ActionMenu({
                     onMakeSuperAdmin();
                     setOpen(false);
                   }}
-                  style={{
-                    width: "100%",
-                    padding: "12px 12px",
-                    border: "none",
-                    background: "transparent",
-                    color: "#e6e9ef",
-                    fontWeight: 900,
-                    cursor: busy ? "not-allowed" : "pointer",
-                    textAlign: "left",
-                  }}
+                  style={{ ...menuBtn, fontWeight: 900 }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
                   Promote to Super Admin
                 </button>
+              )}
+
+              {isRowAdmin && !isRowSuper && (
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    const ok = window.confirm("Remove admin access and set this user back to Guest?");
+                    if (ok) onRemoveAdminToGuest();
+                    setOpen(false);
+                  }}
+                  style={{ ...menuBtn, color: "#ffd5d5", fontWeight: 900 }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,84,106,.12)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  Remove Admin (Back to Guest)
+                </button>
+              )}
+
+              {isRowAdmin && isRowSuper && (
+                <div style={{ padding: "10px 12px", color: "rgba(255,255,255,.55)", fontSize: 12 }}>
+                  Super Admin cannot be demoted here for safety.
+                </div>
               )}
             </>
           )}
@@ -317,7 +419,7 @@ export default function ManageUsers() {
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
 
-  const isSuperAdmin = String(profile?.adminLevel || "").toLowerCase() === "super";
+  const isSuperAdmin = safeLower(profile?.adminLevel) === "super";
 
   const [range, setRange] = useState({ from: "", to: "" });
   const [rows, setRows] = useState([]);
@@ -327,30 +429,53 @@ export default function ManageUsers() {
   const [q, setQ] = useState("");
   const [roleTab, setRoleTab] = useState("all");
   const [statusTab, setStatusTab] = useState("any");
+  const [verifyTab, setVerifyTab] = useState("any"); // any | verified | unverified
 
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  const normalizeUser = (u) => ({
-    id: u.id || u._id || u.uid,
-    email: u.email || "-",
-    name: u.name || u.displayName || "-",
-    role: (u.role || u.type || "guest").toLowerCase(),
-    adminLevel: (u.adminLevel || "").toLowerCase(),
-    status: (u.disabled ? "disabled" : "active").toLowerCase(),
-    disabled: !!u.disabled,
-    createdAt: u.createdAt || u.created_at || u.createdAtMillis || null,
-    lastLogin: u.lastLogin || u.lastLoginAt || u.last_sign_in || null,
-  });
+  /**
+   * ✅ Key change:
+   * - accountType comes from u.accountType first (preferred),
+   *   then u.role (fallback), but NEVER u.type (because u.type is often "application type")
+   * - applicationType/status are separated
+   * - verificationStatus separated
+   */
+  const normalizeUser = (u) => {
+    const accountType = safeLower(u.accountType || u.role || "guest");
+    const adminLevel = safeLower(u.adminLevel || "");
+
+    const applicationType = safeLower(u?.application?.type || u?.applicationType || "");
+    const applicationStatus = safeLower(u?.application?.status || u?.applicationStatus || "");
+
+    const verificationStatus = safeLower(u?.verification?.status || u?.verificationStatus || "unverified");
+
+    return {
+      id: u.id || u._id || u.uid,
+      email: u.email || "-",
+      name: u.name || u.displayName || "-",
+
+      accountType,
+      adminLevel,
+
+      applicationType, // host | partner | ""
+      applicationStatus, // pending | approved | rejected | ""
+
+      verificationStatus, // verified | unverified
+
+      status: safeLower(u.disabled ? "disabled" : "active"),
+      disabled: !!u.disabled,
+
+      createdAt: u.createdAt || u.created_at || u.createdAtMillis || null,
+      lastLogin: u.lastLogin || u.lastLoginAt || u.last_sign_in || null,
+    };
+  };
 
   const load = async (forcedRange) => {
     setLoading(true);
     try {
       const r = forcedRange || range;
-      // Your backend users route doesn’t support date range filtering yet,
-      // but we keep this for export symmetry (safe if unused).
       const url = withRangeParams("/admin/users?status=all&role=all&page=1&limit=200", r);
-
       const res = await api.get(url);
       const out = getArray(res.data);
       setRows(out.map(normalizeUser));
@@ -359,7 +484,7 @@ export default function ManageUsers() {
       console.error("ManageUsers load failed:", e);
       const code = e?.response?.status;
       if (code === 401 || code === 403) {
-        window.alert("Unauthorized. Confirm your Firestore users/{uid}.role is 'admin'.");
+        window.alert("Unauthorized. Confirm your Firestore users/{uid}.role='admin' and adminLevel='super'.");
       }
     } finally {
       setLoading(false);
@@ -378,19 +503,37 @@ export default function ManageUsers() {
 
   const filtered = useMemo(() => {
     let list = rows.slice();
-    if (roleTab !== "all") list = list.filter((r) => r.role === roleTab);
+    if (roleTab !== "all") list = list.filter((r) => r.accountType === roleTab);
     if (statusTab !== "any") list = list.filter((r) => r.status === statusTab);
+
+    if (verifyTab !== "any") {
+      list = list.filter((r) => r.verificationStatus === verifyTab);
+    }
+
     const kw = q.trim().toLowerCase();
     if (kw) list = list.filter((r) => `${r.email} ${r.name} ${r.id}`.toLowerCase().includes(kw));
     return list;
-  }, [rows, q, roleTab, statusTab]);
+  }, [rows, q, roleTab, statusTab, verifyTab]);
 
   const counts = useMemo(() => {
-    const c = { all: rows.length, guest: 0, host: 0, partner: 0, admin: 0, active: 0, disabled: 0 };
+    const c = {
+      all: rows.length,
+      guest: 0,
+      host: 0,
+      partner: 0,
+      admin: 0,
+      active: 0,
+      disabled: 0,
+      verified: 0,
+      unverified: 0,
+    };
     rows.forEach((r) => {
-      if (c[r.role] !== undefined) c[r.role] += 1;
+      if (c[r.accountType] !== undefined) c[r.accountType] += 1;
       if (r.status === "active") c.active++;
       else c.disabled++;
+
+      if (r.verificationStatus === "verified") c.verified++;
+      else c.unverified++;
     });
     return c;
   }, [rows]);
@@ -417,27 +560,22 @@ export default function ManageUsers() {
       await api.post(`/admin/users/${encodeURIComponent(id)}/admin`, { level });
       return true;
     } catch (e) {
-      console.error("PROMOTION failed:", e?.response?.data || e.message);
+      console.error("ADMIN change failed:", e?.response?.data || e.message);
       return false;
     }
   };
 
-  const setRole = async (row, role) => {
+  const setAccountType = async (row, accountType) => {
     if (!row?.id) return;
-
-    // Admin promotion is handled by /admin endpoint only (super admin)
-    if (role === "admin") {
-      if (!isSuperAdmin) return;
-      await promoteToAdminStaff(row);
-      return;
-    }
+    if (accountType === "admin") return;
 
     setBusyId(row.id);
     const prev = rows.slice();
 
-    setRows(rows.map((r) => (r.id === row.id ? { ...r, role } : r)));
+    setRows(rows.map((r) => (r.id === row.id ? { ...r, accountType } : r)));
 
-    const ok = await patchUser(row.id, { role });
+    // ✅ Use accountType (not role)
+    const ok = await patchUser(row.id, { accountType });
     if (!ok) setRows(prev);
 
     setBusyId(null);
@@ -458,18 +596,69 @@ export default function ManageUsers() {
     setBusyId(null);
   };
 
-  const promoteToAdminStaff = async (row) => {
+  const toggleVerify = async (row) => {
     if (!row?.id) return;
-    if (!isSuperAdmin) return;
+
+    const next = row.verificationStatus === "verified" ? "unverified" : "verified";
+
+    setBusyId(row.id);
+    const prev = rows.slice();
+
+    setRows(rows.map((r) => (r.id === row.id ? { ...r, verificationStatus: next } : r)));
+
+    // ✅ Nested verification payload
+    const ok = await patchUser(row.id, { verification: { status: next } });
+    if (!ok) setRows(prev);
+
+    setBusyId(null);
+  };
+
+  const approveApplication = async (row) => {
+    if (!row?.id) return;
+
+    setBusyId(row.id);
+    const prev = rows.slice();
+
+    // optimistic update:
+    setRows(
+      rows.map((r) =>
+        r.id === row.id ? { ...r, applicationStatus: "approved" } : r
+      )
+    );
+
+    // ✅ Application approval should set application.status ONLY
+    // (do NOT auto-verify here)
+    const ok = await patchUser(row.id, { application: { status: "approved" } });
+    if (!ok) setRows(prev);
+
+    setBusyId(null);
+  };
+
+  const rejectApplication = async (row) => {
+    if (!row?.id) return;
 
     setBusyId(row.id);
     const prev = rows.slice();
 
     setRows(
       rows.map((r) =>
-        r.id === row.id ? { ...r, role: "admin", adminLevel: "staff" } : r
+        r.id === row.id ? { ...r, applicationStatus: "rejected" } : r
       )
     );
+
+    const ok = await patchUser(row.id, { application: { status: "rejected" } });
+    if (!ok) setRows(prev);
+
+    setBusyId(null);
+  };
+
+  const promoteToAdminStaff = async (row) => {
+    if (!row?.id || !isSuperAdmin) return;
+
+    setBusyId(row.id);
+    const prev = rows.slice();
+
+    setRows(rows.map((r) => (r.id === row.id ? { ...r, accountType: "admin", adminLevel: "staff" } : r)));
 
     const ok = await setAdminLevel(row.id, "staff");
     if (!ok) setRows(prev);
@@ -478,22 +667,39 @@ export default function ManageUsers() {
   };
 
   const promoteToSuperAdmin = async (row) => {
-    if (!row?.id) return;
-    if (!isSuperAdmin) return;
+    if (!row?.id || !isSuperAdmin) return;
+
+    setBusyId(row.id);
+    const prev = rows.slice();
+
+    setRows(rows.map((r) => (r.id === row.id ? { ...r, accountType: "admin", adminLevel: "super" } : r)));
+
+    const ok = await setAdminLevel(row.id, "super");
+    if (!ok) setRows(prev);
+
+    setBusyId(null);
+  };
+
+  const removeAdminToGuest = async (row) => {
+    if (!row?.id || !isSuperAdmin) return;
 
     setBusyId(row.id);
     const prev = rows.slice();
 
     setRows(
       rows.map((r) =>
-        r.id === row.id ? { ...r, role: "admin", adminLevel: "super" } : r
+        r.id === row.id
+          ? { ...r, accountType: "guest", adminLevel: "", status: "active", disabled: false }
+          : r
       )
     );
 
-    const ok = await setAdminLevel(row.id, "super");
+    const ok = await setAdminLevel(row.id, null);
     if (!ok) setRows(prev);
 
     setBusyId(null);
+
+    await load();
   };
 
   /* ✅ token-safe CSV export */
@@ -541,7 +747,10 @@ export default function ManageUsers() {
   );
 
   return (
-    <AdminLayout title="Manage Users" subtitle="Assign roles, disable users, promote admins (super admin only).">
+    <AdminLayout
+      title="Manage Users"
+      subtitle="Account types, applications, verification badges, disable users, and admin promotions (super admin only)."
+    >
       <DateRangeBar range={range} onChange={setRange} />
 
       <div className="flex items-center gap-3" style={{ margin: "10px 0 14px" }}>
@@ -550,11 +759,10 @@ export default function ManageUsers() {
         </LuxeBtn>
       </div>
 
-      {/* Tabs + search */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(6,auto) 1fr auto",
+          gridTemplateColumns: "repeat(8,auto) 1fr auto",
           gap: 12,
           alignItems: "center",
           marginBottom: 12,
@@ -562,10 +770,11 @@ export default function ManageUsers() {
       >
         <TabBtn
           label={`All ${counts.all}`}
-          active={roleTab === "all" && statusTab === "any"}
+          active={roleTab === "all" && statusTab === "any" && verifyTab === "any"}
           onClick={() => {
             setRoleTab("all");
             setStatusTab("any");
+            setVerifyTab("any");
             setPage(1);
           }}
         />
@@ -575,6 +784,7 @@ export default function ManageUsers() {
           onClick={() => {
             setRoleTab("guest");
             setStatusTab("any");
+            setVerifyTab("any");
             setPage(1);
           }}
         />
@@ -584,6 +794,7 @@ export default function ManageUsers() {
           onClick={() => {
             setRoleTab("host");
             setStatusTab("any");
+            setVerifyTab("any");
             setPage(1);
           }}
         />
@@ -593,6 +804,7 @@ export default function ManageUsers() {
           onClick={() => {
             setRoleTab("partner");
             setStatusTab("any");
+            setVerifyTab("any");
             setPage(1);
           }}
         />
@@ -602,6 +814,7 @@ export default function ManageUsers() {
           onClick={() => {
             setRoleTab("admin");
             setStatusTab("any");
+            setVerifyTab("any");
             setPage(1);
           }}
         />
@@ -611,6 +824,27 @@ export default function ManageUsers() {
           onClick={() => {
             setStatusTab("active");
             setRoleTab("all");
+            setVerifyTab("any");
+            setPage(1);
+          }}
+        />
+        <TabBtn
+          label={`Verified ${counts.verified}`}
+          active={verifyTab === "verified"}
+          onClick={() => {
+            setVerifyTab("verified");
+            setRoleTab("all");
+            setStatusTab("any");
+            setPage(1);
+          }}
+        />
+        <TabBtn
+          label={`Unverified ${counts.unverified}`}
+          active={verifyTab === "unverified"}
+          onClick={() => {
+            setVerifyTab("unverified");
+            setRoleTab("all");
+            setStatusTab("any");
             setPage(1);
           }}
         />
@@ -637,7 +871,6 @@ export default function ManageUsers() {
         </LuxeBtn>
       </div>
 
-      {/* Table */}
       <div
         style={{
           borderRadius: 16,
@@ -658,17 +891,10 @@ export default function ManageUsers() {
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              minWidth: 1100,
-            }}
-          >
+          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 1300 }}>
             <thead>
               <tr style={{ background: "rgba(255,255,255,.02)", color: "#aeb6c2", textAlign: "left" }}>
-                {["User", "Role", "Status", "Created", "Last login", "Actions"].map((h) => (
+                {["User", "Account", "Verification", "Application", "Status", "Created", "Last login", "Actions"].map((h) => (
                   <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
                     {h}
                   </th>
@@ -679,7 +905,7 @@ export default function ManageUsers() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={6} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={8} style={{ padding: 20, color: "#aeb6c2" }}>
                     Loading…
                   </td>
                 </tr>
@@ -687,65 +913,82 @@ export default function ManageUsers() {
 
               {!loading && pageItems.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={8} style={{ padding: 20, color: "#aeb6c2" }}>
                     No users.
                   </td>
                 </tr>
               )}
 
               {!loading &&
-                pageItems.map((r) => (
-                  <tr key={r.id}>
-                    <td style={{ padding: "12px 16px" }}>
-                      <div style={{ fontWeight: 800 }}>{r.email}</div>
-                      <div style={{ opacity: 0.75, fontSize: 12 }}>
-                        {r.name} • <span style={{ opacity: 0.6 }}>{r.id}</span>
-                      </div>
-                    </td>
+                pageItems.map((r) => {
+                  const isSuper = r.accountType === "admin" && r.adminLevel === "super";
+                  const accountLabel = isSuper ? "Super Admin" : pretty(r.accountType || "guest");
 
-                    <td style={{ padding: "12px 16px" }}>
-                      <Badge
-                        label={
-                          r.role === "admin" && r.adminLevel === "super"
-                            ? "Super Admin"
-                            : pretty(r.role || "guest")
-                        }
-                        tone={toneForRole(r.role, r.adminLevel)}
-                      />
-                    </td>
+                  const verified = r.verificationStatus === "verified";
+                  const verifyLabel = verified ? "Verified ✅" : "Unverified";
 
-                    <td style={{ padding: "12px 16px" }}>
-                      <Badge label={pretty(r.status || "active")} tone={toneForStatus(r.status)} />
-                    </td>
+                  const appLabel =
+                    r.applicationType && r.applicationStatus
+                      ? `${pretty(r.applicationType)} • ${pretty(r.applicationStatus)}`
+                      : r.applicationType
+                      ? `${pretty(r.applicationType)} • —`
+                      : "—";
 
-                    <td style={{ padding: "12px 16px" }}>
-                      {r.createdAt ? dayjs(r.createdAt).format("YYYY-MM-DD") : "—"}
-                    </td>
+                  return (
+                    <tr key={r.id}>
+                      <td style={{ padding: "12px 16px" }}>
+                        <div style={{ fontWeight: 800 }}>{r.email}</div>
+                        <div style={{ opacity: 0.75, fontSize: 12 }}>
+                          {r.name} • <span style={{ opacity: 0.6 }}>{r.id}</span>
+                        </div>
+                      </td>
 
-                    <td style={{ padding: "12px 16px" }}>
-                      {r.lastLogin ? dayjs(r.lastLogin).format("YYYY-MM-DD") : "—"}
-                    </td>
+                      <td style={{ padding: "12px 16px" }}>
+                        <Badge label={accountLabel} tone={toneForAccountType(r.accountType, r.adminLevel)} />
+                      </td>
 
-                    <td style={{ padding: "12px 16px" }}>
-                      <ActionMenu
-                        row={r}
-                        isSuperAdmin={isSuperAdmin}
-                        busy={busyId === r.id}
-                        onSetRole={(role) => setRole(r, role)}
-                        onToggleStatus={() =>
-                          setStatus(r, r.status === "active" ? "disabled" : "active")
-                        }
-                        onMakeAdminStaff={() => promoteToAdminStaff(r)}
-                        onMakeSuperAdmin={() => promoteToSuperAdmin(r)}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                      <td style={{ padding: "12px 16px" }}>
+                        <Badge label={verifyLabel} tone={verified ? "gold" : "slate"} />
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        <Badge label={appLabel} tone={toneForApplication(r.applicationStatus)} />
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        <Badge label={pretty(r.status || "active")} tone={toneForStatus(r.status)} />
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        {r.createdAt ? dayjs(r.createdAt).format("YYYY-MM-DD") : "—"}
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        {r.lastLogin ? dayjs(r.lastLogin).format("YYYY-MM-DD") : "—"}
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        <ActionMenu
+                          row={r}
+                          isSuperAdmin={isSuperAdmin}
+                          busy={busyId === r.id}
+                          onSetAccountType={(accountType) => setAccountType(r, accountType)}
+                          onToggleStatus={() => setStatus(r, r.status === "active" ? "disabled" : "active")}
+                          onToggleVerify={() => toggleVerify(r)}
+                          onApproveApplication={() => approveApplication(r)}
+                          onRejectApplication={() => rejectApplication(r)}
+                          onMakeAdminStaff={() => promoteToAdminStaff(r)}
+                          onMakeSuperAdmin={() => promoteToSuperAdmin(r)}
+                          onRemoveAdminToGuest={() => removeAdminToGuest(r)}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
 
-        {/* Footer / pagination */}
         <div
           style={{
             display: "flex",

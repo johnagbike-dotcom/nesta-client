@@ -8,6 +8,7 @@ import ManageUsers from "./ManageUsers";
 import ManageListings from "./ManageListings";
 import Transactions from "./Transactions";
 import AdminPayouts from "./AdminPayouts";
+import AdminPayoutSetups from "./AdminPayoutSetups"; // ✅ NEW
 import ReportsExports from "./ReportsExports";
 import AdminFeatureRequests from "./AdminFeatureRequests";
 import OnboardingQueue from "./OnboardingQueue";
@@ -33,10 +34,17 @@ export default function AdminRouter() {
       {/* legacy alias */}
       <Route path="bookings" element={<BookingsAdmin />} />
 
+      {/* core admin */}
       <Route path="manage-users" element={<ManageUsers />} />
       <Route path="listings" element={<ManageListings />} />
       <Route path="transactions" element={<Transactions />} />
+
+      {/* payouts */}
       <Route path="payouts" element={<AdminPayouts />} />
+      <Route path="payout-setups" element={<AdminPayoutSetups />} /> {/* ✅ NEW */}
+      <Route path="payoutsetups" element={<Navigate to="/admin/payout-setups" replace />} /> {/* optional alias */}
+
+      {/* ops tools */}
       <Route path="feature-requests" element={<AdminFeatureRequests />} />
       <Route path="onboarding-queue" element={<OnboardingQueue />} />
       <Route path="data-tools" element={<AdminDataTools />} />

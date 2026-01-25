@@ -216,50 +216,70 @@ export default function PartnerDashboard() {
   }, [user?.uid]);
 
   // ---------- COMPUTED STATS ----------
-  const stats = useMemo(() => {
-    const s = {
-      portfolioUnits: 0,
-      portfolioNightly: 0,
-      confirmedBookings: 0,
-      pendingBookings: 0,
-      cancelled: 0,
-      refunded: 0,
-      needsAttention: 0,
-      grossRevenue: 0,
-      partnerEarnings: 0,
-      nestaCommission: 0,
-    };
+const stats = useMemo(() => {
+  const s = {
+    portfolioUnits: 0,
+    portfolioNightly: 0,
+    confirmedBookings: 0,
+    pendingBookings: 0,
+    cancelled: 0,
+    refunded: 0,
+    needsAttention: 0,
+    grossRevenue: 0,
+    partnerEarnings: 0,
+    nestaCommission: 0,
+  };
 
-    const activeListings = listings.filter((l) => (l.status || "active").toLowerCase() === "active");
-    s.portfolioUnits = activeListings.length;
-    s.portfolioNightly = activeListings.reduce((acc, l) => acc + Number(l.pricePerNight || l.price || 0), 0);
+  const activeListings = listings.filter(
+    (l) => (l.status || "active").toLowerCase() === "active"
+  );
 
-    reservations.forEach((r) => {
-      const status = String(r.status || "").toLowerCase();
-      const total = Number(r.totalAmount || r.total || r.amountN || 0);
-      const partnerTake = Number(r.partnerPayout || r.partnerShare || r.partnerAmount || 0);
-      const nestaTake = Number(r.nestaFee || r.platformFee || r.commissionNesta || 0);
+  s.portfolioUnits = activeListings.length;
+  s.portfolioNightly = activeListings.reduce(
+    (acc, l) => acc + Number(l.pricePerNight || l.price || 0),
+    0
+  );
 
-      if (status === "confirmed" || status === "completed" || status === "paid") {
-        s.confirmedBookings += 1;
-        s.grossRevenue += total;
-        s.partnerEarnings += partnerTake || total * 0.9;
-        s.nestaCommission += nestaTake || total * 0.1;
-      } else if (status === "pending" || status === "upcoming" || status === "reserved_unpaid" || status === "awaiting_payment") {
-        s.pendingBookings += 1;
-      } else if (status === "cancelled" || status === "canceled") {
-        s.cancelled += 1;
-      } else if (status === "refunded") {
-        s.refunded += 1;
-      }
+  reservations.forEach((r) => {
+    const status = String(r.status || "").toLowerCase();
 
-      if (status === "pending" || status === "cancelled" || status === "canceled" || status === "refunded") {
-        s.needsAttention += 1;
-      }
-    });
+    // ✅ BACKEND IS SOURCE OF TRUTH
+    const gross = Number(
+      r.amountLockedN ?? r.amountN ?? r.totalAmount ?? r.total ?? 0
+    );
+    const partnerNet = Number(r.partnerPayoutN ?? 0);
+    const nestaFee = Number(r.nestaCommissionN ?? 0);
 
-    return s;
-  }, [listings, reservations]);
+    if (status === "confirmed" || status === "completed" || status === "paid") {
+      s.confirmedBookings += 1;
+      s.grossRevenue += gross;
+      s.partnerEarnings += partnerNet;
+      s.nestaCommission += nestaFee;
+    } else if (
+      status === "pending" ||
+      status === "upcoming" ||
+      status === "reserved_unpaid" ||
+      status === "awaiting_payment"
+    ) {
+      s.pendingBookings += 1;
+    } else if (status === "cancelled" || status === "canceled") {
+      s.cancelled += 1;
+    } else if (status === "refunded") {
+      s.refunded += 1;
+    }
+
+    if (
+      status === "pending" ||
+      status === "cancelled" ||
+      status === "canceled" ||
+      status === "refunded"
+    ) {
+      s.needsAttention += 1;
+    }
+  });
+
+  return s;
+}, [listings, reservations]);
 
   // ---------- FILTERED LISTINGS ----------
   const filteredListings = useMemo(() => {
@@ -550,7 +570,7 @@ export default function PartnerDashboard() {
             <ul className="divide-y divide-white/5 text-xs md:text-sm">
               {recentBookings.map((b) => {
                 const status = String(b.status || "pending").toLowerCase();
-                const amount = b.totalAmount || b.total || b.amountN || 0;
+                const amount = b.amountLockedN ?? b.amountN ?? b.totalAmount ?? b.total ?? 0;
                 const listingTitle = b.listingTitle || b.listing?.title || b.title || "Listing";
 
                 return (

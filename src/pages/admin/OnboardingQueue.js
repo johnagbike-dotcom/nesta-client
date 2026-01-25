@@ -6,6 +6,7 @@ import { db, storage } from "../../firebase";
 import {
   collection,
   getDocs,
+  getDoc,
   updateDoc,
   doc,
   serverTimestamp,
@@ -13,6 +14,20 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { ref, listAll, getDownloadURL } from "firebase/storage";
+
+/* ─────────────────── helpers ─────────────────── */
+const safeLower = (v) => String(v || "").trim().toLowerCase();
+const safeUpper = (v) => String(v || "").trim().toUpperCase();
+
+function normalizeType(v) {
+  const t = safeLower(v);
+  if (t === "partner") return "partner";
+  return "host";
+}
+
+function userKeyFromRow(row) {
+  return row?.uid || row?.userId || row?.id || "";
+}
 
 /* ─────────────────── Luxury mini button ─────────────────── */
 function LuxeBtn({
@@ -139,6 +154,30 @@ function StatusPill({ value }) {
   );
 }
 
+function SmallBadge({ label }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: 30,
+        padding: "0 12px",
+        borderRadius: 999,
+        background: "rgba(255,255,255,.08)",
+        border: "1px solid rgba(255,255,255,.14)",
+        color: "#e6e9ef",
+        fontWeight: 900,
+        fontSize: 12,
+        letterSpacing: 0.4,
+        textTransform: "uppercase",
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
 /* ───────────────────── Simple Modal ───────────────────── */
 function Modal({ open, onClose, title, children }) {
   if (!open) return null;
@@ -213,7 +252,6 @@ async function listAllFilesRecursively(folderRef) {
  */
 function prettyNameFromFullPath(fullPath) {
   const parts = String(fullPath || "").split("/").filter(Boolean);
-  // parts: ["kyc", "{uid}", "governmentId", "file.png"]
   const label = parts.length >= 3 ? parts[parts.length - 2] : "document";
   const file = parts.length ? parts[parts.length - 1] : "file";
   return `${label}: ${file}`;
@@ -243,7 +281,6 @@ async function listDocsForPossibleKeys(storageInstance, possibleKeys = []) {
         }))
       );
 
-      // Stable order: by path then name
       items.sort((a, b) => String(a.fullPath).localeCompare(String(b.fullPath)));
 
       return { items, path: p, tried };
@@ -270,6 +307,11 @@ export default function OnboardingQueue() {
   const [docsError, setDocsError] = useState("");
   const [storagePathUsed, setStoragePathUsed] = useState("");
 
+  // ✅ user profile (for verified badge + role check)
+  const [revUser, setRevUser] = useState(null);
+  const [revUserLoading, setRevUserLoading] = useState(false);
+  const [revUserError, setRevUserError] = useState("");
+
   const load = async () => {
     setLoading(true);
     setBlockedMsg("");
@@ -279,28 +321,28 @@ export default function OnboardingQueue() {
       const list = [];
       snap.forEach((d) => {
         const x = d.data() || {};
+        const type = normalizeType(x.type);
+
         list.push({
           id: d.id,
           userId: x.userId || x.uid || d.id,
           uid: x.uid || x.userId || null,
           email: x.email || "",
-          type: x.type || "host", // "host" | "partner"
+          type, // "host" | "partner"
           status: x.status || "PENDING",
           submittedAt: x.submittedAt?.toDate?.() || null,
           reviewedAt: x.reviewedAt?.toDate?.() || null,
           adminNote: x.adminNote || "",
-          requiredDocuments: Array.isArray(x.requiredDocuments)
-            ? x.requiredDocuments
-            : [],
+          requiredDocuments: Array.isArray(x.requiredDocuments) ? x.requiredDocuments : [],
           _raw: x,
         });
       });
 
       list.sort(
         (a, b) =>
-          (b.submittedAt ? +b.submittedAt : 0) -
-          (a.submittedAt ? +a.submittedAt : 0)
+          (b.submittedAt ? +b.submittedAt : 0) - (a.submittedAt ? +a.submittedAt : 0)
       );
+
       setRows(list);
     } catch (e) {
       const msg = String(e?.message || e);
@@ -326,7 +368,7 @@ export default function OnboardingQueue() {
     if (typeTab !== "all") list = list.filter((r) => r.type === typeTab);
     if (tab !== "all") {
       list = list.filter(
-        (r) => String(r.status || "PENDING").toUpperCase() === tab.toUpperCase()
+        (r) => safeUpper(r.status || "PENDING") === safeUpper(tab)
       );
     }
     const kw = q.trim().toLowerCase();
@@ -351,16 +393,43 @@ export default function OnboardingQueue() {
       partner: 0,
     };
     rows.forEach((r) => {
-      const s = String(r.status || "PENDING").toUpperCase();
+      const s = safeUpper(r.status || "PENDING");
       if (c[s] != null) c[s] = (c[s] || 0) + 1;
       c[r.type] = (c[r.type] || 0) + 1;
     });
     return c;
   }, [rows]);
 
+  const fetchUserProfile = async (row) => {
+    const userKey = userKeyFromRow(row);
+    if (!userKey) {
+      setRevUser(null);
+      setRevUserError("Missing user key (uid/userId).");
+      return;
+    }
+
+    setRevUserLoading(true);
+    setRevUserError("");
+    try {
+      const snap = await getDoc(doc(db, "users", userKey));
+      setRevUser(snap.exists() ? { id: snap.id, ...snap.data() } : null);
+      if (!snap.exists()) setRevUserError("No users/{uid} profile found.");
+    } catch (e) {
+      setRevUser(null);
+      setRevUserError("Could not load users/{uid}: " + (e?.message || e));
+    } finally {
+      setRevUserLoading(false);
+    }
+  };
+
   const openReview = async (r) => {
     setRevRow(r);
     setRevOpen(true);
+
+    // load user profile (for verified state)
+    setRevUser(null);
+    setRevUserError("");
+    fetchUserProfile(r);
 
     setDocs([]);
     setDocsError("");
@@ -376,10 +445,7 @@ export default function OnboardingQueue() {
         r._raw?.userUID,
       ].filter(Boolean);
 
-      const { items, path, tried } = await listDocsForPossibleKeys(
-        storage,
-        possibleKeys
-      );
+      const { items, path, tried } = await listDocsForPossibleKeys(storage, possibleKeys);
 
       if (items.length) {
         setDocs(items);
@@ -410,23 +476,73 @@ export default function OnboardingQueue() {
     setDocs([]);
     setDocsError("");
     setStoragePathUsed("");
+    setRevUser(null);
+    setRevUserError("");
   };
 
-  // ✅ This is the IMPORTANT FIX:
-  // When APPROVED, also promote user role + mark kycProfiles status.
+  const isVerifiedForType = (userDoc, type) => {
+    const t = normalizeType(type);
+    const v = userDoc?.verification?.[t];
+    const status = safeLower(v?.status || "");
+    return status === "verified";
+  };
+
+  // ✅ Separate verification action (badge gate)
+  const setVerified = async (row, verified, note = "") => {
+    const userKey = userKeyFromRow(row);
+    if (!userKey) return;
+
+    const t = normalizeType(row?.type);
+    const stamp = serverTimestamp();
+
+    // Writes a future-proof structure:
+    // users/{uid}.verification.host.status = "verified"
+    // users/{uid}.isVerifiedHost = true
+    const patch = {
+      updatedAt: stamp,
+      verification: {
+        [t]: {
+          status: verified ? "verified" : "unverified",
+          note: note || null,
+          verifiedAt: verified ? stamp : null,
+          unverifiedAt: !verified ? stamp : null,
+        },
+      },
+      isVerifiedHost: t === "host" ? !!verified : undefined,
+      isVerifiedPartner: t === "partner" ? !!verified : undefined,
+    };
+
+    // remove undefined keys cleanly (Firestore ignores undefined but we keep it tidy)
+    Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
+
+    try {
+      await setDoc(doc(db, "users", userKey), patch, { merge: true });
+      await fetchUserProfile(row); // refresh modal view
+    } catch (e) {
+      alert("Could not update verification: " + (e?.message || e));
+    }
+  };
+
+  /**
+   * ✅ IMPORTANT FIX:
+   * Approval grants ONLY host/partner role.
+   * Verification is NEVER automatic.
+   */
   const setStatus = async (row, next, reason = "", requiredDocs = []) => {
     if (!row?.id) return;
 
-    const nextUpper = String(next || "PENDING").toUpperCase();
-    const userKey = row.uid || row.userId || row.id; // safest
+    const nextUpper = safeUpper(next || "PENDING");
+    const userKey = userKeyFromRow(row);
+    const kind = normalizeType(row.type);
 
     try {
-      // 1) update onboarding queue row
+      // 1) update onboarding row
       await updateDoc(doc(db, "onboarding", row.id), {
         status: nextUpper,
         reviewedAt: serverTimestamp(),
         adminNote: reason || null,
         requiredDocuments: requiredDocs.length ? requiredDocs : null,
+        updatedAt: serverTimestamp(),
       });
 
       // 2) audit trail
@@ -437,31 +553,30 @@ export default function OnboardingQueue() {
         reviewedAt: serverTimestamp(),
       });
 
-      // 3) update kycProfiles/{uid} so the user page shows correct final status
-      await setDoc(
-        doc(db, "kycProfiles", userKey),
-        {
-          status:
-            nextUpper === "APPROVED"
-              ? "APPROVED"
-              : nextUpper === "REJECTED"
-              ? "REJECTED"
-              : nextUpper === "MORE_INFO_REQUIRED"
-              ? "MORE_INFO_REQUIRED"
-              : "PENDING",
-          reviewedAt: serverTimestamp(),
-          adminNote: reason || null,
-          requiredDocuments: requiredDocs.length ? requiredDocs : null,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      // 3) keep your kycProfiles mirror (optional but you already use it)
+      if (userKey) {
+        await setDoc(
+          doc(db, "kycProfiles", userKey),
+          {
+            status:
+              nextUpper === "APPROVED"
+                ? "APPROVED"
+                : nextUpper === "REJECTED"
+                ? "REJECTED"
+                : nextUpper === "MORE_INFO_REQUIRED"
+                ? "MORE_INFO_REQUIRED"
+                : "PENDING",
+            reviewedAt: serverTimestamp(),
+            adminNote: reason || null,
+            requiredDocuments: requiredDocs.length ? requiredDocs : null,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
 
-      // 4) mirror into users/{uid} for gating + ROLE PROMOTION
-      const roleToSet =
-        row.type === "partner" ? "verified_partner" : "verified_host";
-
-      const kycLower =
+      // 4) mirror into users/{uid} for gating + role promotion (NOT verified)
+      const statusLower =
         nextUpper === "APPROVED"
           ? "approved"
           : nextUpper === "REJECTED"
@@ -471,21 +586,45 @@ export default function OnboardingQueue() {
           : "pending";
 
       const userPatch = {
-        kycStatus: kycLower,
-        kyc: {
-          status: kycLower,
+        updatedAt: serverTimestamp(),
+        application: {
+          type: kind,
+          status: statusLower,
           reviewedAt: serverTimestamp(),
           reason: reason || null,
           requiredDocuments: requiredDocs.length ? requiredDocs : null,
         },
-        updatedAt: serverTimestamp(),
+        applicationType: kind,
+        applicationStatus: statusLower,
+        kycStatus: statusLower, // keep if your UI reads this today
+        kyc: {
+          status: statusLower,
+          reviewedAt: serverTimestamp(),
+          reason: reason || null,
+          requiredDocuments: requiredDocs.length ? requiredDocs : null,
+        },
       };
 
-      if (nextUpper === "APPROVED") {
-        userPatch.role = roleToSet;
+      if (userKey && nextUpper === "APPROVED") {
+        // Safety: do not overwrite admin accounts
+        let existingRole = "";
+        try {
+          const uSnap = await getDoc(doc(db, "users", userKey));
+          existingRole = safeLower(uSnap.exists() ? uSnap.data()?.role : "");
+        } catch {
+          // ignore, fallback to setting
+        }
+
+        if (existingRole !== "admin") {
+          userPatch.role = kind;        // ✅ host | partner
+          userPatch.accountType = kind; // optional future-friendly mirror
+        }
+        // ✅ do NOT set verification here
       }
 
-      await setDoc(doc(db, "users", userKey), userPatch, { merge: true });
+      if (userKey) {
+        await setDoc(doc(db, "users", userKey), userPatch, { merge: true });
+      }
 
       // local UI update
       setRows((prev) =>
@@ -495,9 +634,7 @@ export default function OnboardingQueue() {
                 ...x,
                 status: nextUpper,
                 adminNote: reason || x.adminNote,
-                requiredDocuments: requiredDocs.length
-                  ? requiredDocs
-                  : x.requiredDocuments,
+                requiredDocuments: requiredDocs.length ? requiredDocs : x.requiredDocuments,
               }
             : x
         )
@@ -540,7 +677,7 @@ export default function OnboardingQueue() {
       <AdminHeader
         back
         title="Onboarding queue"
-        subtitle="Host & partner KYC, waiting list and approvals."
+        subtitle="Host & partner onboarding (approval) + separate verification badge."
       />
 
       {/* Filters */}
@@ -558,10 +695,7 @@ export default function OnboardingQueue() {
           { k: "PENDING", label: `Pending ${counts.PENDING}` },
           { k: "APPROVED", label: `Approved ${counts.APPROVED}` },
           { k: "REJECTED", label: `Rejected ${counts.REJECTED}` },
-          {
-            k: "MORE_INFO_REQUIRED",
-            label: `More info ${counts.MORE_INFO_REQUIRED}`,
-          },
+          { k: "MORE_INFO_REQUIRED", label: `More info ${counts.MORE_INFO_REQUIRED}` },
         ].map((x) => (
           <button
             key={x.k}
@@ -595,8 +729,7 @@ export default function OnboardingQueue() {
               padding: "12px 16px",
               borderRadius: 14,
               border: "1px solid rgba(255,255,255,.12)",
-              background:
-                typeTab === x.k ? "#413cff" : "rgba(255,255,255,.06)",
+              background: typeTab === x.k ? "#413cff" : "rgba(255,255,255,.06)",
               color: typeTab === x.k ? "#eef2ff" : "#cfd3da",
               fontWeight: 900,
               cursor: "pointer",
@@ -680,18 +813,14 @@ export default function OnboardingQueue() {
                   textAlign: "left",
                 }}
               >
-                {["Type", "Email", "User", "Status", "Submitted", "Actions"].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      style={{ padding: "14px 16px", whiteSpace: "nowrap" }}
-                    >
-                      {h}
-                    </th>
-                  )
-                )}
+                {["Type", "Email", "User", "Status", "Submitted", "Actions"].map((h) => (
+                  <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
+
             <tbody>
               {loading && (
                 <tr>
@@ -712,59 +841,34 @@ export default function OnboardingQueue() {
               {!loading &&
                 filtered.map((r) => (
                   <tr key={r.id}>
-                    <td
-                      style={{
-                        padding: "12px 16px",
-                        textTransform: "capitalize",
-                      }}
-                    >
+                    <td style={{ padding: "12px 16px", textTransform: "capitalize" }}>
                       {r.type}
                     </td>
+                    <td style={{ padding: "12px 16px" }}>{r.email || "—"}</td>
+                    <td style={{ padding: "12px 16px" }}>{r.userId || r.uid || "—"}</td>
                     <td style={{ padding: "12px 16px" }}>
-                      {r.email || "—"}
+                      <StatusPill value={safeUpper(r.status || "PENDING")} />
                     </td>
                     <td style={{ padding: "12px 16px" }}>
-                      {r.userId || r.uid || "—"}
-                    </td>
-                    <td style={{ padding: "12px 16px" }}>
-                      <StatusPill
-                        value={(r.status || "PENDING").toUpperCase()}
-                      />
-                    </td>
-                    <td style={{ padding: "12px 16px" }}>
-                      {r.submittedAt
-                        ? dayjs(r.submittedAt).format("YYYY-MM-DD HH:mm")
-                        : "—"}
+                      {r.submittedAt ? dayjs(r.submittedAt).format("YYYY-MM-DD HH:mm") : "—"}
                     </td>
                     <td style={{ padding: "12px 16px" }}>
                       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        {String(r.status).toUpperCase() !== "APPROVED" && (
-                          <LuxeBtn
-                            kind="emerald"
-                            small
-                            onClick={() => setStatus(r, "APPROVED")}
-                          >
+                        {safeUpper(r.status) !== "APPROVED" && (
+                          <LuxeBtn kind="emerald" small onClick={() => setStatus(r, "APPROVED")}>
                             Approve
                           </LuxeBtn>
                         )}
-                        {String(r.status).toUpperCase() !== "REJECTED" && (
-                          <LuxeBtn
-                            kind="ruby"
-                            small
-                            onClick={() => setStatus(r, "REJECTED")}
-                          >
+                        {safeUpper(r.status) !== "REJECTED" && (
+                          <LuxeBtn kind="ruby" small onClick={() => setStatus(r, "REJECTED")}>
                             Reject
                           </LuxeBtn>
                         )}
                         <LuxeBtn kind="gold" small onClick={() => openReview(r)}>
                           Review
                         </LuxeBtn>
-                        {String(r.status).toUpperCase() !== "APPROVED" && (
-                          <LuxeBtn
-                            kind="slate"
-                            small
-                            onClick={() => handleMoreInfo(r)}
-                          >
+                        {safeUpper(r.status) !== "APPROVED" && (
+                          <LuxeBtn kind="slate" small onClick={() => handleMoreInfo(r)}>
                             More info
                           </LuxeBtn>
                         )}
@@ -778,33 +882,57 @@ export default function OnboardingQueue() {
       </div>
 
       {/* Review modal */}
-      <Modal open={revOpen} onClose={closeReview} title="KYC review">
+      <Modal open={revOpen} onClose={closeReview} title="Onboarding review">
         {!revRow ? null : (
           <div style={{ display: "grid", gap: 14 }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "160px 1fr",
-                gap: 8,
-              }}
-            >
+            {/* Header / flags */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <SmallBadge label={normalizeType(revRow.type) === "partner" ? "PARTNER APPLICATION" : "HOST APPLICATION"} />
+              <SmallBadge label={`STATUS: ${safeUpper(revRow.status || "PENDING")}`} />
+              {revUser && isVerifiedForType(revUser, revRow.type) ? <SmallBadge label="VERIFIED ✅" /> : null}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 8 }}>
               <div className="muted">Type</div>
-              <div style={{ textTransform: "capitalize" }}>{revRow.type}</div>
+              <div style={{ textTransform: "capitalize" }}>{normalizeType(revRow.type)}</div>
 
               <div className="muted">Email</div>
               <div>{revRow.email || "—"}</div>
 
               <div className="muted">User ID</div>
-              <div>{revRow.userId || revRow.uid || "—"}</div>
-
-              <div className="muted">Status</div>
-              <div style={{ textTransform: "capitalize" }}>{revRow.status}</div>
+              <div>{userKeyFromRow(revRow) || "—"}</div>
 
               <div className="muted">Submitted</div>
               <div>
-                {revRow.submittedAt
-                  ? dayjs(revRow.submittedAt).format("YYYY-MM-DD HH:mm")
-                  : "—"}
+                {revRow.submittedAt ? dayjs(revRow.submittedAt).format("YYYY-MM-DD HH:mm") : "—"}
+              </div>
+
+              <div className="muted">User role (from users/{`{uid}`})</div>
+              <div>
+                {revUserLoading ? (
+                  <span style={{ opacity: 0.7 }}>Loading…</span>
+                ) : revUser ? (
+                  <span style={{ opacity: 0.95, fontWeight: 800 }}>
+                    {revUser.role || "—"}
+                  </span>
+                ) : (
+                  <span style={{ opacity: 0.7 }}>{revUserError || "—"}</span>
+                )}
+              </div>
+
+              <div className="muted">Verification</div>
+              <div>
+                {revUserLoading ? (
+                  <span style={{ opacity: 0.7 }}>Loading…</span>
+                ) : revUser ? (
+                  isVerifiedForType(revUser, revRow.type) ? (
+                    <span style={{ fontWeight: 900 }}>Verified</span>
+                  ) : (
+                    <span style={{ opacity: 0.8 }}>Not verified</span>
+                  )
+                ) : (
+                  <span style={{ opacity: 0.7 }}>—</span>
+                )}
               </div>
 
               {revRow.adminNote ? (
@@ -814,8 +942,7 @@ export default function OnboardingQueue() {
                 </>
               ) : null}
 
-              {Array.isArray(revRow.requiredDocuments) &&
-              revRow.requiredDocuments.length ? (
+              {Array.isArray(revRow.requiredDocuments) && revRow.requiredDocuments.length ? (
                 <>
                   <div className="muted">Requested docs</div>
                   <div>{revRow.requiredDocuments.join(", ")}</div>
@@ -823,12 +950,8 @@ export default function OnboardingQueue() {
               ) : null}
             </div>
 
-            <div
-              style={{
-                borderTop: "1px solid rgba(255,255,255,.08)",
-                paddingTop: 10,
-              }}
-            >
+            {/* Documents */}
+            <div style={{ borderTop: "1px solid rgba(255,255,255,.08)", paddingTop: 10 }}>
               <div style={{ fontWeight: 800, marginBottom: 8 }}>Documents</div>
 
               {docsLoading ? (
@@ -847,8 +970,7 @@ export default function OnboardingQueue() {
                   {docsError}
                   {storagePathUsed ? (
                     <div style={{ marginTop: 8, fontWeight: 600, opacity: 0.85 }}>
-                      Paths tried:{" "}
-                      <code style={{ opacity: 0.95 }}>{storagePathUsed}</code>
+                      Paths tried: <code style={{ opacity: 0.95 }}>{storagePathUsed}</code>
                     </div>
                   ) : null}
                 </div>
@@ -870,8 +992,7 @@ export default function OnboardingQueue() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns:
-                        "repeat(auto-fill,minmax(220px,1fr))",
+                      gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))",
                       gap: 10,
                     }}
                   >
@@ -910,9 +1031,7 @@ export default function OnboardingQueue() {
                             borderRadius: 10,
                           }}
                         >
-                          <span style={{ fontSize: 12, opacity: 0.7 }}>
-                            Open
-                          </span>
+                          <span style={{ fontSize: 12, opacity: 0.7 }}>Open</span>
                         </div>
                       </a>
                     ))}
@@ -921,24 +1040,65 @@ export default function OnboardingQueue() {
               )}
             </div>
 
+            {/* Actions */}
             <div
               style={{
                 display: "flex",
                 gap: 10,
-                justifyContent: "flex-end",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
                 marginTop: 6,
               }}
             >
-              <LuxeBtn onClick={closeReview}>Close</LuxeBtn>
-              <LuxeBtn kind="emerald" onClick={() => setStatus(revRow, "APPROVED")}>
-                Approve
-              </LuxeBtn>
-              <LuxeBtn kind="ruby" onClick={() => setStatus(revRow, "REJECTED")}>
-                Reject
-              </LuxeBtn>
-              <LuxeBtn kind="slate" onClick={() => handleMoreInfo(revRow)}>
-                More info
-              </LuxeBtn>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <LuxeBtn onClick={closeReview}>Close</LuxeBtn>
+
+                <LuxeBtn kind="emerald" onClick={() => setStatus(revRow, "APPROVED")}>
+                  Approve (role = {normalizeType(revRow.type)})
+                </LuxeBtn>
+
+                <LuxeBtn kind="ruby" onClick={() => setStatus(revRow, "REJECTED")}>
+                  Reject
+                </LuxeBtn>
+
+                <LuxeBtn kind="slate" onClick={() => handleMoreInfo(revRow)}>
+                  More info
+                </LuxeBtn>
+              </div>
+
+              {/* ✅ Verification is separate and only meaningful after approval */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <LuxeBtn
+                  kind="gold"
+                  disabled={safeUpper(revRow.status) !== "APPROVED"}
+                  title={safeUpper(revRow.status) !== "APPROVED" ? "Approve first, then verify." : "Mark as Verified (badge)."}
+                  onClick={() => {
+                    const note = window.prompt(
+                      "Verification note (optional):",
+                      "Verified after physical inspection / documentation review."
+                    );
+                    if (note === null) return;
+                    setVerified(revRow, true, note);
+                  }}
+                >
+                  Verify ✅
+                </LuxeBtn>
+
+                <LuxeBtn
+                  kind="slate"
+                  disabled={safeUpper(revRow.status) !== "APPROVED" || !revUser || !isVerifiedForType(revUser, revRow.type)}
+                  title="Remove Verified badge"
+                  onClick={() => {
+                    const ok = window.confirm("Remove Verified status for this user?");
+                    if (!ok) return;
+                    const note = window.prompt("Reason (optional):", "Verification removed.");
+                    if (note === null) return;
+                    setVerified(revRow, false, note);
+                  }}
+                >
+                  Unverify
+                </LuxeBtn>
+              </div>
             </div>
           </div>
         )}

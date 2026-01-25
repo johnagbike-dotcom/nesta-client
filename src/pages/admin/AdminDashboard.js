@@ -1,3 +1,4 @@
+// src/pages/admin/AdminDashboard.js
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -8,10 +9,7 @@ import { db } from "../../firebase";
 
 /* ------------------------------ axios base ------------------------------ */
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
-    /\/$/,
-    ""
-  ),
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
   timeout: 20000,
   withCredentials: false,
 });
@@ -21,6 +19,7 @@ api.interceptors.request.use(async (config) => {
   const user = getAuth().currentUser;
   if (user) {
     const token = await user.getIdToken();
+    config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
@@ -54,14 +53,7 @@ const softNum = (n) => {
 
 const isAttentionStatus = (statusRaw) => {
   const s = String(statusRaw || "").toLowerCase();
-  return [
-    "pending",
-    "hold",
-    "hold-pending",
-    "change-request",
-    "date-change",
-    "cancel-request",
-  ].includes(s);
+  return ["pending", "hold", "hold-pending", "change-request", "date-change", "cancel-request"].includes(s);
 };
 
 function safeDateLoose(v) {
@@ -91,19 +83,14 @@ function safeDateLoose(v) {
 // Normalise a booking document into a single shape we can render
 const normaliseBooking = (docSnap) => {
   const data = docSnap?.data ? docSnap.data() : docSnap || {};
-  const createdAt = safeDateLoose(
-    data.createdAt || data.created_at || data.date || data.timestamp
-  );
+  const createdAt = safeDateLoose(data.createdAt || data.created_at || data.date || data.timestamp);
 
   return {
     id: docSnap?.id || data.id,
-    listingTitle:
-      data.listingTitle || data.listing || data.title || data.property || "—",
+    listingTitle: data.listingTitle || data.listing || data.title || data.property || "—",
     guestEmail: data.email || data.guestEmail || data.guest || "—",
     status: data.status || "confirmed",
-    amount:
-      Number(data.amountN ?? data.amount ?? data.total ?? data.totalAmount ?? 0) ||
-      0,
+    amount: Number(data.amountN ?? data.amount ?? data.total ?? data.totalAmount ?? 0) || 0,
     nights: Number(data.nights ?? data.night ?? 0) || 0,
     createdAt,
     reference: data.reference || data.ref || "",
@@ -126,7 +113,7 @@ export default function AdminDashboard() {
     setLoading(true);
     setError("");
 
-    // ✅ Important: overviewOk now means "API gave us a valid users count"
+    // ✅ overviewHasUsersCount means "API gave us a valid users count"
     let overviewHasUsersCount = false;
 
     // 1) API overview (use if available)
@@ -143,16 +130,12 @@ export default function AdminDashboard() {
         setUsersCount(apiUsersCount);
         overviewHasUsersCount = true;
       } else {
-        // API overview may still be useful, but not for users count
         overviewHasUsersCount = false;
       }
 
       setUpdatedAt(new Date().toISOString());
     } catch (e) {
-      console.warn(
-        "[AdminDashboard] /admin/overview failed, falling back to Firestore:",
-        e?.response?.data || e?.message
-      );
+      console.warn("[AdminDashboard] /admin/overview failed, falling back to Firestore:", e?.response?.data || e?.message);
       setServerOverview(null);
       setError("Admin overview is temporarily unavailable. Showing fallback stats.");
       overviewHasUsersCount = false;
@@ -232,11 +215,7 @@ export default function AdminDashboard() {
         </button>
 
         <div className="flex items-center gap-3">
-          {updatedLabel ? (
-            <div className="hidden md:block text-xs text-white/40">
-              Last updated: {updatedLabel}
-            </div>
-          ) : null}
+          {updatedLabel ? <div className="hidden md:block text-xs text-white/40">Last updated: {updatedLabel}</div> : null}
 
           <button
             onClick={load}
@@ -264,18 +243,14 @@ export default function AdminDashboard() {
       {/* Heading */}
       <div className="px-6 mt-4 mb-3">
         <h1 className="text-3xl font-black tracking-tight">Admin control centre</h1>
-        <p className="text-white/50 text-sm mt-1">
-          Platform health, bookings, users and admin tools at a glance.
-        </p>
+        <p className="text-white/50 text-sm mt-1">Platform health, bookings, users and admin tools at a glance.</p>
       </div>
 
       {/* KPI row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6">
         {/* Total bookings */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#f5b800] to-[#ff7b1b] px-5 py-5 shadow-lg">
-          <p className="uppercase tracking-[0.25em] text-xs text-black/70 font-bold">
-            TOTAL BOOKINGS
-          </p>
+          <p className="uppercase tracking-[0.25em] text-xs text-black/70 font-bold">TOTAL BOOKINGS</p>
           <p className="mt-2 leading-none font-black text-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(stats.totalBookings)}
           </p>
@@ -284,9 +259,7 @@ export default function AdminDashboard() {
 
         {/* Revenue */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#00735f] to-[#008c86] px-5 py-5 shadow-lg overflow-hidden">
-          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
-            REVENUE (RAW)
-          </p>
+          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">REVENUE (RAW)</p>
 
           <p
             className="mt-2 leading-none font-black whitespace-nowrap text-[clamp(1.45rem,4.9vw,2.85rem)]"
@@ -301,9 +274,7 @@ export default function AdminDashboard() {
 
         {/* Needs attention */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#b5131d] to-[#a10b38] px-5 py-5 shadow-lg">
-          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
-            ITEMS NEEDING ATTENTION
-          </p>
+          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">ITEMS NEEDING ATTENTION</p>
           <p className="mt-2 leading-none font-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(stats.needsAttention)}
           </p>
@@ -312,16 +283,12 @@ export default function AdminDashboard() {
 
         {/* Users */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#0b65c7] to-[#002e6f] px-5 py-5 shadow-lg">
-          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
-            USERS / HOSTS (APPROX.)
-          </p>
+          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">USERS / HOSTS (APPROX.)</p>
           <p className="mt-2 leading-none font-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(usersCount)}
           </p>
           <p className="text-white/60 text-sm mt-3">
-            {serverOverview
-              ? "API: /admin/overview (users if provided) + Firestore fallback"
-              : "Fallback: Firestore users collection"}
+            {serverOverview ? "API: /admin/overview (users if provided) + Firestore fallback" : "Fallback: Firestore users collection"}
           </p>
         </div>
       </div>
@@ -329,23 +296,15 @@ export default function AdminDashboard() {
       {/* Secondary metrics */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 px-6 mt-5">
         <div className="rounded-3xl bg-[#101318] border border-white/5 px-5 py-4">
-          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">
-            Avg booking value
-          </div>
+          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">Avg booking value</div>
           <div className="text-3xl font-bold mt-2">{money(stats.avgValue)}</div>
         </div>
         <div className="rounded-3xl bg-[#101318] border border-white/5 px-5 py-4">
-          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">
-            Avg nights / booking
-          </div>
-          <div className="text-3xl font-bold mt-2">
-            {Number(stats.avgNights || 0).toFixed(1)}
-          </div>
+          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">Avg nights / booking</div>
+          <div className="text-3xl font-bold mt-2">{Number(stats.avgNights || 0).toFixed(1)}</div>
         </div>
         <div className="rounded-3xl bg-[#101318] border border-white/5 px-5 py-4">
-          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">
-            Total nights (sample)
-          </div>
+          <div className="text-xs text-white/50 uppercase tracking-[0.2em]">Total nights (sample)</div>
           <div className="text-3xl font-bold mt-2">{softNum(stats.totalNights)}</div>
         </div>
       </div>
@@ -356,10 +315,7 @@ export default function AdminDashboard() {
         <div className="rounded-3xl bg-[#101318] border border-white/5 shadow-inner overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4">
             <h2 className="text-white font-semibold text-lg">Latest bookings</h2>
-            <button
-              onClick={() => nav("/admin/bookings-admin")}
-              className="text-sm text-white/50 hover:text-white"
-            >
+            <button onClick={() => nav("/admin/bookings-admin")} className="text-sm text-white/50 hover:text-white">
               View all →
             </button>
           </div>
@@ -373,15 +329,11 @@ export default function AdminDashboard() {
                   <div>
                     <p className="text-white font-semibold">{b.listingTitle}</p>
                     <p className="text-xs text-white/35 mt-0.5">
-                      guest: {b.guestEmail} • ref:{" "}
-                      {String(b.reference || b.id || "—").slice(0, 22)}
+                      guest: {b.guestEmail} • ref: {String(b.reference || b.id || "—").slice(0, 22)}
                       {b.createdAt ? (
                         <>
                           {" "}
-                          •{" "}
-                          <span className="text-white/35">
-                            {dayjs(b.createdAt).format("YYYY-MM-DD HH:mm")}
-                          </span>
+                          • <span className="text-white/35">{dayjs(b.createdAt).format("YYYY-MM-DD HH:mm")}</span>
                         </>
                       ) : null}
                     </p>
@@ -419,12 +371,21 @@ export default function AdminDashboard() {
             <div className="text-xs text-white/70">Waiting for action</div>
           </button>
 
+          {/* ✅ NEW: payout setup verification */}
+          <button
+            onClick={() => nav("/admin/payout-setups")}
+            className="rounded-2xl bg-gradient-to-r from-[#f5b800] to-[#ff7b1b] px-5 py-3 text-left font-semibold hover:brightness-110 text-black"
+          >
+            Payout setup verification
+            <div className="text-xs text-black/70">Verify BVN + bank payout accounts</div>
+          </button>
+
           <button
             onClick={() => nav("/admin/payouts")}
             className="rounded-2xl bg-gradient-to-r from-[#00a77e] to-[#00bf8f] px-5 py-3 text-left font-semibold hover:brightness-110"
           >
-            Payouts &amp; settlements
-            <div className="text-xs text-white/70">Track partner/host payouts</div>
+            Payout requests &amp; settlements
+            <div className="text-xs text-white/70">Hold → paid / failed (wallet + ledger)</div>
           </button>
 
           <button
