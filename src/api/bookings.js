@@ -1,10 +1,11 @@
 // src/api/bookings.js
-// Luxury standard:
-// - Payment confirmation & money state changes happen on SERVER + WEBHOOKS only.
+// Rules:
+// - Payment state changes happen on SERVER + WEBHOOKS only.
 // - Client never writes booking payment status to Firestore.
-// - Client uses Bearer Firebase ID token for all protected API calls.
+// - Client must send Bearer Firebase ID token for protected API calls.
 
 import { db, auth } from "../firebase";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   addDoc,
   updateDoc,
@@ -22,39 +23,129 @@ import {
 
 /* ---------------- REST BASE + FETCH ---------------- */
 
-// Normalise API root so we NEVER produce /api/api
-// Supports either:
-//   REACT_APP_API_BASE=http://localhost:4000
-//   REACT_APP_API_BASE=http://localhost:4000/api
-const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
-const API = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+// Supports both CRA and Vite envs:
+// - CRA:  process.env.REACT_APP_API_BASE
+// - Vite: import.meta.env.VITE_API_BASE_URL
+function getEnvApiBase() {
+  const viteBase =
+    typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE);
 
-async function getIdToken() {
-  const u = auth.currentUser;
-  if (!u) return null;
-  // force refresh token for sensitive operations
-  return await u.getIdToken(true);
+  const craBase = process.env.REACT_APP_API_BASE;
+
+  return (viteBase || craBase || "http://localhost:4000").toString().trim();
+}
+
+// Normalise API root so we NEVER produce /api/api
+function normaliseApiRoot(rawBase) {
+  const base = String(rawBase || "").replace(/\/+$/, "");
+  return /\/api$/i.test(base) ? base : `${base}/api`;
+}
+
+const API = normaliseApiRoot(getEnvApiBase());
+
+/* ---------------- AUTH TOKEN (HARDENED) ---------------- */
+
+// Wait for Firebase Auth to hydrate (prevents false "logged out" reads (auth.currentUser null))
+// NOTE: increase timeout because mobile + slow networks can exceed 2.5s.
+function waitForAuthUser({ timeoutMs = 8000 } = {}) {
+  return new Promise((resolve) => {
+    if (auth.currentUser) return resolve(auth.currentUser);
+
+    let done = false;
+    let unsub = null;
+
+    const stop = (u) => {
+      if (done) return;
+      done = true;
+      try {
+        if (typeof unsub === "function") unsub();
+      } catch {}
+      resolve(u || auth.currentUser || null);
+    };
+
+    unsub = onAuthStateChanged(auth, (u) => stop(u));
+
+    setTimeout(() => stop(auth.currentUser || null), timeoutMs);
+  });
+}
+
+// Strict token getter: if requireAuth is true, this MUST return a token or throw.
+async function getIdToken({ forceRefresh = false, waitUser = true, requireAuth = false } = {}) {
+  const u = auth.currentUser || (waitUser ? await waitForAuthUser() : null);
+
+  if (!u) {
+    if (requireAuth) {
+      const err = new Error("Unauthorized");
+      err.status = 401;
+      err.reason = "no_current_user";
+      throw err;
+    }
+    return null;
+  }
+
+  try {
+    return await u.getIdToken(!!forceRefresh);
+  } catch (e) {
+    // If token retrieval fails, treat like unauthorized for protected calls
+    if (requireAuth) {
+      const err = new Error("Unauthorized");
+      err.status = 401;
+      err.reason = "token_fetch_failed";
+      err.cause = e;
+      throw err;
+    }
+    return null;
+  }
 }
 
 // generic JSON fetch helper (Bearer-token; no cookies)
+// ✅ Retries ONCE on 401 with a forced token refresh
 async function fetchJson(url, options = {}) {
-  const token = await getIdToken();
+  const {
+    requireAuth = false,
+    forceRefresh = false,
+    waitUser = true,
+    headers = {},
+    retryOn401 = true,
+    ...rest
+  } = options;
 
-  const res = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
+  const doFetch = async (forced) => {
+    const token = await getIdToken({
+      forceRefresh: forced || forceRefresh,
+      waitUser,
+      requireAuth,
+    });
 
-  const text = await res.text();
-  let data;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
+    const res = await fetch(url, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...headers,
+      },
+      ...rest,
+    });
+
+    const text = await res.text();
+    let data = null;
+
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    return { res, data };
+  };
+
+  // 1) First attempt
+  let { res, data } = await doFetch(false);
+
+  // 2) If unauthorized and allowed, retry once with forced refresh
+  if (res.status === 401 && retryOn401 && requireAuth) {
+    ({ res, data } = await doFetch(true));
   }
 
   if (!res.ok) {
@@ -63,8 +154,14 @@ async function fetchJson(url, options = {}) {
       data?.error ||
       data?.message ||
       `${res.status} ${res.statusText}`;
-    throw new Error(message);
+
+    const err = new Error(message);
+    err.status = res.status;
+    err.data = data;
+    err.url = url;
+    throw err;
   }
+
   return data;
 }
 
@@ -75,24 +172,48 @@ function toIso(v) {
     if (typeof v.toDate === "function") v = v.toDate();
     else if (typeof v.seconds === "number") v = new Date(v.seconds * 1000);
     const d = v instanceof Date ? v : new Date(v);
-    return isNaN(d.getTime()) ? null : d.toISOString();
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
   } catch {
     return null;
   }
 }
 
 /* ============================================================================
-   LUXURY: API-FIRST FLOW (NEW, RECOMMENDED)
+   API-FIRST FLOW (RECOMMENDED)
    ========================================================================== */
 
+export async function getAvailabilityAPI({ listingId, checkIn, checkOut }) {
+  const qs = new URLSearchParams({
+    listingId: String(listingId || ""),
+    checkIn: String(checkIn || ""),
+    checkOut: String(checkOut || ""),
+  }).toString();
+
+  const data = await fetchJson(`${API}/bookings/availability?${qs}`, {
+    method: "GET",
+    requireAuth: false,
+    retryOn401: false,
+  });
+
+  if (data?.ok === false) throw new Error(data?.error || "Failed to check availability");
+  return data;
+}
+
 /**
- * Create a booking hold via server (recommended).
+ * Create a booking hold via server.
  * Returns: { ok:true, bookingId, reference, expiresAt?, amountN? }
  */
 export async function createBookingHoldAPI(payload) {
   const data = await fetchJson(`${API}/bookings/hold`, {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload || {}),
+    requireAuth: true,
+    // ✅ forceRefresh true helps when auth just refreshed / recently signed in
+    forceRefresh: true,
+    // ✅ waitUser true avoids "currentUser null" during hydration
+    waitUser: true,
+    // ✅ retry once on 401 with forced refresh
+    retryOn401: true,
   });
 
   if (data?.ok === false) throw new Error(data?.error || "Failed to create hold");
@@ -100,28 +221,36 @@ export async function createBookingHoldAPI(payload) {
 }
 
 /**
- * Get booking from server (recommended for polling after Paystack callback).
+ * Get booking from server (recommended for polling after callback).
  * Returns: booking object
  */
 export async function getBookingStatusAPI(bookingId) {
   if (!bookingId) throw new Error("Missing booking id");
+
   const data = await fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}`, {
     method: "GET",
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
   });
 
   if (data?.ok === false) throw new Error(data?.error || "Failed to fetch booking");
-  return data?.booking ?? data; // support both shapes
+  return data?.booking ?? data;
 }
 
 /**
  * Optional: client “nudge” endpoint after payment callback.
- * NOTE: webhook is source of truth. This is for UX only.
+ * Webhook is source of truth; this is UX only.
  */
 export async function notifyPaymentReceivedAPI({ bookingId, provider, reference }) {
   if (!bookingId) throw new Error("Missing booking id");
+
   return fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}/payment-received`, {
     method: "POST",
     body: JSON.stringify({ provider, reference }),
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
   });
 }
 
@@ -129,7 +258,6 @@ export async function notifyPaymentReceivedAPI({ bookingId, provider, reference 
    ADMIN / LEGACY API (kept for compatibility)
    ========================================================================== */
 
-// Push booking snapshots into the admin JSON + payouts ledger
 export async function syncBookingToAdminLedger(bookingId, statusOverride) {
   try {
     if (!bookingId) return;
@@ -137,6 +265,7 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
     const ref = doc(db, "bookings", bookingId);
     const snap = await getDoc(ref);
     if (!snap.exists()) return;
+
     const b = snap.data() || {};
     const status = (statusOverride || b.status || "confirmed").toLowerCase();
 
@@ -168,26 +297,31 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
     await fetchJson(`${API}/admin/bookings-sync`, {
       method: "POST",
       body: JSON.stringify(payload),
+      requireAuth: true,
+      waitUser: true,
+      retryOn401: true,
     });
   } catch (err) {
     console.warn("[bookings] syncBookingToAdminLedger failed:", err);
   }
 }
 
-/** Return shape: { data: Booking[] } */
 export async function listBookings(queryStr = "") {
   const q = queryStr ? `?q=${encodeURIComponent(queryStr)}` : "";
-  const data = await fetchJson(`${API}/bookings${q}`, { method: "GET" });
+  const data = await fetchJson(`${API}/bookings${q}`, {
+    method: "GET",
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
+  });
   return { data: Array.isArray(data) ? data : data?.data ?? [] };
 }
 
-/** Provide URL to download CSV */
 export function exportCsvUrl(queryStr = "") {
   const q = queryStr ? `?q=${encodeURIComponent(queryStr)}` : "";
   return `${API}/bookings/export.csv${q}`;
 }
 
-/** Real booking via backend API (legacy) */
 export async function createBooking(body) {
   const payload = {
     email: body.email,
@@ -200,10 +334,12 @@ export async function createBooking(body) {
   return fetchJson(`${API}/bookings`, {
     method: "POST",
     body: JSON.stringify(payload),
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
   });
 }
 
-/** Demo booking when gateway key/script is missing (legacy) */
 export async function createDemoBooking(body = {}) {
   const payload = {
     email: body.email || "test@example.com",
@@ -216,13 +352,20 @@ export async function createDemoBooking(body = {}) {
   return fetchJson(`${API}/bookings`, {
     method: "POST",
     body: JSON.stringify(payload),
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
   });
 }
 
-/** Optional test booking helper (legacy) */
 export async function createTestBooking() {
   try {
-    return await fetchJson(`${API}/bookings/test`, { method: "POST" });
+    return await fetchJson(`${API}/bookings/test`, {
+      method: "POST",
+      requireAuth: true,
+      waitUser: true,
+      retryOn401: true,
+    });
   } catch {
     return createDemoBooking({
       email: "test@example.com",
@@ -235,12 +378,14 @@ export async function createTestBooking() {
   }
 }
 
-/** Update status via server (legacy/admin) */
 export async function setBookingStatus(id, status) {
   if (!id) throw new Error("Missing booking id");
   return fetchJson(`${API}/bookings/${encodeURIComponent(id)}/status`, {
     method: "PATCH",
     body: JSON.stringify({ status }),
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
   });
 }
 
@@ -248,6 +393,9 @@ export async function verifyBooking(id) {
   if (!id) throw new Error("Missing booking id");
   return fetchJson(`${API}/bookings/${encodeURIComponent(id)}/verify`, {
     method: "POST",
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
   });
 }
 
@@ -255,11 +403,14 @@ export async function deleteBooking(id) {
   if (!id) throw new Error("Missing booking id");
   return fetchJson(`${API}/bookings/${encodeURIComponent(id)}`, {
     method: "DELETE",
+    requireAuth: true,
+    waitUser: true,
+    retryOn401: true,
   });
 }
 
 /* ============================================================================
-   FIRESTORE FLOW (EXISTING) — KEEP ONLY FOR FALLBACK / NON-MONEY UPDATES
+   FIRESTORE FLOW (FALLBACK / NON-MONEY UPDATES ONLY)
    ========================================================================== */
 
 export async function createPendingBookingFS({
@@ -276,7 +427,6 @@ export async function createPendingBookingFS({
   expiresAt = null,
 }) {
   const payload = {
-    // listing
     listingId: listing?.id || null,
     listingTitle: listing?.title || "",
     listingCity: listing?.city || "",
@@ -286,19 +436,16 @@ export async function createPendingBookingFS({
     partnerUid: listing?.partnerUid || null,
     ownershipType: listing?.ownerId ? "host" : listing?.partnerUid ? "partner" : null,
 
-    // guest/user
     userId: user?.uid || null,
     guestId: user?.uid || null,
     email: user?.email || null,
 
-    // stay
     guests: Number(guests || 1),
     nights: Number(nights || 0),
     amountN: Number(amountN || 0),
     checkIn: checkIn ? new Date(checkIn) : null,
     checkOut: checkOut ? new Date(checkOut) : null,
 
-    // status/gateway (DO NOT set paid here)
     status: "pending",
     gateway: null,
     provider: null,
@@ -341,12 +488,15 @@ export async function ensurePendingHoldFS({
     orderBy("createdAt", "desc"),
     limit(1)
   );
+
   const snap = await getDocs(qy);
+
   if (!snap.empty) {
     const docRef = snap.docs[0];
     const d = docRef.data() || {};
     const exp =
       d.expiresAt?.toDate ? d.expiresAt.toDate() : d.expiresAt ? new Date(d.expiresAt) : null;
+
     if (exp && exp.getTime() > Date.now()) {
       return { id: docRef.id, expiresAt: exp };
     }
@@ -366,6 +516,7 @@ export async function ensurePendingHoldFS({
     checkOut,
     expiresAt,
   });
+
   return { id, expiresAt };
 }
 
@@ -389,6 +540,9 @@ export async function markBookingFailedFS(bookingId, reason = "cancelled") {
     await fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}/payment-cancelled`, {
       method: "POST",
       body: JSON.stringify({ reason }),
+      requireAuth: true,
+      waitUser: true,
+      retryOn401: true,
     });
   } catch {}
 
@@ -426,10 +580,17 @@ export async function expireStaleBookings() {
     const snap = await getDocs(collection(db, "bookings"));
     const now = Date.now();
     const ops = [];
+
     snap.forEach((d) => {
       const b = d.data();
       if (b.status !== "pending") return;
-      const exp = b.expiresAt?.toDate ? b.expiresAt.toDate() : b.expiresAt ? new Date(b.expiresAt) : null;
+
+      const exp = b.expiresAt?.toDate
+        ? b.expiresAt.toDate()
+        : b.expiresAt
+        ? new Date(b.expiresAt)
+        : null;
+
       if (exp && exp.getTime() < now) {
         ops.push(
           updateDoc(doc(db, "bookings", d.id), {
@@ -440,6 +601,7 @@ export async function expireStaleBookings() {
         );
       }
     });
+
     if (ops.length) await Promise.all(ops);
   } catch (e) {
     console.error("Auto-expire cleanup failed:", e);
@@ -452,7 +614,9 @@ export async function expireStaleBookings() {
 
 export async function fetchActiveHoldsFS({ guestId, listingId, checkIn, checkOut }) {
   if (!guestId || !listingId) return [];
+
   const sig = `${guestId}|${listingId}|${checkIn}|${checkOut}`;
+
   const snap = await getDocs(
     query(
       collection(db, "holds"),
@@ -463,7 +627,9 @@ export async function fetchActiveHoldsFS({ guestId, listingId, checkIn, checkOut
       limit(5)
     )
   );
+
   const now = Date.now();
+
   return snap.docs
     .map((d) => ({ id: d.id, ...d.data() }))
     .filter((h) => h.status === "active" && Number(h.expiresAt || 0) > now);
@@ -472,10 +638,12 @@ export async function fetchActiveHoldsFS({ guestId, listingId, checkIn, checkOut
 export async function createHoldFS({ guest, listing, nights, checkIn, checkOut }) {
   if (!guest?.uid) throw new Error("Missing guest");
   if (!listing?.id) throw new Error("Missing listing");
+
   const HOLD_MINUTES = 90;
   const now = Date.now();
   const expiresAt = now + HOLD_MINUTES * 60 * 1000;
   const signature = `${guest.uid}|${listing.id}|${checkIn}|${checkOut}`;
+
   const payload = {
     listingId: listing.id,
     listingTitle: listing.title || "",
@@ -489,6 +657,7 @@ export async function createHoldFS({ guest, listing, nights, checkIn, checkOut }
     status: "active",
     signature,
   };
+
   const ref = await addDoc(collection(db, "holds"), payload);
   return { id: ref.id, ...payload };
 }

@@ -6,7 +6,7 @@ import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../context/ToastContext";
 import useUserProfile from "../hooks/useUserProfile";
-import { createBookingHoldAPI } from "../api/bookings";
+import { createBookingHoldAPI, getAvailabilityAPI } from "../api/bookings";
 
 /* ---------- Tiny UI helpers ---------- */
 function Field({ label, hint, children }) {
@@ -74,12 +74,10 @@ function Stepper({ step }) {
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
-
 function toYmdLocal(date) {
   const d = date instanceof Date ? date : new Date(date);
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
-
 function addDaysYmd(ymd, days) {
   if (!ymd) return "";
   const [y, m, d] = ymd.split("-").map(Number);
@@ -87,7 +85,6 @@ function addDaysYmd(ymd, days) {
   dt.setDate(dt.getDate() + Number(days || 0));
   return toYmdLocal(dt);
 }
-
 function isPastYmd(ymd) {
   if (!ymd) return false;
   const [y, m, d] = ymd.split("-").map(Number);
@@ -97,7 +94,6 @@ function isPastYmd(ymd) {
   today.setHours(0, 0, 0, 0);
   return selected.getTime() < today.getTime();
 }
-
 function safeLower(v) {
   return String(v ?? "").trim().toLowerCase();
 }
@@ -113,10 +109,6 @@ export default function ReservePage() {
   // Guests only can reserve
   const role = safeLower(profile?.role || "");
   const isGuest = role === "guest" || !role;
-
-  // ✅ Normalise API root so we never produce /api/api
-  const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
-  const API = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
 
   // state listing (from navigate or direct fetch)
   const state = location.state || {};
@@ -147,7 +139,7 @@ export default function ReservePage() {
   const [availOk, setAvailOk] = useState(true);
   const [availMsg, setAvailMsg] = useState("");
 
-  // payment provider (default to Flutterwave if Paystack isn't ready)
+  // payment provider
   const [payProvider, setPayProvider] = useState("flutterwave"); // "flutterwave" | "paystack"
 
   const todayMin = useMemo(() => toYmdLocal(new Date()), []);
@@ -215,25 +207,19 @@ export default function ReservePage() {
     return Math.max(perNight * nights * Number(guests || 0), 0);
   }, [listing, nights, guests]);
 
-  const canGoToStep2 = Boolean(listing && guests > 0 && datesValid && nights > 0 && availOk && !checkingAvail);
+  const canGoToStep2 = Boolean(
+    listing && guests > 0 && datesValid && nights > 0 && availOk && !checkingAvail
+  );
   const canGoToStep3 = Boolean(canGoToStep2);
-  const canPay = Boolean(user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail);
+  const canPay = Boolean(
+    user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail
+  );
 
-  async function getIdTokenOrNull() {
-    try {
-      if (!user) return "";
-      return await user.getIdToken();
-    } catch {
-      return "";
-    }
-  }
-
-  function buildRedirectUrl(provider = "flutterwave") {
-    // You can change these later; just keep it consistent with your routes.
-    // Must be an absolute URL for Flutterwave.
+  function buildRedirectUrl(provider = "flutterwave", bookingId = "") {
     const origin = window.location.origin;
     const qp = new URLSearchParams();
     qp.set("provider", provider);
+    qp.set("bookingId", bookingId || "");
     qp.set("listingId", listing?.id || "");
     qp.set("checkIn", checkIn || "");
     qp.set("checkOut", checkOut || "");
@@ -243,7 +229,7 @@ export default function ReservePage() {
     return `${origin}/reserve/success?${qp.toString()}`;
   }
 
-  // ✅ Server availability (no Firestore permissions issues)
+  // ✅ Availability via API helper (single source of truth)
   const checkAvailability = useCallback(
     async (ci, co) => {
       if (!listing?.id) return { ok: true, msg: "" };
@@ -257,19 +243,11 @@ export default function ReservePage() {
       setAvailOk(true);
 
       try {
-        const url =
-          `${API}/bookings/availability` +
-          `?listingId=${encodeURIComponent(listing.id)}` +
-          `&checkIn=${encodeURIComponent(ci)}` +
-          `&checkOut=${encodeURIComponent(co)}`;
-
-        const res = await fetch(url, { method: "GET" });
-        const data = await res.json().catch(() => null);
-
-        if (!res.ok) {
-          const message = data?.error || data?.message || "Availability check failed";
-          return { ok: true, msg: `Availability could not be verified. (${message})` };
-        }
+        const data = await getAvailabilityAPI({
+          listingId: listing.id,
+          checkIn: ci,
+          checkOut: co,
+        });
 
         if (data?.available === false) {
           return { ok: false, msg: "These dates are not available. Please choose different dates." };
@@ -277,16 +255,14 @@ export default function ReservePage() {
 
         return { ok: true, msg: "" };
       } catch (e) {
-        console.error("[ReservePage] server availability check failed:", e);
-        return {
-          ok: true,
-          msg: "Availability could not be verified right now. If payment fails, try again.",
-        };
+        console.error("[ReservePage] availability check failed:", e);
+        // Non-blocking: allow user proceed, hold endpoint will hard-check again
+        return { ok: true, msg: "Availability could not be verified right now. If payment fails, try again." };
       } finally {
         setCheckingAvail(false);
       }
     },
-    [API, listing?.id]
+    [listing?.id]
   );
 
   // re-check availability when dates change
@@ -316,13 +292,14 @@ export default function ReservePage() {
     };
   }, [checkIn, checkOut, listing?.id, checkAvailability]);
 
-  // SERVER creates hold + reference (re-check before hold)
+  // SERVER creates hold + reference
   async function ensureHoldViaServer() {
     if (!user) {
       toast("Please log in first.", "warning");
       nav("/login", { state: { from: location.pathname } });
       return null;
     }
+
     if (!listing) return null;
 
     if (!checkIn || !checkOut) {
@@ -366,13 +343,23 @@ export default function ReservePage() {
         ttlMinutes: 90,
       };
 
+      // ✅ Bearer token handled inside createBookingHoldAPI()
       const data = await createBookingHoldAPI(payload);
+
       setHoldInfo({ id: data.bookingId, expiresAt: data.expiresAt || null });
 
       return { bookingId: data.bookingId, reference: data.reference };
     } catch (e) {
       console.error(e);
-      toast(e?.message || "Could not create a reservation hold.", "error");
+
+      // If user got logged out or token missing, this will be “Unauthorized”
+      const msg = e?.message || "Could not create a reservation hold.";
+      toast(msg, "error");
+
+      if (String(msg).toLowerCase().includes("unauthorized")) {
+        nav("/login", { state: { from: location.pathname } });
+      }
+
       return null;
     } finally {
       setBusy(false);
@@ -405,13 +392,7 @@ export default function ReservePage() {
         toast("Payment received ✅ Redirecting…", "success");
         nav("/reserve/success", {
           replace: true,
-          state: {
-            bookingId,
-            listing,
-            checkIn,
-            checkOut,
-            provider: "paystack",
-          },
+          state: { bookingId, listing, checkIn, checkOut, provider: "paystack" },
         });
       },
       onClose: function () {
@@ -432,37 +413,50 @@ export default function ReservePage() {
     try {
       setBusy(true);
 
-      const token = await getIdTokenOrNull();
-      if (!token) {
-        toast("Please log in again.", "warning");
-        nav("/login", { state: { from: location.pathname } });
-        return;
+      const redirectUrl = buildRedirectUrl("flutterwave", bookingId);
+
+      // ✅ Your flutterwave/init is protected; it will succeed because the browser call
+      // must include Bearer token. We do it here directly (token refresh + retry).
+      const doInit = async (token) => {
+        // API base is handled server-side elsewhere, but flutterwave route lives on same API root:
+        // Use the same env logic as bookings.js
+        const rawBase =
+          (typeof import.meta !== "undefined" &&
+            import.meta.env &&
+            (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE)) ||
+          process.env.REACT_APP_API_BASE ||
+          "http://localhost:4000";
+
+        const base = String(rawBase || "").replace(/\/+$/, "");
+        const apiRoot = /\/api$/i.test(base) ? base : `${base}/api`;
+
+        return fetch(`${apiRoot}/flutterwave/init`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ type: "booking", bookingId, redirectUrl }),
+        });
+      };
+
+      // token normal + retry with forced refresh
+      let token = await user.getIdToken(false);
+      let res = await doInit(token);
+
+      if (res.status === 401) {
+        token = await user.getIdToken(true);
+        res = await doInit(token);
       }
-
-      const redirectUrl = buildRedirectUrl("flutterwave");
-
-      const res = await fetch(`${API}/flutterwave/init`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          type: "booking",
-          bookingId,
-          redirectUrl,
-        }),
-      });
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok || !data?.ok || !data?.link) {
-        const msg = data?.message || "flutterwave_init_failed";
+        const msg = data?.message || `flutterwave_init_failed (${res.status})`;
         toast(`Flutterwave init failed: ${msg}`, "error");
         return;
       }
 
-      // Redirect to Flutterwave hosted payment page
       window.location.href = data.link;
     } catch (e) {
       console.error(e);
@@ -630,12 +624,18 @@ export default function ReservePage() {
                     </Field>
                   </div>
 
-                  <p className="text-xs text-gray-400">Past dates are blocked. Your check-out must be after check-in.</p>
+                  <p className="text-xs text-gray-400">
+                    Past dates are blocked. Your check-out must be after check-in.
+                  </p>
 
                   <div className="flex justify-between items-center mt-2">
                     <div className="text-xs text-gray-400">
-                      {datesValid && nights > 0 ? `${nights} night(s) selected` : "No valid dates yet"}
-                      {datesValid && !checkingAvail && !availOk ? <span className="ml-2 text-red-200">• Unavailable</span> : null}
+                      {datesValid && nights > 0
+                        ? `${nights} night(s) selected`
+                        : "No valid dates yet"}
+                      {datesValid && !checkingAvail && !availOk ? (
+                        <span className="ml-2 text-red-200">• Unavailable</span>
+                      ) : null}
                     </div>
                     <button
                       type="button"
@@ -662,7 +662,8 @@ export default function ReservePage() {
                   <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
                     <p className="text-white/90 font-semibold">Privacy & security</p>
                     <p className="text-xs text-white/60 mt-1 leading-relaxed">
-                      Contact details stay private. <strong>ID check opens 24hrs before arrival</strong> to unlock check-in details.
+                      Contact details stay private.{" "}
+                      <strong>ID check opens 24hrs before arrival</strong> to unlock check-in details.
                     </p>
                   </div>
 
@@ -698,9 +699,11 @@ export default function ReservePage() {
 
               {step === 3 && (
                 <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
-                  <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">Step 3 · Payment</h3>
+                  <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
+                    Step 3 · Payment
+                  </h3>
                   <p className="text-xs text-gray-400">
-                    We’ll create a temporary reservation hold, then start secure checkout. Use Flutterwave if Paystack is not yet activated.
+                    We’ll create a temporary reservation hold, then start secure checkout.
                   </p>
 
                   {!availOk && (
@@ -709,7 +712,6 @@ export default function ReservePage() {
                     </div>
                   )}
 
-                  {/* Provider toggle */}
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -763,7 +765,11 @@ export default function ReservePage() {
                     )}
                   </div>
 
-                  {holdInfo?.expiresAt && <div className="mt-3 text-xs text-amber-300">Your provisional hold will expire soon.</div>}
+                  {holdInfo?.expiresAt && (
+                    <div className="mt-3 text-xs text-amber-300">
+                      Your provisional hold will expire soon.
+                    </div>
+                  )}
 
                   <button
                     type="button"
@@ -778,7 +784,9 @@ export default function ReservePage() {
 
             <aside className="space-y-4">
               <div className="rounded-3xl bg-[#05090f] border border-white/10 p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,.8)]">
-                <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">Booking summary</h3>
+                <h3 className="text-sm font-semibold mb-2 uppercase tracking-[0.16em] text-white/70">
+                  Booking summary
+                </h3>
                 {listing ? (
                   <>
                     <p className="text-sm text-white/90">{listing.title}</p>
@@ -786,20 +794,27 @@ export default function ReservePage() {
                       {listing.area || "—"}, {listing.city || "Nigeria"}
                     </p>
                     <div className="mt-3 text-sm text-gray-300">
-                      {ngn(listing.pricePerNight || 0)} <span className="text-xs text-white/60">/ night</span>
+                      {ngn(listing.pricePerNight || 0)}{" "}
+                      <span className="text-xs text-white/60">/ night</span>
                     </div>
                     <div className="mt-3 text-sm">
                       {nights > 0 ? (
                         <>
                           {nights} night(s) · {guests} guest(s)
                           <br />
-                          <span className="font-semibold text-amber-300">Total: {ngn(total)}</span>
+                          <span className="font-semibold text-amber-300">
+                            Total: {ngn(total)}
+                          </span>
                           {!checkingAvail && !availOk ? (
-                            <div className="mt-2 text-xs text-red-200">Dates unavailable — choose different dates.</div>
+                            <div className="mt-2 text-xs text-red-200">
+                              Dates unavailable — choose different dates.
+                            </div>
                           ) : null}
                         </>
                       ) : (
-                        <span className="text-gray-500 text-xs">Select dates to see your total.</span>
+                        <span className="text-gray-500 text-xs">
+                          Select dates to see your total.
+                        </span>
                       )}
                     </div>
                   </>
@@ -809,8 +824,13 @@ export default function ReservePage() {
               </div>
 
               <div className="rounded-3xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
-                <p>Your payment is processed securely via Flutterwave/Paystack. NestaNg never stores your full card details.</p>
-                <p>After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.</p>
+                <p>
+                  Your payment is processed securely via Flutterwave/Paystack. NestaNg never stores your full
+                  card details.
+                </p>
+                <p>
+                  After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
+                </p>
               </div>
             </aside>
           </div>
