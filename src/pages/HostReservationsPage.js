@@ -1,6 +1,6 @@
 // src/pages/HostReservationsPage.js
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   collection,
   getDocs,
@@ -12,8 +12,18 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
+import { useToast } from "../context/ToastContext";
+
+// ✅ Set this once if your route differs
+const HOST_DASHBOARD_PATH = "/host-dashboard";
+
+// ✅ API base normalization (prevents /api/api mistakes)
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
 
 const ngn = (n) => `₦${Number(n || 0).toLocaleString()}`;
+
+const sleep = (ms = 300) => new Promise((r) => setTimeout(r, ms));
 
 const toDateObj = (v) => {
   if (!v) return null;
@@ -43,12 +53,28 @@ const isPast = (checkOut) => {
   return d < today;
 };
 
-const isAttentionStatus = (statusRaw) => {
+// ✅ Normalized “needs attention”
+const isAttentionStatus = (statusRaw, row = {}) => {
   const s = String(statusRaw || "").toLowerCase();
+
+  const flags =
+    !!row?.cancelRequested ||
+    !!row?.cancellationRequested ||
+    s === "cancel_request" ||
+    s === "refund_requested" ||
+    s === "date-change" ||
+    s === "change-request" ||
+    s === "paid-needs-review" ||
+    !!row?.paymentMismatch;
+
+  if (flags) return true;
+
   return [
     "pending",
     "hold",
     "hold-pending",
+    "awaiting_payment",
+    "reserved_unpaid",
     "change-request",
     "date-change",
     "cancel-request",
@@ -58,9 +84,10 @@ const isAttentionStatus = (statusRaw) => {
   ].includes(s);
 };
 
+// Normalise a Firestore booking row into something consistent
 const normalizeBooking = (docSnap) => {
-  const data = docSnap?.data ? docSnap.data() : docSnap || {};
-  const id = docSnap?.id || data.id;
+  const data = docSnap.data ? docSnap.data() : docSnap;
+  const id = docSnap.id || data.id;
 
   const listingTitle =
     data.listingTitle || data.listing?.title || data.title || "Listing";
@@ -68,8 +95,9 @@ const normalizeBooking = (docSnap) => {
   const guestEmail = data.guestEmail || data.userEmail || data.email || "—";
 
   const amount =
-    Number(data.amountN ?? data.total ?? data.totalAmount ?? data.amount ?? 0) ||
-    0;
+    Number(
+      data.amountLockedN ?? data.amountN ?? data.total ?? data.totalAmount ?? data.amount ?? 0
+    ) || 0;
 
   return {
     id,
@@ -80,93 +108,45 @@ const normalizeBooking = (docSnap) => {
     checkIn: data.checkIn ?? data.checkin ?? data.startDate ?? data.from,
     checkOut: data.checkOut ?? data.checkout ?? data.endDate ?? data.to,
     createdAt: data.createdAt ?? data.created ?? data.created_on,
-    paidAt: data.paidAt ?? null,
   };
 };
-
-function normalizeStatus(s) {
-  return String(s || "").trim().toLowerCase();
-}
-
-function isConfirmedStatus(s) {
-  const v = normalizeStatus(s);
-  return ["confirmed", "paid", "completed"].includes(v);
-}
-
-function isPendingStatus(s) {
-  const v = normalizeStatus(s);
-  return ["pending", "hold", "reserved_unpaid", "awaiting_payment"].includes(v);
-}
-
-function isCancelledStatus(s) {
-  const v = normalizeStatus(s);
-  return v === "cancelled" || v === "canceled";
-}
-
-function isRefundedStatus(s) {
-  const v = normalizeStatus(s);
-  return v === "refunded";
-}
-
-// “Active pipeline” (booked but not reversed)
-function isActiveBookedStatus(s) {
-  const v = normalizeStatus(s);
-  if (isCancelledStatus(v) || isRefundedStatus(v)) return false;
-  // pending + confirmed + paid + completed all count as active booked
-  return isPendingStatus(v) || isConfirmedStatus(v) || v === "paid" || v === "completed";
-}
-
-function needsAttention(row) {
-  const s = normalizeStatus(row?.status);
-  return (
-    isAttentionStatus(s) ||
-    Boolean(row?.cancelRequested) ||
-    Boolean(row?.cancellationRequested) ||
-    s === "cancel_request" ||
-    s === "refund_requested"
-  );
-}
 
 export default function HostReservationsPage({
   ownerField = "hostId",
   pageTitle = "Host reservations",
 }) {
   const { user } = useAuth();
+  const { showToast: toast } = useToast();
   const nav = useNavigate();
+  const location = useLocation();
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+
   const [tab, setTab] = useState("all"); // all | upcoming | past | attention
   const [selected, setSelected] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [busy, setBusy] = useState({}); // per-row action state
 
-  const markBusy = (id, flag) =>
-    setBusy((prev) => ({ ...prev, [id]: flag }));
-
-  const closeDrawer = useCallback(() => {
-    setDrawerOpen(false);
-    setSelected(null);
+  // ✅ Allow preselecting tab via query (?tab=attention)
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search || "");
+    const t = String(sp.get("tab") || "").toLowerCase();
+    if (t && ["all", "upcoming", "past", "attention"].includes(t)) setTab(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const openDrawerFor = (row) => {
-    setSelected(row);
-    setDrawerOpen(true);
-  };
-
-  const loadBookings = useCallback(async () => {
+  const reload = useCallback(async () => {
     if (!user?.uid) return;
     setLoading(true);
     setErr("");
-
     try {
       const qRef = query(
         collection(db, "bookings"),
         where(ownerField, "==", user.uid),
         orderBy("createdAt", "desc")
       );
-
       const snap = await getDocs(qRef);
       const out = snap.docs.map((d) => normalizeBooking(d));
       setRows(out);
@@ -183,71 +163,76 @@ export default function HostReservationsPage({
     let alive = true;
     (async () => {
       if (!alive) return;
-      await loadBookings();
+      await reload();
     })();
     return () => {
       alive = false;
     };
-  }, [loadBookings]);
+  }, [reload]);
 
   const filtered = useMemo(() => {
     if (!Array.isArray(rows)) return [];
     if (tab === "upcoming") return rows.filter((r) => !isPast(r.checkOut));
     if (tab === "past") return rows.filter((r) => isPast(r.checkOut));
-    if (tab === "attention") return rows.filter((r) => needsAttention(r));
+    if (tab === "attention") return rows.filter((r) => isAttentionStatus(r.status, r));
     return rows;
   }, [rows, tab]);
 
-  /**
-   * ✅ Normalized counters + revenue logic
-   * - pendingCount: only pending bucket
-   * - confirmedCount: only confirmed bucket
-   * - attentionCount: independent “needs attention”
-   *
-   * ✅ Revenue:
-   * - grossBookedActive: active pipeline (excludes cancelled/refunded)
-   * - grossPaid: confirmed/paid/completed only
-   * - grossRefunded: refunded only
-   */
   const stats = useMemo(() => {
-    let confirmedCount = 0;
-    let pendingCount = 0;
-    let cancelledCount = 0;
-    let refundedCount = 0;
-    let attentionCount = 0;
-
-    let grossBookedActive = 0;
-    let grossPaid = 0;
-    let grossRefunded = 0;
+    let confirmed = 0;
+    let pending = 0;
+    let cancelled = 0;
+    let refunded = 0;
+    let attention = 0;
+    let gross = 0;
 
     rows.forEach((r) => {
-      const s = normalizeStatus(r.status);
-      const amt = Number(r.amount || r.amountN || 0) || 0;
+      const s = String(r.status || "").toLowerCase();
+      gross += r.amount || 0;
 
-      if (isConfirmedStatus(s)) confirmedCount += 1;
-      if (isPendingStatus(s)) pendingCount += 1;
-      if (isCancelledStatus(s)) cancelledCount += 1;
-      if (isRefundedStatus(s)) refundedCount += 1;
+      if (["confirmed", "paid", "completed"].includes(s)) confirmed += 1;
+      else if (["pending", "hold", "reserved_unpaid", "awaiting_payment"].includes(s)) pending += 1;
+      else if (["cancelled", "canceled"].includes(s)) cancelled += 1;
+      else if (s === "refunded") refunded += 1;
 
-      if (needsAttention(r)) attentionCount += 1;
-
-      if (isActiveBookedStatus(s)) grossBookedActive += amt;
-      if (isConfirmedStatus(s)) grossPaid += amt;
-      if (isRefundedStatus(s)) grossRefunded += amt;
+      if (isAttentionStatus(s, r)) attention += 1;
     });
 
-    return {
-      total: rows.length,
-      confirmedCount,
-      pendingCount,
-      cancelledCount,
-      refundedCount,
-      attentionCount,
-      grossBookedActive,
-      grossPaid,
-      grossRefunded,
-    };
+    return { confirmed, pending, cancelled, refunded, attention, gross, total: rows.length };
   }, [rows]);
+
+  const openDrawerFor = (row) => {
+    setSelected(row);
+    setDrawerOpen(true);
+  };
+
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    setSelected(null);
+  };
+
+  const markBusy = (id, flag) => setBusy((prev) => ({ ...prev, [id]: flag }));
+
+  // ✅ Luxury redirect helper
+  // - preserves current tab
+  // - triggers host dashboard refresh
+  const redirectToDashboardRefresh = useCallback(
+    async (fromTab = "all", actionLabel = "") => {
+      const qp = new URLSearchParams();
+      qp.set("refresh", "1");
+      qp.set("fromTab", String(fromTab || "all"));
+      if (actionLabel) qp.set("action", actionLabel);
+
+      // micro pause for “luxury” feel
+      await sleep(350);
+
+      nav(`${HOST_DASHBOARD_PATH}?${qp.toString()}`, {
+        replace: true,
+        state: { refresh: true, from: "host-reservations", fromTab, action: actionLabel },
+      });
+    },
+    [nav]
+  );
 
   // Host-side actions
   const handleConfirm = async (row) => {
@@ -263,28 +248,14 @@ export default function HostReservationsPage({
         updatedAt: new Date(),
       });
 
-      // optimistic update
-      setRows((list) =>
-        list.map((b) =>
-          b.id === row.id
-            ? {
-                ...b,
-                status: "confirmed",
-                cancelRequested: false,
-                cancellationRequested: false,
-              }
-            : b
-        )
-      );
-
-      // ✅ UX: close + refresh (source of truth)
       closeDrawer();
-      await loadBookings();
+      await reload();
 
-      alert("Booking confirmed.");
+      toast("Booking confirmed ✅", "success");
+      await redirectToDashboardRefresh(tab, "confirmed");
     } catch (e) {
       console.error("[HostReservations] confirm failed:", e);
-      alert("Could not confirm booking. Please try again.");
+      toast("Could not confirm booking. Please try again.", "error");
     } finally {
       markBusy(row.id, false);
     }
@@ -301,22 +272,15 @@ export default function HostReservationsPage({
         updatedAt: new Date(),
       });
 
-      // optimistic update
-      setRows((list) =>
-        list.map((b) => (b.id === row.id ? { ...b, status: "cancelled" } : b))
-      );
-
-      // ✅ UX: auto-close drawer + refresh
       closeDrawer();
-      await loadBookings();
+      await reload();
 
-      // Optional: keep host from staying in attention tab with now-cancelled booking
-      setTab("all");
-
-      alert("Booking cancelled.");
+      // Keep tab context (if they were in “attention”, keep that context)
+      toast("Booking cancelled ✅", "info");
+      await redirectToDashboardRefresh(tab, "cancelled");
     } catch (e) {
       console.error("[HostReservations] cancel failed:", e);
-      alert("Could not cancel booking. Please try again.");
+      toast("Could not cancel booking. Please try again.", "error");
     } finally {
       markBusy(row.id, false);
     }
@@ -338,19 +302,14 @@ export default function HostReservationsPage({
         updatedAt: new Date(),
       });
 
-      // optimistic update
-      setRows((list) =>
-        list.map((b) => (b.id === row.id ? { ...b, status: "refunded" } : b))
-      );
-
-      // ✅ UX: close + refresh
       closeDrawer();
-      await loadBookings();
+      await reload();
 
-      alert("Booking marked as refunded.");
+      toast("Marked as refunded ✅", "success");
+      await redirectToDashboardRefresh(tab, "refunded");
     } catch (e) {
       console.error("[HostReservations] refund failed:", e);
-      alert("Could not update refund status. Please try again.");
+      toast("Could not update refund status. Please try again.", "error");
     } finally {
       markBusy(row.id, false);
     }
@@ -361,10 +320,7 @@ export default function HostReservationsPage({
     nav(`/booking/${row.id}/chat`, {
       state: {
         booking: row,
-        from:
-          ownerField === "partnerUid"
-            ? "partner-reservations"
-            : "host-reservations",
+        from: ownerField === "partnerUid" ? "partner-reservations" : "host-reservations",
       },
     });
   };
@@ -379,8 +335,7 @@ export default function HostReservationsPage({
               {pageTitle || "Host reservations"}
             </h1>
             <p className="text-sm text-white/70 mt-1">
-              Review guest bookings, confirm or decline stays, and open receipts
-              and check-in guides from one place.
+              Review guest bookings, confirm or decline stays, and open receipts and check-in guides from one place.
             </p>
           </div>
           <button
@@ -394,18 +349,11 @@ export default function HostReservationsPage({
         {/* KPI row */}
         <section className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4 text-xs md:text-sm">
           <Kpi label="Total" value={stats.total} />
-          <Kpi label="Confirmed" value={stats.confirmedCount} tone="emerald" />
-          <Kpi label="Pending" value={stats.pendingCount} tone="amber" />
-          <Kpi label="Cancelled" value={stats.cancelledCount} tone="rose" />
-          <Kpi label="Refunded" value={stats.refundedCount} />
-          <Kpi label="Needs attention" value={stats.attentionCount} tone="amberStrong" />
-        </section>
-
-        {/* Revenue summary (clean + honest) */}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4 text-xs md:text-sm">
-          <Kpi label="Gross booked (active)" value={ngn(stats.grossBookedActive)} />
-          <Kpi label="Gross paid" value={ngn(stats.grossPaid)} tone="emerald" />
-          <Kpi label="Gross refunded" value={ngn(stats.grossRefunded)} tone="rose" />
+          <Kpi label="Confirmed" value={stats.confirmed} tone="emerald" />
+          <Kpi label="Pending" value={stats.pending} tone="amber" />
+          <Kpi label="Cancelled" value={stats.cancelled} tone="rose" />
+          <Kpi label="Refunded" value={stats.refunded} />
+          <Kpi label="Needs attention" value={stats.attention} tone="amberStrong" />
         </section>
 
         {/* Tabs */}
@@ -428,16 +376,8 @@ export default function HostReservationsPage({
               {label}
             </button>
           ))}
-
-          <button
-            onClick={loadBookings}
-            className="ml-auto px-3 py-1.5 rounded-full text-xs border bg-white/5 border-white/15 text-white/80 hover:bg-white/10"
-          >
-            Refresh
-          </button>
         </div>
 
-        {/* Content */}
         {loading && (
           <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm">
             Loading reservations…
@@ -453,17 +393,15 @@ export default function HostReservationsPage({
         {!loading && !err && filtered.length === 0 && (
           <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm">
             <p className="font-semibold mb-1">No reservations found.</p>
-            <p className="text-white/70">
-              Once guests book your listing, reservations will appear here.
-            </p>
+            <p className="text-white/70">Once guests book your listing, reservations will appear here.</p>
           </div>
         )}
 
         {!loading && !err && filtered.length > 0 && (
           <section className="space-y-3">
             {filtered.map((row) => {
-              const s = normalizeStatus(row.status);
-              const showAttentionBadge = needsAttention(row);
+              const s = String(row.status || "").toLowerCase();
+              const showAttentionBadge = isAttentionStatus(s, row);
               const id = row.id;
 
               return (
@@ -476,24 +414,18 @@ export default function HostReservationsPage({
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="font-semibold truncate">{row.listingTitle}</p>
-                        <StatusChip status={s} />
+                        <StatusChip status={s} row={row} />
                         {showAttentionBadge && (
                           <span className="inline-flex items-center rounded-full border border-amber-400/50 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-200">
                             Needs attention
                           </span>
                         )}
                       </div>
-
-                      <p className="text-xs text-white/60 mt-0.5">
-                        Guest: {row.guestEmail}
-                      </p>
-
+                      <p className="text-xs text-white/60 mt-0.5">Guest: {row.guestEmail}</p>
                       <p className="text-xs text-white/50 mt-0.5">
-                        {fmtDate(row.checkIn)} → {fmtDate(row.checkOut)} ·{" "}
-                        {row.guests || 1} guest(s)
+                        {fmtDate(row.checkIn)} → {fmtDate(row.checkOut)} · {row.guests || 1} guest(s)
                       </p>
                     </div>
-
                     <div className="text-right text-xs md:text-sm">
                       <div className="font-semibold">{ngn(row.amount || 0)}</div>
                       <div className="text-white/50 mt-0.5">
@@ -502,9 +434,7 @@ export default function HostReservationsPage({
                           {(row.reference || row.id || "—").toString().slice(0, 10)}
                         </span>
                       </div>
-                      {busy[id] && (
-                        <div className="text-[10px] text-amber-200 mt-1">Updating…</div>
-                      )}
+                      {busy[id] && <div className="text-[10px] text-amber-200 mt-1">Updating…</div>}
                     </div>
                   </div>
                 </button>
@@ -546,23 +476,24 @@ function Kpi({ label, value, tone }) {
     <div className={`rounded-2xl px-3 py-2 border ${toneClasses} flex flex-col justify-between`}>
       <div className="text-[10px] uppercase tracking-[0.16em] text-white/55">{label}</div>
       <div className="mt-1 text-base md:text-lg font-semibold">
-        {typeof value === "string" ? value : Number(value || 0).toLocaleString()}
+        {Number(value || 0).toLocaleString()}
       </div>
     </div>
   );
 }
 
-function StatusChip({ status }) {
+function StatusChip({ status, row }) {
   const s = String(status || "").toLowerCase();
-  let classes = "border-slate-400/50 text-slate-200 bg-slate-500/10";
+  const attention = isAttentionStatus(s, row);
 
-  if (s === "confirmed" || s === "paid" || s === "completed") {
+  let classes = "border-slate-400/50 text-slate-200 bg-slate-500/10";
+  if (["confirmed", "paid", "completed"].includes(s)) {
     classes = "border-emerald-400/60 text-emerald-200 bg-emerald-500/10";
-  } else if (s === "cancelled" || s === "canceled") {
+  } else if (["cancelled", "canceled"].includes(s)) {
     classes = "border-rose-400/60 text-rose-200 bg-rose-500/10";
   } else if (s === "refunded") {
     classes = "border-amber-400/60 text-amber-200 bg-amber-500/10";
-  } else if (isAttentionStatus(s)) {
+  } else if (attention) {
     classes = "border-amber-400/60 text-amber-100 bg-amber-500/10";
   }
 
@@ -575,16 +506,22 @@ function StatusChip({ status }) {
 
 /* ---------- Booking detail drawer ---------- */
 
-function BookingDetailDrawer({
-  open,
-  booking,
-  onClose,
-  onConfirm,
-  onCancel,
-  onRefund,
-  onMessage,
-}) {
+function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRefund, onMessage }) {
   const nav = useNavigate();
+  const { user } = useAuth();
+
+  const [contact, setContact] = useState(null);
+  const [contactLoading, setContactLoading] = useState(false);
+  const [contactErr, setContactErr] = useState("");
+
+  useEffect(() => {
+    if (open && booking?.id) {
+      setContact(null);
+      setContactErr("");
+      setContactLoading(false);
+    }
+  }, [open, booking?.id]);
+
   if (!open || !booking) return null;
 
   const s = String(booking.status || "").toLowerCase();
@@ -600,33 +537,93 @@ function BookingDetailDrawer({
     const ci = toDateObj(booking.checkIn);
     const co = toDateObj(booking.checkOut);
     const fmt = (d) =>
-      d
-        ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
-        : "—";
+      d ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
     return `${fmt(ci)} → ${fmt(co)}`;
   };
 
   const amount = booking.amountN || booking.total || booking.amount || 0;
 
+  const fetchContact = async () => {
+    if (!booking?.id) return;
+
+    setContactLoading(true);
+    setContactErr("");
+    try {
+      let token = "";
+      try {
+        token = user ? await user.getIdToken() : "";
+      } catch {
+        token = "";
+      }
+
+      const res = await fetch(`${API_BASE}/bookings/${booking.id}/contact`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!res.ok) {
+        const msg =
+          payload?.message ||
+          payload?.error ||
+          (res.status === 403
+            ? "Contact details are locked right now (timing/subscription/KYC rule)."
+            : "Could not fetch contact details.");
+        setContactErr(msg);
+        setContact(null);
+        return;
+      }
+
+      setContact({ phone: payload?.phone || null, email: payload?.email || null });
+
+      if (!payload?.phone && !payload?.email) setContactErr("No contact details found for this booking.");
+    } catch (e) {
+      console.error("fetchContact failed:", e);
+      setContactErr("Network error: could not fetch contact details.");
+      setContact(null);
+    } finally {
+      setContactLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-sm">
       <div className="w-full max-w-md h-full bg-[#05070b] border-l border-white/10 shadow-2xl flex flex-col">
-        <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-white">Booking details</h2>
-            <p className="text-xs text-white/50">
-              {booking.listingTitle || booking.title || "Listing"} ·{" "}
-              {booking.guestEmail || "guest"}
-            </p>
-          </div>
+        {/* Header */}
+        <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2">
           <button
             onClick={onClose}
             className="px-2 py-1 rounded-lg bg-white/5 border border-white/15 text-xs hover:bg-white/10"
+          >
+            ← Back
+          </button>
+
+          <div className="text-right">
+            <h2 className="text-sm font-semibold text-white">Booking details</h2>
+            <p className="text-[11px] text-white/50 truncate max-w-[220px]">
+              {booking.listingTitle || booking.title || "Listing"} · {booking.guestEmail || "guest"}
+            </p>
+          </div>
+
+          <button
+            onClick={onClose}
+            className="px-2 py-1 rounded-lg bg-white/5 border border-white/15 text-xs hover:bg-white/10"
+            title="Close"
           >
             ✕
           </button>
         </div>
 
+        {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 text-sm">
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
             <div className="text-xs text-white/60">Dates</div>
@@ -647,7 +644,7 @@ function BookingDetailDrawer({
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
             <div className="text-xs text-white/60">Status</div>
             <div className="mt-1 inline-flex items-center gap-2">
-              <StatusChip status={s} />
+              <StatusChip status={s} row={booking} />
               {booking.cancelRequested ||
               booking.cancellationRequested ||
               s === "cancel_request" ||
@@ -658,8 +655,57 @@ function BookingDetailDrawer({
               ) : null}
             </div>
           </div>
+
+          {/* Contact reveal */}
+          <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs text-white/60">Contact details</div>
+                <div className="text-[11px] text-white/45 mt-1">
+                  Locked until eligible (confirmed booking + timing/subscription/KYC rules).
+                </div>
+              </div>
+
+              <button
+                onClick={fetchContact}
+                disabled={contactLoading}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+                  contactLoading
+                    ? "bg-white/5 border-white/10 text-white/40 cursor-not-allowed"
+                    : "bg-amber-500 text-black border-amber-400 hover:brightness-110"
+                }`}
+              >
+                {contactLoading ? "Checking…" : "Reveal"}
+              </button>
+            </div>
+
+            {contactErr ? (
+              <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-100">
+                {contactErr}
+              </div>
+            ) : null}
+
+            {contact && (contact.phone || contact.email) ? (
+              <div className="mt-3 space-y-2">
+                {contact.phone ? (
+                  <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <div className="text-xs text-white/60">Phone</div>
+                    <div className="text-sm font-semibold">{contact.phone}</div>
+                  </div>
+                ) : null}
+
+                {contact.email ? (
+                  <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <div className="text-xs text-white/60">Email</div>
+                    <div className="text-sm font-semibold">{contact.email}</div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
 
+        {/* Footer actions */}
         <div className="px-4 py-3 border-t border-white/10 flex flex-wrap items-center gap-3">
           <div className="flex flex-wrap gap-2">
             <button

@@ -100,6 +100,45 @@ function safeLower(v) {
   return String(v ?? "").trim().toLowerCase();
 }
 
+// Paystack prefers metadata + custom_fields sometimes.
+// We'll keep metadata clean and auditable.
+function buildPaystackMetadata({
+  bookingId,
+  reference,
+  listing,
+  checkIn,
+  checkOut,
+  guests,
+  nights,
+  amountN,
+}) {
+  const listingId = listing?.id || "";
+  const listingTitle = listing?.title || "Listing";
+
+  return {
+    // routing
+    type: "booking",
+    paymentType: "booking",
+
+    // strong linkage
+    bookingId: bookingId || "",
+    reference: reference || "",
+    listingId,
+
+    // booking snapshot
+    listingTitle,
+    checkIn: checkIn || "",
+    checkOut: checkOut || "",
+    guests: Number(guests || 1),
+    nights: Number(nights || 1),
+    amountN: Number(amountN || 0),
+
+    // optional: helps dashboards later
+    brand: "NestaNg",
+    channel: "web",
+  };
+}
+
 export default function ReservePage() {
   const { user } = useAuth();
   const { showToast: toast } = useToast();
@@ -135,7 +174,7 @@ export default function ReservePage() {
   const [checkOut, setCheckOut] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // ✅ include reference in holdInfo for Paystack/Flutterwave consistency
+  // include reference in holdInfo for Paystack/Flutterwave consistency
   const [holdInfo, setHoldInfo] = useState(null); // { id, reference, expiresAt }
 
   // availability state
@@ -208,6 +247,8 @@ export default function ReservePage() {
   const total = useMemo(() => {
     if (!listing) return 0;
     const perNight = Number(listing.pricePerNight || 0);
+    // NOTE: Your pricing is "per night * nights * guests" as provided.
+    // If later you move to flat nightly pricing (not per guest), change here.
     return Math.max(perNight * nights * Number(guests || 0), 0);
   }, [listing, nights, guests]);
 
@@ -219,7 +260,7 @@ export default function ReservePage() {
     user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail
   );
 
-  // ✅ include reference in redirect url so Success page can show it if needed
+  // include reference in redirect url so Success page can show it if needed
   function buildRedirectUrl(provider = "flutterwave", bookingId = "", reference = "") {
     const origin = window.location.origin;
     const qp = new URLSearchParams();
@@ -235,7 +276,7 @@ export default function ReservePage() {
     return `${origin}/reserve/success?${qp.toString()}`;
   }
 
-  // ✅ Availability via API helper (single source of truth)
+  // Availability via API helper (single source of truth)
   const checkAvailability = useCallback(
     async (ci, co) => {
       if (!listing?.id) return { ok: true, msg: "" };
@@ -352,10 +393,10 @@ export default function ReservePage() {
         ttlMinutes: 90,
       };
 
-      // ✅ Bearer token handled inside createBookingHoldAPI()
+      // Bearer token handled inside createBookingHoldAPI()
       const data = await createBookingHoldAPI(payload);
 
-      // ✅ store reference in state
+      // store reference in state
       setHoldInfo({
         id: data.bookingId,
         reference: data.reference,
@@ -366,7 +407,6 @@ export default function ReservePage() {
     } catch (e) {
       console.error(e);
 
-      // If user got logged out or token missing, this will be “Unauthorized”
       const msg = e?.message || "Could not create a reservation hold.";
       toast(msg, "error");
 
@@ -392,29 +432,33 @@ export default function ReservePage() {
       return;
     }
 
+    // Paystack expects kobo
     const amountKobo = Math.max(100, Math.floor(Number(total || 0) * 100));
     setBusy(true);
+
+    // ✅ PAYSTACK METADATA (this is what you requested)
+    const metadata = buildPaystackMetadata({
+      bookingId,
+      reference,
+      listing,
+      checkIn,
+      checkOut,
+      guests,
+      nights,
+      amountN: total,
+    });
 
     const handler = window.PaystackPop.setup({
       key,
       email: user?.email || "guest@example.com",
       amount: amountKobo,
       currency: "NGN",
+
+      // strong linkage (Paystack returns this reference in webhook)
       ref: reference,
 
-      // ✅✅✅ CRITICAL FIX: Add metadata so webhook can reliably resolve booking
-      metadata: {
-        type: "booking",
-        paymentType: "booking",
-        bookingId,
-        listingId: listing?.id || null,
-        userId: user?.uid || null,
-        checkIn: checkIn || null,
-        checkOut: checkOut || null,
-        guests: Number(guests || 1),
-        nights: Number(nights || 1),
-        amountN: Number(total || 0),
-      },
+      // ✅ metadata (Paystack will deliver this to webhook in data.metadata)
+      metadata,
 
       callback: function () {
         setBusy(false);
@@ -451,8 +495,6 @@ export default function ReservePage() {
 
       const redirectUrl = buildRedirectUrl("flutterwave", bookingId, reference);
 
-      // ✅ Your flutterwave/init is protected; it will succeed because the browser call
-      // must include Bearer token. We do it here directly (token refresh + retry).
       const doInit = async (token) => {
         const rawBase =
           (typeof import.meta !== "undefined" &&
@@ -517,8 +559,7 @@ export default function ReservePage() {
               Reservation not available
             </h2>
             <p className="mt-2 text-gray-200 text-sm">
-              You’re signed in as <strong>{role || "user"}</strong>. Only guests
-              can make reservations.
+              You’re signed in as <strong>{role || "user"}</strong>. Only guests can make reservations.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -557,8 +598,7 @@ export default function ReservePage() {
               Complete your reservation
             </h1>
             <p className="text-sm text-white/70 max-w-xl mt-1">
-              Pay securely to confirm. ID check opens{" "}
-              <strong>24hrs before arrival</strong> to unlock check-in details.
+              Pay securely to confirm. ID check opens <strong>24hrs before arrival</strong> to unlock check-in details.
             </p>
           </div>
 
@@ -581,8 +621,7 @@ export default function ReservePage() {
                       {listing?.title || "Listing"}
                     </h2>
                     <p className="text-xs text-gray-400 mt-1">
-                      Secure booking on NestaNg • contact details remain hidden
-                      until booking rules allow.
+                      Secure booking on NestaNg • contact details remain hidden until booking rules allow.
                     </p>
                   </>
                 )}
@@ -617,9 +656,7 @@ export default function ReservePage() {
                       type="number"
                       min={1}
                       value={guests}
-                      onChange={(e) =>
-                        setGuests(Math.max(1, Number(e.target.value || 1)))
-                      }
+                      onChange={(e) => setGuests(Math.max(1, Number(e.target.value || 1)))}
                     />
                   </Field>
 
@@ -669,9 +706,7 @@ export default function ReservePage() {
 
                   <div className="flex justify-between items-center mt-2">
                     <div className="text-xs text-gray-400">
-                      {datesValid && nights > 0
-                        ? `${nights} night(s) selected`
-                        : "No valid dates yet"}
+                      {datesValid && nights > 0 ? `${nights} night(s) selected` : "No valid dates yet"}
                       {datesValid && !checkingAvail && !availOk ? (
                         <span className="ml-2 text-red-200">• Unavailable</span>
                       ) : null}
@@ -701,9 +736,7 @@ export default function ReservePage() {
                   <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
                     <p className="text-white/90 font-semibold">Privacy & security</p>
                     <p className="text-xs text-white/60 mt-1 leading-relaxed">
-                      Contact details stay private.{" "}
-                      <strong>ID check opens 24hrs before arrival</strong> to unlock
-                      check-in details.
+                      Contact details stay private. <strong>ID check opens 24hrs before arrival</strong> to unlock check-in details.
                     </p>
                   </div>
 
@@ -865,12 +898,11 @@ export default function ReservePage() {
 
               <div className="rounded-3xl bg-white/5 border border-white/10 p-4 text-xs text-gray-400 space-y-2">
                 <p>
-                  Your payment is processed securely via Flutterwave/Paystack.
-                  NestaNg never stores your full card details.
+                  Your payment is processed securely via Flutterwave/Paystack. NestaNg never stores your full
+                  card details.
                 </p>
                 <p>
-                  After payment, you’ll complete a short check-in ID confirmation to
-                  unlock your check-in guide.
+                  After payment, you’ll complete a short check-in ID confirmation to unlock your check-in guide.
                 </p>
               </div>
             </aside>
@@ -879,10 +911,7 @@ export default function ReservePage() {
           <div className="mt-10 border-t border-white/5 pt-6">
             <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
               <span className="text-lg">🔒</span>
-              <span>
-                Secure checkout · Powered by Flutterwave/Paystack · Encrypted payment
-                processing
-              </span>
+              <span>Secure checkout · Powered by Flutterwave/Paystack · Encrypted payment processing</span>
             </div>
           </div>
         </div>
