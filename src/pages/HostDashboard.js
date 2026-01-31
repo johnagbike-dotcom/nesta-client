@@ -137,6 +137,33 @@ function EmptyState() {
   );
 }
 
+/* ---------- helpers ---------- */
+
+function safeLower(v) {
+  return String(v || "").toLowerCase();
+}
+
+function isPaidOrConfirmed(status) {
+  const s = safeLower(status);
+  return s === "paid" || s === "confirmed" || s === "completed";
+}
+
+function isPendingLike(status) {
+  const s = safeLower(status);
+  return (
+    s === "pending" ||
+    s === "awaiting" ||
+    s === "hold" ||
+    s === "reserved_unpaid" ||
+    s === "initialized"
+  );
+}
+
+function isCancelledLike(status) {
+  const s = safeLower(status);
+  return s === "cancelled" || s === "canceled";
+}
+
 /* ---------- Main component ---------- */
 
 export default function HostDashboard() {
@@ -203,7 +230,7 @@ export default function HostDashboard() {
   const goReservations = () => navigate("/host-reservations");
   const goWithdrawals = () => navigate("/withdrawals");
 
-  // ✅ Withdrawal gating (must come AFTER wallet + kyc exist)
+  // ✅ Withdrawal gating
   const walletAvailable = Number(wallet.availableN || 0);
   const walletPending = Number(wallet.pendingN || 0);
   const walletLifetime = Number(wallet.lifetimeEarnedN || 0);
@@ -234,7 +261,7 @@ export default function HostDashboard() {
 
         const colRef = collection(db, "listings");
 
-        // Primary: ownerId (your current standard)
+        // Primary: ownerId
         const qOwnerId = query(
           colRef,
           where("ownerId", "==", user.uid),
@@ -243,7 +270,7 @@ export default function HostDashboard() {
         const snap1 = await getDocs(qOwnerId);
         let list = snap1.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-        // ✅ Fallback: if list empty, try older schemas
+        // Fallback: ownerUid
         if (list.length === 0) {
           const qOwnerUid = query(
             colRef,
@@ -254,6 +281,7 @@ export default function HostDashboard() {
           list = snap2.docs.map((d) => ({ id: d.id, ...d.data() }));
         }
 
+        // Fallback: hostUid
         if (list.length === 0) {
           const qHostUid = query(
             colRef,
@@ -324,7 +352,6 @@ export default function HostDashboard() {
       try {
         setWallet((w) => ({ ...w, loading: true }));
 
-        // ✅ primary: users/{uid}
         const snap = await getDoc(doc(db, "users", user.uid));
         const d = snap.exists() ? snap.data() || {} : {};
 
@@ -377,16 +404,56 @@ export default function HostDashboard() {
   useEffect(() => {
     let alive = true;
 
-    async function loadRevenueAndBookings() {
-      if (!user?.uid) return;
+    async function runQuery(field, uid) {
       try {
         const qref = query(
           collection(db, "bookings"),
-          where("hostId", "==", user.uid),
+          where(field, "==", uid),
           orderBy("createdAt", "desc"),
           limit(200)
         );
-        const snap = await getDocs(qref);
+        return await getDocs(qref);
+      } catch (e) {
+        console.warn(`[host dashboard] bookings query failed for ${field}:`, e?.message || e);
+        return null;
+      }
+    }
+
+    async function loadRevenueAndBookings() {
+      if (!user?.uid) return;
+
+      try {
+        // ✅ IMPORTANT: your booking docs might store host in different fields depending on flow.
+        // So we merge results from multiple fields safely.
+        const snaps = await Promise.all([
+          runQuery("hostId", user.uid),     // legacy
+          runQuery("hostUid", user.uid),    // canonical
+          runQuery("ownerUid", user.uid),   // some flows
+          runQuery("partnerUid", user.uid), // partner-as-host flows
+        ]);
+
+        const seen = new Set();
+        const docs = [];
+
+        for (const s of snaps) {
+          if (!s) continue;
+          for (const d of s.docs) {
+            if (seen.has(d.id)) continue;
+            seen.add(d.id);
+            docs.push(d);
+          }
+        }
+
+        // sort desc by createdAt (best effort)
+        docs.sort((a, b) => {
+          const av = a.data()?.createdAt;
+          const bv = b.data()?.createdAt;
+          const at =
+            typeof av?.toDate === "function" ? av.toDate().getTime() : new Date(av || 0).getTime();
+          const bt =
+            typeof bv?.toDate === "function" ? bv.toDate().getTime() : new Date(bv || 0).getTime();
+          return bt - at;
+        });
 
         let grossSum = 0;
         let netSum = 0;
@@ -397,25 +464,21 @@ export default function HostDashboard() {
 
         const list = [];
 
-        snap.forEach((docu) => {
+        for (const docu of docs.slice(0, 300)) {
           const d = docu.data() || {};
-          const s = String(d.status || "").toLowerCase();
+          const s = safeLower(d.status || "");
 
           const gross = Number(d.amountLockedN ?? d.amountN ?? d.total ?? 0);
           const hostNet = Number(d.hostPayoutN ?? 0);
 
-          if (["confirmed", "completed", "paid"].includes(s)) {
+          if (isPaidOrConfirmed(s)) {
             grossSum += gross;
+            // if hostNet not tracked yet, treat as 0 (wallet will be truth)
             netSum += hostNet;
             bookingsConfirmed++;
-          } else if (
-            s === "pending" ||
-            s === "awaiting" ||
-            s === "hold" ||
-            s === "reserved_unpaid"
-          ) {
+          } else if (isPendingLike(s)) {
             bookingsPending++;
-          } else if (s === "cancelled" || s === "canceled") {
+          } else if (isCancelledLike(s)) {
             cancelled++;
           } else if (s === "refunded") {
             refunded++;
@@ -428,7 +491,7 @@ export default function HostDashboard() {
             amount: gross,
             createdAt: d.createdAt || null,
           });
-        });
+        }
 
         const needsAttention = bookingsPending + cancelled + refunded;
 
@@ -475,6 +538,7 @@ export default function HostDashboard() {
   }, [rows, q, min, max, status]);
 
   const nightlyPortfolio = useMemo(() => {
+    // ✅ Nightly portfolio = sum of active listing prices, not bookings
     return filtered
       .filter((l) => String(l.status || "active").toLowerCase() === "active")
       .reduce((sum, l) => sum + Number(l.pricePerNight || 0), 0);
@@ -562,44 +626,45 @@ export default function HostDashboard() {
             label="Active listing(s)"
             value={kpis.active}
             helper="Live stays on Nesta"
-            onClick={() => navigate("/manage-listings")}
+            onClick={goManageListings}
           />
+
+          {/* ✅ NO MORE 3 duplicated “buttons” */}
           <CardStat
             label="Confirmed bookings"
             value={rev.bookingsConfirmed}
-            helper="Completed / paid"
-            onClick={() => navigate("/host-reservations")}
+            helper="Paid / confirmed"
           />
           <CardStat
             label="Pending / upcoming"
             value={rev.bookingsPending}
             helper="Awaiting payment / arrival"
-            onClick={() => navigate("/host-reservations")}
           />
+
           <CardStat
             label="Nightly portfolio"
             currency
             value={nightlyPortfolio}
             helper="Across active listings"
-            onClick={() => navigate("/manage-listings")}
+            onClick={goManageListings}
           />
+
           <CardStat
             label="Gross revenue"
             currency
             value={rev.gross}
-            helper="Before fees"
-            onClick={() => navigate("/host-reservations")}
+            helper="All-time (before fees)"
           />
+
           <CardStat
             label="Host earnings (net)"
             currency
             value={rev.net}
-            helper="Booking net (est.)"
-            onClick={() => navigate("/host-reservations")}
+            helper="All-time (if tracked)"
           />
         </section>
 
-        {/* 🔒 Lock badge (MUST be inside return) */}
+        {/* 🔒 Lock badge */}
         {showWalletLockBadge && (
           <div className="flex items-center gap-2 text-[11px] text-amber-200/90">
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5">
@@ -618,7 +683,7 @@ export default function HostDashboard() {
           </div>
         )}
 
-        {/* ✅ HOST WALLET (WITHDRAWAL-AWARE) */}
+        {/* ✅ HOST WALLET */}
         <section className="grid gap-3 md:gap-4 md:grid-cols-3">
           <CardStat
             label="Wallet available"
@@ -664,18 +729,9 @@ export default function HostDashboard() {
             value={rev.needsAttention}
             helper="Pending / cancelled / refunded"
             tone="amber"
-            onClick={() => navigate("/host-reservations")}
           />
-          <CardStat
-            label="Cancelled"
-            value={rev.cancelled}
-            onClick={() => navigate("/host-reservations")}
-          />
-          <CardStat
-            label="Refunded"
-            value={rev.refunded}
-            onClick={() => navigate("/host-reservations")}
-          />
+          <CardStat label="Cancelled" value={rev.cancelled} />
+          <CardStat label="Refunded" value={rev.refunded} />
           <CardStat
             label="KYC status"
             value={isKycApproved ? 1 : 0}
@@ -693,12 +749,13 @@ export default function HostDashboard() {
             Manage your listing
           </button>
 
+          {/* ✅ single button for reservations */}
           <button
             type="button"
             onClick={goReservations}
             className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
           >
-            View reservations
+            Open reservations
           </button>
 
           <Link
@@ -876,16 +933,14 @@ export default function HostDashboard() {
                     </span>
                     <span
                       className={`px-2 py-1 rounded-full text-[10px] font-semibold capitalize ${
-                        (b.status || "").toLowerCase() === "confirmed" ||
-                        (b.status || "").toLowerCase() === "paid"
+                        isPaidOrConfirmed(b.status)
                           ? "bg-emerald-600/15 text-emerald-200 border border-emerald-500/30"
-                          : (b.status || "").toLowerCase() === "cancelled" ||
-                            (b.status || "").toLowerCase() === "canceled"
+                          : isCancelledLike(b.status)
                           ? "bg-rose-600/15 text-rose-200 border border-rose-500/30"
                           : "bg-slate-500/15 text-slate-200 border border-slate-500/30"
                       }`}
                     >
-                      {(b.status || "pending").toLowerCase()}
+                      {safeLower(b.status || "pending")}
                     </span>
                   </div>
                 </li>
