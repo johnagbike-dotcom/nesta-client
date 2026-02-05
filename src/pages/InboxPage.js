@@ -90,7 +90,11 @@ function initials(nameOrEmail = "") {
 
 function playSoftBeep() {
   try {
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    if (
+      typeof document !== "undefined" &&
+      document.visibilityState !== "visible"
+    )
+      return;
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return;
 
@@ -122,9 +126,11 @@ function playSoftBeep() {
 /* ───────────────── component ───────────────── */
 
 export default function InboxPage() {
-  const { user } = useAuth();
+  const { user, profile } = useAuth(); // ✅ useAuth profile is enough (no need for useUserProfile here)
   const nav = useNavigate();
   const uid = user?.uid || null;
+
+  const role = String(profile?.role || "").trim().toLowerCase();
 
   const [threads, setThreads] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -142,6 +148,15 @@ export default function InboxPage() {
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
   const lastUnreadSetRef = useRef(new Set());
+
+  // ✅ Smart dashboard routing (safe even if role not ready yet)
+  const goBackSmart = useCallback(() => {
+    const r = String(profile?.role || role || "").trim().toLowerCase();
+    if (r === "partner") return nav("/partner");
+    if (r === "host") return nav("/host");
+    if (r === "admin") return nav("/admin");
+    return nav("/dashboard");
+  }, [nav, profile?.role, role]);
 
   /* ───────────────── chats listener (ONLY chats collection, with fallback) ───────────────── */
   useEffect(() => {
@@ -251,7 +266,9 @@ export default function InboxPage() {
     }
 
     threads.forEach((t) => {
-      const otherId = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
+      const otherId = Array.isArray(t.participants)
+        ? t.participants.find((p) => p !== uid)
+        : null;
       if (!otherId) return;
       if (presenceUnsubsRef.current[t.id]) return;
 
@@ -284,8 +301,11 @@ export default function InboxPage() {
     const needed = new Set();
 
     threads.forEach((t) => {
-      const other = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
-      if (other && !counterCache[other] && !counterLoadingRef.current[other]) needed.add(other);
+      const other = Array.isArray(t.participants)
+        ? t.participants.find((p) => p !== uid)
+        : null;
+      if (other && !counterCache[other] && !counterLoadingRef.current[other])
+        needed.add(other);
     });
 
     if (needed.size === 0) return;
@@ -322,17 +342,21 @@ export default function InboxPage() {
     const mine = Array.isArray(threads) ? threads.slice() : [];
 
     const filtered = mine.filter((t) => {
-  const archivedMap = t.archived || {};
-  const isArchivedForMe = archivedMap[uid] === true;
-  return showArchived ? isArchivedForMe : !isArchivedForMe;
-});
+      const archivedMap = t.archived || {};
+      const isArchivedForMe = archivedMap[uid] === true;
+      return showArchived ? isArchivedForMe : !isArchivedForMe;
+    });
 
     const kw = qtext.trim().toLowerCase();
     const filteredByText = kw
       ? filtered.filter((t) => {
           const title = (t.listingTitle || "").toLowerCase();
           const last = lastMessageText(t.lastMessage).toLowerCase();
-          return title.includes(kw) || last.includes(kw) || (t.id || "").toLowerCase().includes(kw);
+          return (
+            title.includes(kw) ||
+            last.includes(kw) ||
+            (t.id || "").toLowerCase().includes(kw)
+          );
         })
       : filtered;
 
@@ -364,9 +388,12 @@ export default function InboxPage() {
     lastUnreadSetRef.current = currentUnread;
 
     if (newlyUnread.length > 0 && !showArchived) {
-      // Beep can be blocked by browser; harmless if it fails
       playSoftBeep();
-      setToast(newlyUnread.length === 1 ? "New message received" : `${newlyUnread.length} new messages received`);
+      setToast(
+        newlyUnread.length === 1
+          ? "New message received"
+          : `${newlyUnread.length} new messages received`
+      );
       clearTimeout(toastTimerRef.current);
       toastTimerRef.current = setTimeout(() => setToast(null), 2600);
     }
@@ -414,10 +441,13 @@ export default function InboxPage() {
 
     setLocalLastRead(uid, t.id);
 
-    const partnerUid = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
-    const listing = t.listingId ? { id: t.listingId, title: t.listingTitle || "Listing" } : null;
+    const partnerUid = Array.isArray(t.participants)
+      ? t.participants.find((p) => p !== uid)
+      : null;
+    const listing = t.listingId
+      ? { id: t.listingId, title: t.listingTitle || "Listing" }
+      : null;
 
-    // IMPORTANT: pass chatId so ChatPage forcedChatId works
     nav("/chat", {
       state: { chatId: t.id, partnerUid, listing, from: "inbox" },
     });
@@ -457,7 +487,23 @@ export default function InboxPage() {
       <main className="min-h-screen bg-[#0f1419] text-white px-4 py-8 motion-fade-in nesta-inbox">
         <div className="max-w-4xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h1 className="text-2xl font-extrabold">Inbox</h1>
-          <p className="text-gray-300 mt-1">Please sign in to view your conversations.</p>
+          <p className="text-gray-300 mt-1">
+            Please sign in to view your conversations.
+          </p>
+          <div className="mt-4 flex gap-2">
+            <button
+              onClick={() => nav(-1)}
+              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-sm"
+            >
+              ← Back
+            </button>
+            <button
+              onClick={() => nav("/login")}
+              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-semibold text-sm"
+            >
+              Go to login
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -472,46 +518,69 @@ export default function InboxPage() {
           </div>
         )}
 
-        <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6 motion-slide-up">
-          <div className="flex items-center gap-2">
-            <div>
-              <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Inbox</h1>
-              <p className="text-gray-300 mt-1">Messages with hosts &amp; verified partners</p>
+        <header className="flex flex-col gap-3 mb-6 motion-slide-up">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <div>
+                <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
+                  Inbox
+                </h1>
+                <p className="text-gray-300 mt-1">
+                  Messages with hosts &amp; verified partners
+                </p>
+              </div>
+
+              {unreadCount > 0 && (
+                <span
+                  className="ml-2 inline-flex items-center justify-center text-xs font-semibold px-2 py-0.5 rounded-full border border-amber-400/40 bg-amber-400/10 text-amber-300"
+                  title={`${unreadCount} unread ${unreadCount === 1 ? "chat" : "chats"}`}
+                >
+                  {unreadCount} new
+                </span>
+              )}
             </div>
 
-            {unreadCount > 0 && (
-              <span
-                className="ml-2 inline-flex items-center justify-center text-xs font-semibold px-2 py-0.5 rounded-full border border-amber-400/40 bg-amber-400/10 text-amber-300"
-                title={`${unreadCount} unread ${unreadCount === 1 ? "chat" : "chats"}`}
+            {/* ✅ Back controls */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => nav(-1)}
+                className="px-3 py-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-sm"
+                title="Go back"
               >
-                {unreadCount} new
-              </span>
-            )}
-          </div>
+                ← Back
+              </button>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <label className="inline-flex items-center gap-2 text-sm text-gray-300">
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={showArchived}
-                onChange={(e) => setShowArchived(e.target.checked)}
-              />
-              Show archived
-            </label>
+              <button
+                onClick={goBackSmart}
+                className="px-3 py-1.5 rounded-xl bg-amber-500 text-black border border-amber-400/40 hover:bg-amber-400 text-sm font-semibold btn-amber"
+                title="Back to dashboard"
+              >
+                Back to dashboard
+              </button>
 
-            <button
-              onClick={markAllAsRead}
-              disabled={unreadCount === 0}
-              className={`px-3 py-1.5 rounded-xl border text-sm ${
-                unreadCount === 0
-                  ? "bg-white/5 border-white/10 text-white/30 cursor-not-allowed"
-                  : "bg-amber-500 text-black border-amber-400/40 hover:bg-amber-400 btn-amber"
-              }`}
-              title="Mark all conversations as read"
-            >
-              Mark all read
-            </button>
+              <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                />
+                Show archived
+              </label>
+
+              <button
+                onClick={markAllAsRead}
+                disabled={unreadCount === 0}
+                className={`px-3 py-1.5 rounded-xl border text-sm ${
+                  unreadCount === 0
+                    ? "bg-white/5 border-white/10 text-white/30 cursor-not-allowed"
+                    : "bg-amber-500 text-black border-amber-400/40 hover:bg-amber-400 btn-amber"
+                }`}
+                title="Mark all conversations as read"
+              >
+                Mark all read
+              </button>
+            </div>
           </div>
         </header>
 
@@ -532,15 +601,21 @@ export default function InboxPage() {
 
         {!loading && rows.length === 0 && (
           <div className="rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
-            <p className="font-semibold mb-1">{showArchived ? "No archived conversations." : "No conversations yet."}</p>
-            <p className="text-gray-300">You’ll see your messages here after you contact a host/partner.</p>
+            <p className="font-semibold mb-1">
+              {showArchived ? "No archived conversations." : "No conversations yet."}
+            </p>
+            <p className="text-gray-300">
+              You’ll see your messages here after you contact a host/partner.
+            </p>
           </div>
         )}
 
         {!loading && rows.length > 0 && (
           <ul className="grid grid-cols-1 gap-3 motion-stagger">
             {rows.map((t) => {
-              const partnerUid = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
+              const partnerUid = Array.isArray(t.participants)
+                ? t.participants.find((p) => p !== uid)
+                : null;
 
               const unread = isUnread(t);
               const pinned = !!t?.pinned?.[uid];
@@ -549,17 +624,32 @@ export default function InboxPage() {
               const pres = presenceMap[t.id] || { typing: false, online: false };
 
               const counter = partnerUid ? counterCache[partnerUid] : null;
-              const displayName = counter?.displayName || (partnerUid ? partnerUid.slice(0, 8) : "User");
+              const displayName =
+                counter?.displayName ||
+                (partnerUid ? partnerUid.slice(0, 8) : "User");
               const avatar = counter?.photoURL || null;
 
               return (
-                <li key={t.id} className={["nesta-chat-row card-glow", unread ? "nesta-chat-unread" : ""].join(" ")}>
+                <li
+                  key={t.id}
+                  className={[
+                    "nesta-chat-row card-glow",
+                    unread ? "nesta-chat-unread" : "",
+                  ].join(" ")}
+                >
                   <div className="p-4 flex items-start gap-3">
                     <div className="relative shrink-0 w-12 h-12 rounded-xl bg-white/5 border border-white/10 overflow-hidden grid place-items-center">
                       {avatar ? (
-                        <img src={avatar} alt={displayName} className="w-full h-full object-cover" loading="lazy" />
+                        <img
+                          src={avatar}
+                          alt={displayName}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
                       ) : (
-                        <span className="text-sm font-bold text-amber-200">{initials(displayName)}</span>
+                        <span className="text-sm font-bold text-amber-200">
+                          {initials(displayName)}
+                        </span>
                       )}
 
                       {pres.online && (
@@ -571,7 +661,9 @@ export default function InboxPage() {
                         />
                       )}
 
-                      {unread && !pres.online && <span className="absolute -top-1 -right-1 nesta-unread-dot" />}
+                      {unread && !pres.online && (
+                        <span className="absolute -top-1 -right-1 nesta-unread-dot" />
+                      )}
                     </div>
 
                     <div className="flex-1 min-w-0">
@@ -600,7 +692,9 @@ export default function InboxPage() {
                           </span>
                         )}
 
-                        <span className="ml-auto text-xs text-gray-400">{timeAgo(t.updatedAt)}</span>
+                        <span className="ml-auto text-xs text-gray-400">
+                          {timeAgo(t.updatedAt)}
+                        </span>
                       </div>
 
                       <div className="mt-0.5 text-gray-300 line-clamp-1">

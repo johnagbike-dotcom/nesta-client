@@ -326,7 +326,6 @@ export default function AppRouter() {
 
               {/* =========================================================
                   ✅ ONLY HOST/PARTNER/ADMIN CAN SET PAYOUT DETAILS
-                  (Do NOT require KYC here; it can be done while KYC is pending)
                   ========================================================= */}
               <Route
                 path="/payout-setup"
@@ -354,7 +353,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
               <Route
                 path="/post/new"
                 element={
@@ -459,6 +457,14 @@ export default function AppRouter() {
 
               <Route path="/host-listings" element={<Navigate to="/manage-listings" replace />} />
               <Route path="/partner-listings" element={<Navigate to="/manage-listings" replace />} />
+
+              {/* ✅ Alias routes to prevent “bounce to home” when old paths exist */}
+              <Route path="/partner-reservations" element={<Navigate to="/reservations" replace />} />
+              <Route path="/partner-withdrawals" element={<Navigate to="/withdrawals" replace />} />
+              <Route path="/partner-wallet" element={<Navigate to="/withdrawals" replace />} />
+              <Route path="/partner-manage-listings" element={<Navigate to="/manage-listings" replace />} />
+              <Route path="/partner-add-listing" element={<Navigate to="/post/new" replace />} />
+              <Route path="/partner-inbox" element={<Navigate to="/inbox" replace />} />
 
               {/* ---------- Admin (consolidated) ---------- */}
               <Route

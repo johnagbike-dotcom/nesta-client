@@ -1,6 +1,6 @@
 // src/pages/admin/AdminDashboard.js
-import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import dayjs from "dayjs";
 import { getAuth } from "firebase/auth";
@@ -35,7 +35,6 @@ const money = (n) => {
   });
 };
 
-// Mobile-friendly compact money (₦11.1m, ₦235.8k etc.)
 const shortMoney = (n) => {
   const num = Number(n || 0);
   const abs = Math.abs(num);
@@ -51,10 +50,7 @@ const softNum = (n) => {
   return Number.isFinite(num) ? num.toLocaleString("en-NG") : "0";
 };
 
-const isAttentionStatus = (statusRaw) => {
-  const s = String(statusRaw || "").toLowerCase();
-  return ["pending", "hold", "hold-pending", "change-request", "date-change", "cancel-request"].includes(s);
-};
+const safeLower = (v) => String(v || "").toLowerCase();
 
 function safeDateLoose(v) {
   if (!v) return null;
@@ -80,26 +76,73 @@ function safeDateLoose(v) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+/** ✅ Normalized “needs attention” across the whole platform */
+const isAttentionRow = (row = {}) => {
+  const s = safeLower(row.status);
+
+  const flags =
+    !!row.paymentMismatch ||
+    s === "paid-needs-review" ||
+    !!row.cancelRequested ||
+    !!row.cancellationRequested ||
+    s === "cancel_request" ||
+    s === "cancel-request" ||
+    s === "refund_requested" ||
+    s === "refund-requested" ||
+    s === "date-change" ||
+    s === "change-request";
+
+  if (flags) return true;
+
+  return [
+    "pending",
+    "hold",
+    "hold-pending",
+    "awaiting_payment",
+    "reserved_unpaid",
+    "date-change",
+    "change-request",
+    "cancel-request",
+    "cancel_request",
+    "refund_requested",
+  ].includes(s);
+};
+
 // Normalise a booking document into a single shape we can render
 const normaliseBooking = (docSnap) => {
   const data = docSnap?.data ? docSnap.data() : docSnap || {};
   const createdAt = safeDateLoose(data.createdAt || data.created_at || data.date || data.timestamp);
 
+  // ✅ backend truth first
+  const amount = Number(
+    data.amountLockedN ??
+      data.amountN ??
+      data.totalAmount ??
+      data.total ??
+      data.amount ??
+      0
+  ) || 0;
+
   return {
     id: docSnap?.id || data.id,
-    listingTitle: data.listingTitle || data.listing || data.title || data.property || "—",
+    listingTitle: data.listingTitle || data.listing?.title || data.listing || data.title || data.property || "—",
     guestEmail: data.email || data.guestEmail || data.guest || "—",
-    status: data.status || "confirmed",
-    amount: Number(data.amountN ?? data.amount ?? data.total ?? data.totalAmount ?? 0) || 0,
+    status: data.status || "pending",
+    amount,
     nights: Number(data.nights ?? data.night ?? 0) || 0,
     createdAt,
     reference: data.reference || data.ref || "",
+    // ✅ bring these through so attention logic works
+    paymentMismatch: !!data.paymentMismatch,
+    cancelRequested: !!data.cancelRequested,
+    cancellationRequested: !!data.cancellationRequested,
   };
 };
 
 /* ------------------------------ component ------------------------------ */
 export default function AdminDashboard() {
   const nav = useNavigate();
+  const location = useLocation();
 
   const [bookings, setBookings] = useState([]);
   const [usersCount, setUsersCount] = useState(0);
@@ -109,7 +152,15 @@ export default function AdminDashboard() {
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState(null);
 
-  const load = async () => {
+  // ✅ refresh trigger (same pattern you approved)
+  const shouldForceRefresh = useMemo(() => {
+    const sp = new URLSearchParams(location.search || "");
+    const qp = sp.get("refresh");
+    const st = location.state || {};
+    return qp === "1" || st?.refresh === true;
+  }, [location.search, location.state]);
+
+  const load = useCallback(async () => {
     setLoading(true);
     setError("");
 
@@ -168,12 +219,37 @@ export default function AdminDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
+
+  // ✅ auto-refresh after admin actions that redirect back here
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!shouldForceRefresh) return;
+      await load();
+
+      // clean URL + clear state
+      if (!alive) return;
+      const sp = new URLSearchParams(location.search || "");
+      if (sp.get("refresh") === "1") {
+        sp.delete("refresh");
+        nav(
+          { pathname: location.pathname, search: sp.toString() ? `?${sp.toString()}` : "" },
+          { replace: true, state: {} }
+        );
+      } else {
+        nav(location.pathname, { replace: true, state: {} });
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [shouldForceRefresh, load, location.pathname, location.search, nav]);
 
   const stats = useMemo(() => {
     let totalRevenue = 0;
@@ -183,7 +259,7 @@ export default function AdminDashboard() {
     bookings.forEach((b) => {
       totalRevenue += b.amount || 0;
       totalNights += b.nights || 0;
-      if (isAttentionStatus(b.status)) needsAttention += 1;
+      if (isAttentionRow(b)) needsAttention += 1;
     });
 
     const totalBookings = bookings.length;
@@ -248,7 +324,6 @@ export default function AdminDashboard() {
 
       {/* KPI row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6">
-        {/* Total bookings */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#f5b800] to-[#ff7b1b] px-5 py-5 shadow-lg">
           <p className="uppercase tracking-[0.25em] text-xs text-black/70 font-bold">TOTAL BOOKINGS</p>
           <p className="mt-2 leading-none font-black text-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
@@ -257,38 +332,30 @@ export default function AdminDashboard() {
           <p className="text-black/60 text-sm mt-3">All-time across the platform</p>
         </div>
 
-        {/* Revenue */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#00735f] to-[#008c86] px-5 py-5 shadow-lg overflow-hidden">
           <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">REVENUE (RAW)</p>
-
-          <p
-            className="mt-2 leading-none font-black whitespace-nowrap text-[clamp(1.45rem,4.9vw,2.85rem)]"
-            title={money(stats.totalRevenue)}
-          >
+          <p className="mt-2 leading-none font-black whitespace-nowrap text-[clamp(1.45rem,4.9vw,2.85rem)]" title={money(stats.totalRevenue)}>
             <span className="hidden md:inline">{money(stats.totalRevenue)}</span>
             <span className="md:hidden">{shortMoney(stats.totalRevenue)}</span>
           </p>
-
           <p className="text-white/60 text-sm mt-3">From booking payloads (not settled)</p>
         </div>
 
-        {/* Needs attention */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#b5131d] to-[#a10b38] px-5 py-5 shadow-lg">
           <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">ITEMS NEEDING ATTENTION</p>
           <p className="mt-2 leading-none font-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(stats.needsAttention)}
           </p>
-          <p className="text-white/70 text-sm mt-3">Pending / cancel / date-change</p>
+          <p className="text-white/70 text-sm mt-3">Pending / changes / mismatches</p>
         </div>
 
-        {/* Users */}
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#0b65c7] to-[#002e6f] px-5 py-5 shadow-lg">
-          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">USERS / HOSTS (APPROX.)</p>
+          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">USERS (APPROX.)</p>
           <p className="mt-2 leading-none font-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(usersCount)}
           </p>
           <p className="text-white/60 text-sm mt-3">
-            {serverOverview ? "API: /admin/overview (users if provided) + Firestore fallback" : "Fallback: Firestore users collection"}
+            {serverOverview ? "API overview + Firestore fallback" : "Fallback: Firestore users collection"}
           </p>
         </div>
       </div>
@@ -311,7 +378,6 @@ export default function AdminDashboard() {
 
       {/* Middle section */}
       <div className="grid lg:grid-cols-[1.3fr_.7fr] gap-6 px-6 mt-6">
-        {/* Latest bookings */}
         <div className="rounded-3xl bg-[#101318] border border-white/5 shadow-inner overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4">
             <h2 className="text-white font-semibold text-lg">Latest bookings</h2>
@@ -324,36 +390,43 @@ export default function AdminDashboard() {
             {stats.latest.length === 0 ? (
               <div className="px-5 py-6 text-sm text-white/40">No bookings yet.</div>
             ) : (
-              stats.latest.map((b) => (
-                <div key={b.id} className="px-5 py-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-white font-semibold">{b.listingTitle}</p>
-                    <p className="text-xs text-white/35 mt-0.5">
-                      guest: {b.guestEmail} • ref: {String(b.reference || b.id || "—").slice(0, 22)}
-                      {b.createdAt ? (
-                        <>
-                          {" "}
-                          • <span className="text-white/35">{dayjs(b.createdAt).format("YYYY-MM-DD HH:mm")}</span>
-                        </>
+              stats.latest.map((b) => {
+                const s = safeLower(b.status);
+                const chip =
+                  s === "confirmed" || s === "paid" || s === "completed"
+                    ? "bg-emerald-600/15 text-emerald-200 border border-emerald-500/30"
+                    : s === "cancelled" || s === "canceled" || s === "refunded"
+                    ? "bg-rose-600/15 text-rose-200 border border-rose-500/30"
+                    : isAttentionRow(b)
+                    ? "bg-amber-500/15 text-amber-200 border border-amber-400/30"
+                    : "bg-slate-500/15 text-slate-200 border border-slate-500/30";
+
+                return (
+                  <div key={b.id} className="px-5 py-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-white font-semibold">{b.listingTitle}</p>
+                      <p className="text-xs text-white/35 mt-0.5">
+                        guest: {b.guestEmail} • ref: {String(b.reference || b.id || "—").slice(0, 22)}
+                        {b.createdAt ? (
+                          <>
+                            {" "}
+                            • <span className="text-white/35">{dayjs(b.createdAt).format("YYYY-MM-DD HH:mm")}</span>
+                          </>
+                        ) : null}
+                      </p>
+                      {b.paymentMismatch || safeLower(b.status) === "paid-needs-review" ? (
+                        <p className="mt-1 text-[11px] text-amber-200/80">⚠ needs review</p>
                       ) : null}
-                    </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <p className="text-white font-bold">{money(b.amount)}</p>
+                      <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${chip}`}>
+                        {s}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <p className="text-white font-bold">{money(b.amount)}</p>
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                        String(b.status || "").toLowerCase() === "confirmed"
-                          ? "bg-emerald-600/15 text-emerald-200 border border-emerald-500/30"
-                          : String(b.status || "").toLowerCase() === "cancelled"
-                          ? "bg-rose-600/15 text-rose-200 border border-rose-500/30"
-                          : "bg-slate-500/15 text-slate-200 border border-slate-500/30"
-                      }`}
-                    >
-                      {String(b.status || "draft").toLowerCase()}
-                    </span>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -371,7 +444,6 @@ export default function AdminDashboard() {
             <div className="text-xs text-white/70">Waiting for action</div>
           </button>
 
-          {/* ✅ NEW: payout setup verification */}
           <button
             onClick={() => nav("/admin/payout-setups")}
             className="rounded-2xl bg-gradient-to-r from-[#f5b800] to-[#ff7b1b] px-5 py-3 text-left font-semibold hover:brightness-110 text-black"

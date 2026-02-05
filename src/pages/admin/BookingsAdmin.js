@@ -1,8 +1,8 @@
 // src/pages/admin/BookingsAdmin.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import dayjs from "dayjs";
 import axios from "axios";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useToast } from "../../context/ToastContext";
 import AdminLayout from "../../layouts/AdminLayout";
 
@@ -21,10 +21,7 @@ import { getAuth } from "firebase/auth";
 
 /* axios base */
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
-    /\/$/,
-    ""
-  ),
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
   timeout: 20000,
   withCredentials: false,
 });
@@ -33,6 +30,7 @@ api.interceptors.request.use(async (config) => {
   const user = getAuth().currentUser;
   if (user) {
     const token = await user.getIdToken();
+    config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
@@ -60,25 +58,17 @@ function errMsg(e) {
 
 /**
  * Stronger status normalization:
- * - Trusts booking.status if present
- * - ALSO detects "paid/success" from common fields used by gateways/webhooks
- * - Keeps your custom flags (cancel req / date change)
- *
- * Returns one of:
- * pending | confirmed | failed | cancelled | refunded | paid | cancel_req | date_change
+ * Returns: pending | confirmed | failed | cancelled | refunded | paid | cancel_req | date_change
  */
 function normalizeStatus(rawStatus, booking) {
   const b = booking || {};
   const s = safeLower(rawStatus);
 
-  // --- Flags override ---
   const cancelReq =
     b?.cancellationRequested === true ||
     b?.cancelRequested === true ||
     b?.cancel_request === true ||
-    ["cancel_req", "cancel-requested", "cancel_requested", "cancel request"].includes(
-      s
-    );
+    ["cancel_req", "cancel-requested", "cancel_requested", "cancel request", "cancel_request", "cancel-request"].includes(s);
 
   if (cancelReq) return "cancel_req";
 
@@ -89,20 +79,13 @@ function normalizeStatus(rawStatus, booking) {
 
   if (dateChange) return "date_change";
 
-  // --- Direct status mapping (if server stored status properly) ---
-  if (["confirmed", "confirm", "booked", "accepted"].includes(s)) return "confirmed";
-  if (["paid", "payment_success", "payment-success", "success_paid"].includes(s))
-    return "paid";
+  if (["confirmed", "confirm", "booked", "accepted", "completed"].includes(s)) return "confirmed";
+  if (["paid", "payment_success", "payment-success", "success_paid"].includes(s)) return "paid";
   if (["failed", "fail", "declined", "error"].includes(s)) return "failed";
   if (["cancelled", "canceled", "cancel", "void"].includes(s)) return "cancelled";
-  if (["refunded", "refund", "refunded_full", "refund_success"].includes(s))
-    return "refunded";
-  if (["pending", "awaiting", "processing", "created", "initiated"].includes(s))
-    return "pending";
+  if (["refunded", "refund", "refunded_full", "refund_success"].includes(s)) return "refunded";
+  if (["pending", "awaiting", "processing", "created", "initiated", "initialized"].includes(s)) return "pending";
 
-  // --- Heuristics (THIS IS WHAT FIXES "PENDING EVERYWHERE") ---
-  // Many systems store payment result in other fields:
-  const gateway = safeLower(b.gateway || b.paymentGateway || b.payment?.gateway || "");
   const gatewayStatus = safeLower(
     b.gatewayStatus ||
       b.paymentStatus ||
@@ -124,26 +107,12 @@ function normalizeStatus(rawStatus, booking) {
     !!b.gatewayRef ||
     !!b.providerRef;
 
-  // If gateway status indicates success, treat as paid
-  const gatewayLooksSuccess = ["success", "successful", "paid", "completed"].includes(
-    gatewayStatus
-  );
-
-  // If gateway indicates failure
-  const gatewayLooksFailed = ["failed", "failure", "error", "declined"].includes(
-    gatewayStatus
-  );
+  const gatewayLooksSuccess = ["success", "successful", "paid", "completed"].includes(gatewayStatus);
+  const gatewayLooksFailed = ["failed", "failure", "error", "declined"].includes(gatewayStatus);
 
   if (gatewayLooksFailed) return "failed";
+  if (gatewayLooksSuccess || hasPaidMarkers) return "paid";
 
-  // If we see success indicators but no explicit status, call it PAID (or CONFIRMED)
-  if (gatewayLooksSuccess || hasPaidMarkers) {
-    // Some apps use "confirmed" after payment; some show "paid"
-    // Keep as "paid" so admin can still “Mark confirmed” if you want.
-    return "paid";
-  }
-
-  // If we see explicit refund markers
   const refundMarkers =
     b.refunded === true ||
     b.isRefunded === true ||
@@ -152,7 +121,6 @@ function normalizeStatus(rawStatus, booking) {
 
   if (refundMarkers) return "refunded";
 
-  // Default safe
   return "pending";
 }
 
@@ -164,16 +132,8 @@ const statusTone = {
   failed: { bg: "#ef4444", text: "#ffecec", ring: "#dc2626" },
   refunded: { bg: "#d19b00", text: "#fff7e0", ring: "#a77a00" },
   pending: { bg: "#6b7280", text: "#eef2ff", ring: "#555b66" },
-  cancel_req: {
-    bg: "rgba(245,158,11,.35)",
-    text: "#fde68a",
-    ring: "rgba(245,158,11,.35)",
-  },
-  date_change: {
-    bg: "rgba(59,130,246,.35)",
-    text: "#dbeafe",
-    ring: "rgba(59,130,246,.45)",
-  },
+  cancel_req: { bg: "rgba(245,158,11,.35)", text: "#fde68a", ring: "rgba(245,158,11,.35)" },
+  date_change: { bg: "rgba(59,130,246,.35)", text: "#dbeafe", ring: "rgba(59,130,246,.45)" },
 };
 
 const Chip = ({ label, tone = "pending" }) => {
@@ -238,9 +198,8 @@ const ActionBtn = ({ kind = "ghost", children, onClick, disabled }) => {
 
 /**
  * Try multiple endpoint shapes.
- * Your backend supports:
  * - PATCH /api/admin/bookings/:id/status { status }
- * - POST  /api/admin/bookings/:id/confirmed|cancelled|refunded
+ * - POST  /api/admin/bookings/:id/:status
  */
 async function patchStatusBooking(id, toStatus) {
   const lower = String(toStatus || "").toLowerCase();
@@ -249,16 +208,12 @@ async function patchStatusBooking(id, toStatus) {
     {
       label: "PATCH /admin/bookings/:id/status",
       fn: async () =>
-        api.patch(`/admin/bookings/${encodeURIComponent(id)}/status`, {
-          status: lower,
-        }),
+        api.patch(`/admin/bookings/${encodeURIComponent(id)}/status`, { status: lower }),
     },
     {
       label: "POST /admin/bookings/:id/:status",
       fn: async () =>
-        api.post(
-          `/admin/bookings/${encodeURIComponent(id)}/${encodeURIComponent(lower)}`
-        ),
+        api.post(`/admin/bookings/${encodeURIComponent(id)}/${encodeURIComponent(lower)}`),
     },
   ];
 
@@ -276,6 +231,7 @@ async function patchStatusBooking(id, toStatus) {
 
 export default function BookingsAdmin() {
   const nav = useNavigate();
+  const location = useLocation();
   const { showToast: toast } = useToast();
   const [searchParams] = useSearchParams();
 
@@ -288,6 +244,14 @@ export default function BookingsAdmin() {
 
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
+
+  // ✅ refresh trigger (same behaviour as dashboards)
+  const shouldForceRefresh = useMemo(() => {
+    const sp = new URLSearchParams(location.search || "");
+    const qp = sp.get("refresh");
+    const st = location.state || {};
+    return qp === "1" || st?.refresh === true;
+  }, [location.search, location.state]);
 
   useEffect(() => {
     const f = searchParams.get("filter");
@@ -302,7 +266,7 @@ export default function BookingsAdmin() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [tab]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/admin/bookings", {
@@ -322,7 +286,16 @@ export default function BookingsAdmin() {
           const id = b.id || b._id || b.bookingId || b.reference || b.ref;
           if (!id) return null;
 
-          const amount = Number(b.amountN ?? b.amount ?? b.totalAmount ?? b.total ?? 0) || 0;
+          // ✅ backend truth first
+          const amount =
+            Number(
+              b.amountLockedN ??
+                b.amountN ??
+                b.amount ??
+                b.totalAmount ??
+                b.total ??
+                0
+            ) || 0;
 
           const status = normalizeStatus(b.status, b);
 
@@ -372,7 +345,6 @@ export default function BookingsAdmin() {
             cancellationRequested,
             dateChangeRequested,
 
-            // optional raw fields for debugging (won’t display unless you choose to)
             _rawStatus: b.status,
             _gatewayStatus:
               b.gatewayStatus || b.paymentStatus || b.payment?.status || b.transactionStatus || null,
@@ -383,7 +355,6 @@ export default function BookingsAdmin() {
       setRows(norm);
       setPage(1);
 
-      // Helpful hint if everything is pending
       const pendingCount = norm.filter((r) => r.status === "pending").length;
       if (norm.length > 0 && pendingCount === norm.length) {
         toast &&
@@ -398,12 +369,38 @@ export default function BookingsAdmin() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
+
+  // ✅ auto refresh when coming back with refresh=1 or state.refresh
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!shouldForceRefresh) return;
+
+      await load();
+      if (!alive) return;
+
+      // clean refresh from URL but keep other query params e.g. filter
+      const sp = new URLSearchParams(location.search || "");
+      if (sp.get("refresh") === "1") {
+        sp.delete("refresh");
+        nav(
+          { pathname: location.pathname, search: sp.toString() ? `?${sp.toString()}` : "" },
+          { replace: true, state: {} }
+        );
+      } else {
+        nav(location.pathname, { replace: true, state: {} });
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [shouldForceRefresh, load, location.pathname, location.search, nav]);
 
   const counts = useMemo(() => {
     const c = {
@@ -419,8 +416,6 @@ export default function BookingsAdmin() {
     };
     rows.forEach((r) => {
       if (c[r.status] !== undefined) c[r.status] += 1;
-      if (r.cancellationRequested) c.cancel_req += 1;
-      if (r.dateChangeRequested) c.date_change += 1;
     });
     return c;
   }, [rows]);
@@ -428,8 +423,8 @@ export default function BookingsAdmin() {
   const filtered = useMemo(() => {
     let list = rows;
 
-    if (tab === "cancel_req") list = list.filter((r) => r.cancellationRequested);
-    else if (tab === "date_change") list = list.filter((r) => r.dateChangeRequested);
+    if (tab === "cancel_req") list = list.filter((r) => r.status === "cancel_req" || r.cancellationRequested);
+    else if (tab === "date_change") list = list.filter((r) => r.status === "date_change" || r.dateChangeRequested);
     else if (tab !== "all") list = list.filter((r) => r.status === tab);
 
     const q = query.trim().toLowerCase();
@@ -477,7 +472,6 @@ export default function BookingsAdmin() {
     setBusyId(null);
 
     if (!result?.ok) {
-      // rollback
       setRows(prev);
       toast && toast(`Failed to update booking. ${errMsg(result?.error)}`, "error");
       return;
@@ -599,6 +593,9 @@ export default function BookingsAdmin() {
     toast && toast("CSV exported.", "success");
   };
 
+  // ✅ consistent “Back” that triggers dashboard refresh
+  const backToAdmin = () => nav("/admin?refresh=1", { replace: false });
+
   return (
     <AdminLayout title="Bookings overview" subtitle="Latest guest reservations across the platform.">
       <div
@@ -611,7 +608,26 @@ export default function BookingsAdmin() {
           flexWrap: "wrap",
         }}
       >
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <button
+            onClick={backToAdmin}
+            style={{
+              display: "inline-flex",
+              gap: 8,
+              alignItems: "center",
+              padding: "8px 14px",
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,.06)",
+              background: "rgba(255,255,255,.02)",
+              color: "#e2e8f0",
+              fontWeight: 800,
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            ← Back to Admin
+          </button>
+
           {[
             { k: "all", label: "All", count: counts.all },
             { k: "pending", label: "Pending", count: counts.pending },
@@ -713,7 +729,7 @@ export default function BookingsAdmin() {
           </button>
 
           <button
-            onClick={load}
+            onClick={() => load()}
             style={{
               background: "linear-gradient(180deg,#6366f1,#4338ca)",
               border: "none",
@@ -819,37 +835,21 @@ export default function BookingsAdmin() {
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   {(r.status === "confirmed" || r.status === "paid") ? (
                     <>
-                      <ActionBtn
-                        kind="cancel"
-                        disabled={busyId === r.id}
-                        onClick={() => doAction(r, "cancelled")}
-                      >
+                      <ActionBtn kind="cancel" disabled={busyId === r.id} onClick={() => doAction(r, "cancelled")}>
                         Mark cancelled
                       </ActionBtn>
-                      <ActionBtn
-                        kind="cancel"
-                        disabled={busyId === r.id}
-                        onClick={() => doAction(r, "refunded")}
-                      >
+                      <ActionBtn kind="cancel" disabled={busyId === r.id} onClick={() => doAction(r, "refunded")}>
                         Mark refunded
                       </ActionBtn>
                     </>
                   ) : (
-                    <ActionBtn
-                      kind="confirm"
-                      disabled={busyId === r.id}
-                      onClick={() => doAction(r, "confirmed")}
-                    >
+                    <ActionBtn kind="confirm" disabled={busyId === r.id} onClick={() => doAction(r, "confirmed")}>
                       Mark confirmed
                     </ActionBtn>
                   )}
 
-                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "guest")}>
-                    Msg guest
-                  </ActionBtn>
-                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "host")}>
-                    Msg host
-                  </ActionBtn>
+                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "guest")}>Msg guest</ActionBtn>
+                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "host")}>Msg host</ActionBtn>
                 </div>
               </div>
             );
@@ -868,8 +868,7 @@ export default function BookingsAdmin() {
         }}
       >
         <div style={{ color: "#94a3b8", fontSize: 13 }}>
-          Showing {total === 0 ? 0 : (page - 1) * perPage + 1} –{" "}
-          {Math.min(page * perPage, total)} of {total} results
+          Showing {total === 0 ? 0 : (page - 1) * perPage + 1} – {Math.min(page * perPage, total)} of {total} results
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>

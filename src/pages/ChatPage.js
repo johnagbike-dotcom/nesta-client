@@ -98,7 +98,10 @@ export default function ChatPage() {
 
   const [chatMeta, setChatMeta] = useState(null);
   const [counterProfile, setCounterProfile] = useState(null);
-  const [counterPresence, setCounterPresence] = useState({ typing: false, updatedAt: null });
+  const [counterPresence, setCounterPresence] = useState({
+    typing: false,
+    updatedAt: null,
+  });
 
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
@@ -120,7 +123,10 @@ export default function ChatPage() {
 
   const scrollToBottom = useCallback(() => {
     if (!listRef.current) return;
-    listRef.current.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+    listRef.current.scrollTo({
+      top: listRef.current.scrollHeight,
+      behavior: "smooth",
+    });
   }, []);
 
   const presenceLabel = useMemo(() => {
@@ -147,10 +153,23 @@ export default function ChatPage() {
   }, [messages, user?.uid]);
 
   const otherIdForSeen = otherIdRef.current || null;
-  const otherLastReadMs = otherIdForSeen ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen]) : 0;
+  const otherLastReadMs = otherIdForSeen
+    ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen])
+    : 0;
   const lastMineCreatedMs = safeMillis(lastMineMsg?.createdAt);
   const showSeen =
-    !!lastMineMsg && otherLastReadMs > 0 && lastMineCreatedMs > 0 && otherLastReadMs >= lastMineCreatedMs;
+    !!lastMineMsg &&
+    otherLastReadMs > 0 &&
+    lastMineCreatedMs > 0 &&
+    otherLastReadMs >= lastMineCreatedMs;
+
+  // ✅ Luxury: silent archive gate (read-only for archived threads)
+  const isArchivedForMe = useMemo(() => {
+    if (!user?.uid) return false;
+    return !!chatMeta?.archived?.[user.uid];
+  }, [chatMeta, user?.uid]);
+
+  const inputDisabled = !chatId || busy || isArchivedForMe;
 
   // Resolve/create thread
   useEffect(() => {
@@ -176,7 +195,7 @@ export default function ChatPage() {
             participants: [user.uid, counterUid],
             listingId: listing.id,
             listingTitle: listing.title || "Listing",
-            archived: {},
+            archived: {}, // ✅ new: per-user archive flags
             pinned: {},
             lastReadAt: {},
             unreadFor: [],
@@ -220,7 +239,9 @@ export default function ChatPage() {
         otherIdRef.current = otherId;
 
         myPresenceRef.current = doc(db, "chats", chatId, "presence", user.uid);
-        otherPresenceRef.current = otherId ? doc(db, "chats", chatId, "presence", otherId) : null;
+        otherPresenceRef.current = otherId
+          ? doc(db, "chats", chatId, "presence", otherId)
+          : null;
 
         if (Array.isArray(d.unreadFor) && d.unreadFor.includes(user.uid)) {
           updateDoc(chatRef, { unreadFor: arrayRemove(user.uid) }).catch(() => {});
@@ -245,7 +266,10 @@ export default function ChatPage() {
         otherPresenceRef.current,
         (ps) => {
           const data = ps.data() || {};
-          setCounterPresence({ typing: !!data.typing, updatedAt: data.updatedAt || null });
+          setCounterPresence({
+            typing: !!data.typing,
+            updatedAt: data.updatedAt || null,
+          });
         },
         () => setCounterPresence({ typing: false, updatedAt: null })
       );
@@ -283,7 +307,10 @@ export default function ChatPage() {
   useEffect(() => {
     if (!canRunChat || !chatId) return;
 
-    const qRef = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
+    const qRef = query(
+      collection(db, "chats", chatId, "messages"),
+      orderBy("createdAt", "asc")
+    );
     const unsub = onSnapshot(
       qRef,
       (snap) => {
@@ -296,21 +323,30 @@ export default function ChatPage() {
     return () => unsub();
   }, [canRunChat, chatId, scrollToBottom]);
 
-  // Update lastReadAt
+  // Update lastReadAt (skip if archived)
   useEffect(() => {
-    if (!canRunChat || !chatId) return;
+    if (!canRunChat || !chatId || !user?.uid) return;
 
     const t = setInterval(() => {
+      if (isArchivedForMe) return;
       updateDoc(doc(db, "chats", chatId), {
         [`lastReadAt.${user.uid}`]: serverTimestamp(),
       }).catch(() => {});
     }, 15000);
 
     return () => clearInterval(t);
-  }, [canRunChat, chatId, user?.uid]);
+  }, [canRunChat, chatId, user?.uid, isArchivedForMe]);
 
   const onSend = useCallback(async () => {
     if (!canRunChat || !user?.uid || !chatId) return;
+
+    // ✅ Luxury: prevent sending if archived (read-only)
+    if (isArchivedForMe) {
+      setPageError(
+        "This conversation is archived. Your stay has ended. For follow-ups, please contact support."
+      );
+      return;
+    }
 
     const text = message.trim();
     if (!text) return;
@@ -343,19 +379,30 @@ export default function ChatPage() {
     } finally {
       setBusy(false);
     }
-  }, [canRunChat, user?.uid, chatId, message, scrollToBottom, counterUid]);
+  }, [canRunChat, user?.uid, chatId, message, scrollToBottom, counterUid, isArchivedForMe]);
 
   const onChangeMessage = (e) => {
     const v = e.target.value;
     setMessage(v);
 
+    // ✅ Do not update presence typing if archived
+    if (isArchivedForMe) return;
+
     if (!canRunChat || !myPresenceRef.current || !user?.uid) return;
 
-    setDoc(myPresenceRef.current, { typing: true, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+    setDoc(
+      myPresenceRef.current,
+      { typing: true, updatedAt: serverTimestamp() },
+      { merge: true }
+    ).catch(() => {});
 
     clearTimeout(typingIdleRef.current);
     typingIdleRef.current = setTimeout(() => {
-      setDoc(myPresenceRef.current, { typing: false, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+      setDoc(
+        myPresenceRef.current,
+        { typing: false, updatedAt: serverTimestamp() },
+        { merge: true }
+      ).catch(() => {});
     }, 1300);
   };
 
@@ -367,6 +414,12 @@ export default function ChatPage() {
   };
 
   const quick = (t) => {
+    if (isArchivedForMe) {
+      setPageError(
+        "This conversation is archived. Your stay has ended. For follow-ups, please contact support."
+      );
+      return;
+    }
     setMessage(t);
     setTimeout(onSend, 20);
   };
@@ -425,8 +478,15 @@ export default function ChatPage() {
   }
 
   const counterDisplayName =
-    counterProfile?.displayName || counterProfile?.name || counterProfile?.email || "Host/Partner";
-  const avatarUrl = counterProfile?.photoURL || counterProfile?.avatarUrl || counterProfile?.avatar || null;
+    counterProfile?.displayName ||
+    counterProfile?.name ||
+    counterProfile?.email ||
+    "Host/Partner";
+  const avatarUrl =
+    counterProfile?.photoURL ||
+    counterProfile?.avatarUrl ||
+    counterProfile?.avatar ||
+    null;
 
   return (
     <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
@@ -441,7 +501,11 @@ export default function ChatPage() {
               <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-2 py-1">
                 <span className="relative inline-flex items-center justify-center w-6 h-6 rounded-full overflow-hidden border border-white/10 bg-black/30">
                   {avatarUrl ? (
-                    <img src={avatarUrl} alt={counterDisplayName} className="w-full h-full object-cover" />
+                    <img
+                      src={avatarUrl}
+                      alt={counterDisplayName}
+                      className="w-full h-full object-cover"
+                    />
                   ) : (
                     <span className="text-[10px] text-amber-200 font-bold">
                       {(counterDisplayName || "H").slice(0, 2).toUpperCase()}
@@ -451,12 +515,18 @@ export default function ChatPage() {
                 <span className="inline-flex items-center gap-1">
                   <span
                     className={`h-2 w-2 rounded-full ${
-                      counterPresence.typing ? "bg-amber-300" : presenceLabel === "Online" ? "bg-emerald-400" : "bg-gray-500"
+                      counterPresence.typing
+                        ? "bg-amber-300"
+                        : presenceLabel === "Online"
+                        ? "bg-emerald-400"
+                        : "bg-gray-500"
                     }`}
                   />
                   {presenceLabel}
                 </span>
-                <span className="opacity-80 truncate max-w-[160px]">• {counterDisplayName}</span>
+                <span className="opacity-80 truncate max-w-[160px]">
+                  • {counterDisplayName}
+                </span>
               </span>
               {showSeen ? <span className="text-amber-300/80">• Seen</span> : null}
             </div>
@@ -476,20 +546,36 @@ export default function ChatPage() {
           </div>
         ) : null}
 
+        {/* ✅ Luxury: soft archive banner (read-only state) */}
+        {isArchivedForMe ? (
+          <div className="mb-3 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/70 motion-pop">
+            This conversation is archived. Your stay has ended. For follow-ups, please contact support.
+          </div>
+        ) : null}
+
         <div className="rounded-2xl border border-white/10 bg-gray-900/60 overflow-hidden motion-pop">
-          <div ref={listRef} className="h-[460px] overflow-y-auto p-4 nesta-chat-scroll" style={{ scrollBehavior: "smooth" }}>
+          <div
+            ref={listRef}
+            className="h-[460px] overflow-y-auto p-4 nesta-chat-scroll"
+            style={{ scrollBehavior: "smooth" }}
+          >
             {messages.length === 0 ? (
               <div className="text-gray-300 text-sm">No messages yet.</div>
             ) : (
               messages.map((m) => {
                 const mine = m.senderId === user.uid;
                 return (
-                  <div key={m.id} className={`mb-2 flex ${mine ? "justify-end" : "justify-start"} motion-stagger`}>
+                  <div
+                    key={m.id}
+                    className={`mb-2 flex ${mine ? "justify-end" : "justify-start"} motion-stagger`}
+                  >
                     <div className="max-w-[78%] group motion-pop">
                       <div className={`nesta-bubble ${mine ? "mine" : "theirs"}`}>
                         <div className="whitespace-pre-wrap leading-relaxed">{m.text}</div>
                       </div>
-                      <div className="nesta-stamp">{m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString() : ""}</div>
+                      <div className="nesta-stamp">
+                        {m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString() : ""}
+                      </div>
                     </div>
                   </div>
                 );
@@ -498,22 +584,29 @@ export default function ChatPage() {
           </div>
 
           <div className="border-t border-white/10 p-3 bg-gray-900/70">
-            {counterPresence.typing && <div className="mt-1 text-xs text-amber-300 animate-pulse">Typing…</div>}
+            {!isArchivedForMe && counterPresence.typing ? (
+              <div className="mt-1 text-xs text-amber-300 animate-pulse">Typing…</div>
+            ) : null}
 
             <div className="flex gap-2">
               <input
                 value={message}
                 onChange={onChangeMessage}
                 onKeyDown={onKeyDown}
-                placeholder="Type a message…"
-                className="flex-1 px-3 py-2 rounded-xl bg-black/30 border border-white/10 outline-none lux-focus"
+                placeholder={
+                  isArchivedForMe ? "Archived conversation (read-only)" : "Type a message…"
+                }
+                disabled={inputDisabled}
+                className={`flex-1 px-3 py-2 rounded-xl bg-black/30 border border-white/10 outline-none lux-focus ${
+                  inputDisabled ? "opacity-60 cursor-not-allowed" : ""
+                }`}
               />
 
               <button
-                disabled={!message.trim() || busy || !chatId}
+                disabled={!message.trim() || inputDisabled}
                 onClick={onSend}
                 className={`px-4 py-2 rounded-xl border ${
-                  !message.trim() || busy || !chatId
+                  !message.trim() || inputDisabled
                     ? "bg-gray-800/60 border-white/10 text-gray-500 cursor-not-allowed"
                     : "bg-amber-600 hover:bg-amber-700 border-amber-500 text-black font-semibold btn-amber"
                 }`}
@@ -527,7 +620,12 @@ export default function ChatPage() {
                 <button
                   key={q}
                   onClick={() => quick(q)}
-                  className="text-xs px-2 py-1 rounded-full bg-white/10 hover:bg-white/15 border border-white/15 motion-pop"
+                  disabled={isArchivedForMe || busy || !chatId}
+                  className={`text-xs px-2 py-1 rounded-full border motion-pop ${
+                    isArchivedForMe || busy || !chatId
+                      ? "bg-white/5 border-white/10 text-white/35 cursor-not-allowed"
+                      : "bg-white/10 hover:bg-white/15 border-white/15"
+                  }`}
                 >
                   {q}
                 </button>

@@ -15,7 +15,6 @@ import OfficialLogo from "../assets/Official-Logo.jpg";
 
 const MIN_LEN = 10;
 
-// quick deny-list (add more anytime)
 const COMMON_WEAK = new Set([
   "123456",
   "1234567",
@@ -52,7 +51,6 @@ function getPwChecks(pwRaw, emailRaw = "", nameRaw = "") {
   const pwLower = pw.toLowerCase();
   const isCommon = COMMON_WEAK.has(pwLower);
 
-  // basic personal info checks
   const emailUser = email.includes("@") ? email.split("@")[0] : "";
   const includesEmailUser = emailUser && pwLower.includes(emailUser);
   const includesEmailFull = email && pwLower.includes(email);
@@ -70,8 +68,6 @@ function getPwChecks(pwRaw, emailRaw = "", nameRaw = "") {
     !isCommon &&
     noPersonal;
 
-  // NOTE: We still enforce "common password" + "no personal info",
-  // but we no longer show them as separate checklist lines (less texty UI).
   let firstFail = "";
   if (!hasMin) firstFail = `Password must be at least ${MIN_LEN} characters.`;
   else if (!hasUpper) firstFail = "Add at least 1 uppercase letter (A–Z).";
@@ -81,17 +77,7 @@ function getPwChecks(pwRaw, emailRaw = "", nameRaw = "") {
   else if (isCommon) firstFail = "Please choose a less predictable password.";
   else if (!noPersonal) firstFail = "Avoid using personal information in your password.";
 
-  return {
-    ok,
-    hasMin,
-    hasUpper,
-    hasLower,
-    hasNum,
-    hasSpecial,
-    isCommon,
-    noPersonal,
-    firstFail,
-  };
+  return { ok, hasMin, hasUpper, hasLower, hasNum, hasSpecial, firstFail };
 }
 
 function CheckLine({ status, label }) {
@@ -137,14 +123,12 @@ export default function SignUpPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // success stage
   const [stage, setStage] = useState("form"); // form | success
   const [okMsg, setOkMsg] = useState("");
   const [successEmail, setSuccessEmail] = useState("");
   const [resendBusy, setResendBusy] = useState(false);
   const [cooldown, setCooldown] = useState(0);
 
-  // ✅ show checks after user starts typing
   const pwStarted = normalizePw(pw).length > 0;
 
   const cooldownTimerRef = useRef(null);
@@ -164,34 +148,63 @@ export default function SignUpPage() {
     const pubRef = doc(db, "users_public", uid);
 
     const snap = await getDoc(userRef);
+    const now = serverTimestamp();
 
-    const basePrivate = {
-      email: emailVal,
-      emailLower: String(emailVal || "").toLowerCase(),
-      displayName: displayName || null,
-      role: "guest",
-      isAdmin: false,
-      plan: "free",
-      emailVerified: !!emailVerified,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-
-    const basePublic = {
-      displayName: displayName || "User",
-      email: emailVal, // optional
-      role: "guest",
-      photoURL: null,
-      updatedAt: serverTimestamp(),
-      createdAt: serverTimestamp(),
-    };
+    const emailLower = String(emailVal || "").trim().toLowerCase();
 
     if (!snap.exists()) {
-      await setDoc(userRef, basePrivate, { merge: true });
-      await setDoc(pubRef, basePublic, { merge: true });
+      // Create (private)
+      await setDoc(
+        userRef,
+        {
+          email: String(emailVal || "").trim(),
+          emailLower,
+          displayName: displayName || null,
+          role: "guest",
+          isAdmin: false,
+          plan: "free",
+          emailVerified: !!emailVerified,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+
+      // Create (public)
+      await setDoc(
+        pubRef,
+        {
+          displayName: displayName || "User",
+          email: String(emailVal || "").trim(), // optional; remove if you want stricter privacy
+          role: "guest",
+          photoURL: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
     } else {
-      await setDoc(pubRef, { displayName: displayName || "User", updatedAt: serverTimestamp() }, { merge: true });
-      await setDoc(userRef, { emailVerified: !!emailVerified, updatedAt: serverTimestamp() }, { merge: true });
+      // Update only what matters (don’t overwrite createdAt)
+      await setDoc(
+        userRef,
+        {
+          email: String(emailVal || "").trim(),
+          emailLower,
+          displayName: displayName || null,
+          emailVerified: !!emailVerified,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+
+      await setDoc(
+        pubRef,
+        {
+          displayName: displayName || "User",
+          updatedAt: now,
+        },
+        { merge: true }
+      );
     }
   }
 
@@ -239,7 +252,7 @@ export default function SignUpPage() {
 
   async function sendVerificationForCurrentUser() {
     const u = auth.currentUser;
-    if (!u) return;
+    if (!u) throw new Error("no_current_user");
 
     const actionCodeSettings = {
       url: `${window.location.origin}/action`,
@@ -254,7 +267,8 @@ export default function SignUpPage() {
     setErr("");
     setOkMsg("");
 
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmail = email.trim();
+    const emailLower = cleanEmail.toLowerCase();
 
     if (!cleanEmail) return setErr("Please enter an email address.");
     if (!pw) return setErr("Please enter a password.");
@@ -264,8 +278,11 @@ export default function SignUpPage() {
     try {
       setLoading(true);
 
-      const cred = await createUserWithEmailAndPassword(auth, cleanEmail, pw);
-      const displayName = (name.trim() || cleanEmail.split("@")[0]).slice(0, 60);
+      // Use lowercased email to avoid duplicate-case accounts in your own DB.
+      // Firebase treats emails case-insensitively anyway.
+      const cred = await createUserWithEmailAndPassword(auth, emailLower, pw);
+
+      const displayName = (name.trim() || emailLower.split("@")[0]).slice(0, 60);
 
       try {
         await updateProfile(cred.user, { displayName });
@@ -273,7 +290,7 @@ export default function SignUpPage() {
 
       await ensureUserProfile(
         cred.user.uid,
-        cred.user.email || cleanEmail,
+        cred.user.email || emailLower,
         displayName,
         cred.user.emailVerified
       );
@@ -284,8 +301,8 @@ export default function SignUpPage() {
         console.warn("[SignUpPage] sendEmailVerification failed:", ve);
       }
 
-      setSuccessEmail(cleanEmail);
-      setOkMsg("✅ Account created. Please verify your email to continue.");
+      setSuccessEmail(emailLower);
+      setOkMsg("Account created. Please verify your email to continue.");
       setStage("success");
       startCooldown(30);
     } catch (e2) {
@@ -304,11 +321,14 @@ export default function SignUpPage() {
     try {
       setResendBusy(true);
       await sendVerificationForCurrentUser();
-      setOkMsg("✅ Verification email sent again. Please check inbox/spam.");
+      setOkMsg("Verification email sent again. Please check inbox/spam.");
       startCooldown(30);
     } catch (e) {
       console.error(e);
-      setErr(stripFirebasePrefix(e?.message) || "Could not resend verification email.");
+      const msg = e?.message === "no_current_user"
+        ? "Please continue to login, then resend verification from there."
+        : stripFirebasePrefix(e?.message) || "Could not resend verification email.";
+      setErr(msg);
     } finally {
       setResendBusy(false);
     }
@@ -366,10 +386,8 @@ export default function SignUpPage() {
             )}
 
             <div className="text-sm text-white/70 leading-relaxed">
-              Open your email, click <span className="text-white/90 font-semibold">Verify</span>, then return here.
-              <div className="mt-2 text-xs text-white/55">
-                Tip: Check spam/junk.
-              </div>
+              Open your email, click <span className="text-white/90 font-semibold">Verify</span>, then return to sign in.
+              <div className="mt-2 text-xs text-white/55">Tip: Check spam/junk.</div>
             </div>
 
             <button
@@ -505,33 +523,17 @@ export default function SignUpPage() {
               </button>
             </div>
 
-            {/* ✅ Less texty: keep only the 5 core requirements visible */}
             <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/55 mb-2">
                 Password requirements
               </div>
 
               <div className="grid gap-1">
-                <CheckLine
-                  status={!pwStarted ? "idle" : pwChecks.hasMin ? "ok" : "bad"}
-                  label={`At least ${MIN_LEN} characters`}
-                />
-                <CheckLine
-                  status={!pwStarted ? "idle" : pwChecks.hasUpper ? "ok" : "bad"}
-                  label="1 uppercase letter"
-                />
-                <CheckLine
-                  status={!pwStarted ? "idle" : pwChecks.hasLower ? "ok" : "bad"}
-                  label="1 lowercase letter"
-                />
-                <CheckLine
-                  status={!pwStarted ? "idle" : pwChecks.hasNum ? "ok" : "bad"}
-                  label="1 number"
-                />
-                <CheckLine
-                  status={!pwStarted ? "idle" : pwChecks.hasSpecial ? "ok" : "bad"}
-                  label="1 special character"
-                />
+                <CheckLine status={!pwStarted ? "idle" : pwChecks.hasMin ? "ok" : "bad"} label={`At least ${MIN_LEN} characters`} />
+                <CheckLine status={!pwStarted ? "idle" : pwChecks.hasUpper ? "ok" : "bad"} label="1 uppercase letter" />
+                <CheckLine status={!pwStarted ? "idle" : pwChecks.hasLower ? "ok" : "bad"} label="1 lowercase letter" />
+                <CheckLine status={!pwStarted ? "idle" : pwChecks.hasNum ? "ok" : "bad"} label="1 number" />
+                <CheckLine status={!pwStarted ? "idle" : pwChecks.hasSpecial ? "ok" : "bad"} label="1 special character" />
               </div>
             </div>
           </label>

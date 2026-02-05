@@ -16,6 +16,7 @@ import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
 import VerifiedRoleBadge from "../components/VerifiedRoleBadge";
 import SubscriptionBanner from "../components/SubscriptionBanner";
+import { useToast } from "../context/ToastContext";
 
 const nf = new Intl.NumberFormat("en-NG");
 const ngn = (n) => `₦${nf.format(Math.round(Number(n || 0)))}`;
@@ -52,6 +53,7 @@ function CardStat({
   tone,
   onClick,
   disabled = false,
+  highlight = false,
 }) {
   const safeValue = typeof value === "number" ? value : Number(value || 0) || 0;
   const formatted = currency ? ngn(safeValue) : safeValue.toLocaleString("en-NG");
@@ -59,14 +61,22 @@ function CardStat({
   const toneClasses =
     tone === "amber"
       ? "border-amber-400/40 bg-amber-500/10"
+      : tone === "emerald"
+      ? "border-emerald-400/40 bg-emerald-500/10"
+      : tone === "rose"
+      ? "border-rose-400/40 bg-rose-500/10"
       : "border-white/10 bg-white/5";
 
   const clickable = !!onClick && !disabled;
 
+  const highlightRing = highlight
+    ? "ring-2 ring-amber-300/70 shadow-[0_0_0_4px_rgba(245,158,11,0.14)]"
+    : "";
+
   return (
     <div
       onClick={clickable ? onClick : undefined}
-      className={`rounded-2xl px-4 py-3 border ${toneClasses} flex flex-col justify-between min-h-[84px] transition-all ${
+      className={`rounded-2xl px-4 py-3 border ${toneClasses} ${highlightRing} flex flex-col justify-between min-h-[84px] transition-all ${
         clickable
           ? "cursor-pointer hover:bg-white/10 hover:border-amber-300/60"
           : disabled
@@ -82,11 +92,15 @@ function CardStat({
       }
       aria-disabled={disabled ? "true" : "false"}
     >
-      <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">{label}</div>
+      <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
+        {label}
+      </div>
       <div className="mt-1 text-2xl font-semibold">
         {Number.isNaN(safeValue) ? (currency ? "₦0" : "0") : formatted}
       </div>
-      {helper && <div className="mt-1 text-[11px] text-white/55 truncate">{helper}</div>}
+      {helper && (
+        <div className="mt-1 text-[11px] text-white/55 truncate">{helper}</div>
+      )}
     </div>
   );
 }
@@ -100,18 +114,28 @@ function Field({ children }) {
 }
 
 const Input = (props) => (
-  <input {...props} className="w-full bg-transparent outline-none placeholder-white/30 text-sm" />
+  <input
+    {...props}
+    className="w-full bg-transparent outline-none placeholder-white/30 text-sm"
+  />
 );
 
 const Select = (props) => (
-  <select {...props} className="w-full bg-transparent outline-none placeholder-white/30 text-sm" />
+  <select
+    {...props}
+    className="w-full bg-transparent outline-none placeholder-white/30 text-sm"
+  />
 );
 
 function EmptyState() {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-10 text-center">
-      <h3 className="text-xl font-bold text-white mb-2">No listings yet for this host</h3>
-      <p className="text-white/70">Add your first Nesta stay to start earning.</p>
+      <h3 className="text-xl font-bold text-white mb-2">
+        No listings yet for this host
+      </h3>
+      <p className="text-white/70">
+        Add your first Nesta stay to start earning.
+      </p>
       <Link
         to="/post/new"
         className="inline-block mt-4 px-5 py-3 rounded-xl bg-amber-500 text-black font-semibold hover:bg-amber-400"
@@ -140,7 +164,8 @@ function isPendingLike(status) {
     s === "awaiting" ||
     s === "hold" ||
     s === "reserved_unpaid" ||
-    s === "initialized"
+    s === "initialized" ||
+    s === "awaiting_payment"
   );
 }
 
@@ -165,16 +190,20 @@ function toMillis(ts) {
   }
 }
 
+const sleep = (ms = 350) => new Promise((r) => setTimeout(r, ms));
+
 /* ---------- Main component ---------- */
 
 export default function HostDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const { showToast: toast } = useToast();
   const { profile } = useUserProfile(user?.uid);
 
   // --- KYC status ---
-  const kycStatusRaw = profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
+  const kycStatusRaw =
+    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
   const kycStatus = String(kycStatusRaw).toLowerCase();
   const isKycApproved =
     kycStatus === "approved" || kycStatus === "verified" || kycStatus === "complete";
@@ -204,20 +233,20 @@ export default function HostDashboard() {
     lifetimeEarnedN: 0,
   });
 
-  // revenue stats (booking-derived)
+  /**
+   * Revenue decision (clean + consistent):
+   * - grossLifetime: sum of CONFIRMED/PAID/COMPLETED bookings
+   * - gross30d: rolling last 30 days of confirmed bookings
+   */
   const [rev, setRev] = useState({
     grossLifetime: 0,
     gross30d: 0,
-
-    // if host net is tracked in booking docs (optional)
     netLifetimeTracked: 0,
     net30dTracked: 0,
-
     bookingsConfirmed: 0,
     bookingsPending: 0,
     cancelled: 0,
     refunded: 0,
-
     needsAttention: 0,
     mismatchCount: 0,
     reviewCount: 0,
@@ -226,6 +255,9 @@ export default function HostDashboard() {
   // bookings for this host (for recent strip)
   const [hostBookings, setHostBookings] = useState([]);
 
+  // UI highlight (luxury pulse after action)
+  const [highlightKey, setHighlightKey] = useState("");
+
   const now = Date.now();
   const isSubscribed =
     subInfo.active && (!subInfo.expiresAt || new Date(subInfo.expiresAt).getTime() > now);
@@ -233,10 +265,13 @@ export default function HostDashboard() {
   const recentBookings = useMemo(() => hostBookings.slice(0, 5), [hostBookings]);
 
   const goManageListings = () => navigate("/manage-listings");
-  const goReservations = () => navigate("/host-reservations");
-  const goWithdrawals = () => navigate("/withdrawals");
 
-  // Withdrawal gating
+  // ✅ Navigate with normalized tabs
+  const goReservationsTab = (tab = "all") => {
+    const t = String(tab || "all").toLowerCase();
+    navigate(`/host-reservations?tab=${encodeURIComponent(t)}`);
+  };
+
   const walletAvailable = Number(wallet.availableN || 0);
   const walletPending = Number(wallet.pendingN || 0);
   const walletLifetime = Number(wallet.lifetimeEarnedN || 0);
@@ -255,12 +290,19 @@ export default function HostDashboard() {
     ? "No withdrawable balance yet"
     : "Ready to withdraw";
 
-  // ✅ host dashboard refresh trigger (supports post-cancel redirect)
-  const shouldForceRefresh = useMemo(() => {
+  // ✅ host dashboard refresh trigger (supports post-action redirect)
+  const refreshMeta = useMemo(() => {
     const sp = new URLSearchParams(location.search || "");
-    const qp = sp.get("refresh");
+    const qpRefresh = sp.get("refresh");
+    const fromTab = sp.get("fromTab") || "";
+    const action = sp.get("action") || "";
     const st = location.state || {};
-    return qp === "1" || st?.refresh === true;
+    return {
+      should: qpRefresh === "1" || st?.refresh === true,
+      fromTab: String(st?.fromTab || fromTab || ""),
+      action: String(st?.action || action || ""),
+      hadQueryRefresh: qpRefresh === "1",
+    };
   }, [location.search, location.state]);
 
   /* ---------- Load host listings ---------- */
@@ -273,20 +315,32 @@ export default function HostDashboard() {
       const colRef = collection(db, "listings");
 
       // Primary: ownerId
-      const qOwnerId = query(colRef, where("ownerId", "==", user.uid), orderBy("createdAt", "desc"));
+      const qOwnerId = query(
+        colRef,
+        where("ownerId", "==", user.uid),
+        orderBy("createdAt", "desc")
+      );
       const snap1 = await getDocs(qOwnerId);
       let list = snap1.docs.map((d) => ({ id: d.id, ...d.data() }));
 
       // Fallback: ownerUid
       if (list.length === 0) {
-        const qOwnerUid = query(colRef, where("ownerUid", "==", user.uid), orderBy("createdAt", "desc"));
+        const qOwnerUid = query(
+          colRef,
+          where("ownerUid", "==", user.uid),
+          orderBy("createdAt", "desc")
+        );
         const snap2 = await getDocs(qOwnerUid);
         list = snap2.docs.map((d) => ({ id: d.id, ...d.data() }));
       }
 
       // Fallback: hostUid
       if (list.length === 0) {
-        const qHostUid = query(colRef, where("hostUid", "==", user.uid), orderBy("createdAt", "desc"));
+        const qHostUid = query(
+          colRef,
+          where("hostUid", "==", user.uid),
+          orderBy("createdAt", "desc")
+        );
         const snap3 = await getDocs(qHostUid);
         list = snap3.docs.map((d) => ({ id: d.id, ...d.data() }));
       }
@@ -368,11 +422,7 @@ export default function HostDashboard() {
       );
 
       const pendingN = Number(
-        d.walletPendingN ??
-          d.pendingBalanceN ??
-          d.pendingN ??
-          d.wallet?.pendingN ??
-          0
+        d.walletPendingN ?? d.pendingBalanceN ?? d.pendingN ?? d.wallet?.pendingN ?? 0
       );
 
       const lifetimeEarnedN = Number(
@@ -408,8 +458,6 @@ export default function HostDashboard() {
 
   /* ---------- Revenue + bookings for this host ---------- */
   const loadRevenueAndBookings = useCallback(async () => {
-    let cancelledLocal = false;
-
     async function runQuery(field, uid) {
       try {
         const qref = query(
@@ -425,14 +473,14 @@ export default function HostDashboard() {
       }
     }
 
-    if (!user?.uid) return () => {};
+    if (!user?.uid) return;
 
     try {
       const snaps = await Promise.all([
-        runQuery("hostId", user.uid), // legacy
-        runQuery("hostUid", user.uid), // canonical
-        runQuery("ownerUid", user.uid), // some flows
-        runQuery("partnerUid", user.uid), // partner-as-host flows
+        runQuery("hostId", user.uid),
+        runQuery("hostUid", user.uid),
+        runQuery("ownerUid", user.uid),
+        runQuery("partnerUid", user.uid),
       ]);
 
       const seen = new Set();
@@ -447,7 +495,6 @@ export default function HostDashboard() {
         }
       }
 
-      // sort desc by createdAt (best effort)
       docs.sort((a, b) => {
         const at = toMillis(a.data()?.createdAt);
         const bt = toMillis(b.data()?.createdAt);
@@ -459,7 +506,6 @@ export default function HostDashboard() {
 
       let grossLifetime = 0;
       let gross30d = 0;
-
       let netLifetimeTracked = 0;
       let net30dTracked = 0;
 
@@ -480,17 +526,12 @@ export default function HostDashboard() {
         const createdAtMs = toMillis(d.createdAt);
         const in30d = createdAtMs >= cutoff30d;
 
-        // Gross source of truth: amountLockedN (server), fallback amountN/total
         const gross = Number(d.amountLockedN ?? d.amountN ?? d.total ?? 0) || 0;
+        const hostNetTracked =
+          Number(d.hostPayoutN ?? d.pricingSnapshot?.netPayoutN ?? 0) || 0;
 
-        // If you later store hostPayoutN, use it; wallet remains the primary truth for payouts.
-        const hostNetTracked = Number(d.hostPayoutN ?? d.pricingSnapshot?.netPayoutN ?? 0) || 0;
-
-        const mismatch = !!d.paymentMismatch;
-        if (mismatch) mismatchCount++;
-
-        const review = safeLower(d.status || "") === "paid-needs-review";
-        if (review) reviewCount++;
+        if (d.paymentMismatch) mismatchCount++;
+        if (safeLower(d.status || "") === "paid-needs-review") reviewCount++;
 
         if (isPaidOrConfirmed(s)) {
           bookingsConfirmed++;
@@ -498,7 +539,6 @@ export default function HostDashboard() {
           grossLifetime += gross;
           if (in30d) gross30d += gross;
 
-          // tracked net (optional)
           netLifetimeTracked += hostNetTracked;
           if (in30d) net30dTracked += hostNetTracked;
         } else if (isPendingLike(s)) {
@@ -509,7 +549,6 @@ export default function HostDashboard() {
           refundedCount++;
         }
 
-        // recent strip
         list.push({
           id: docu.id,
           listingTitle: d.listingTitle || d.listing?.title || d.title || "Listing",
@@ -520,74 +559,103 @@ export default function HostDashboard() {
         });
       }
 
+      // Needs attention = pending + cancelled + refunded + mismatches/review
       const needsAttention =
-        cancelledCount + refundedCount + mismatchCount + reviewCount;
+        bookingsPending + cancelledCount + refundedCount + mismatchCount + reviewCount;
 
-      if (!cancelledLocal) {
-        setRev({
-          grossLifetime,
-          gross30d,
-          netLifetimeTracked,
-          net30dTracked,
-          bookingsConfirmed,
-          bookingsPending,
-          cancelled: cancelledCount,
-          refunded: refundedCount,
-          needsAttention,
-          mismatchCount,
-          reviewCount,
-        });
-        setHostBookings(list);
-      }
+      setRev({
+        grossLifetime,
+        gross30d,
+        netLifetimeTracked,
+        net30dTracked,
+        bookingsConfirmed,
+        bookingsPending,
+        cancelled: cancelledCount,
+        refunded: refundedCount,
+        needsAttention,
+        mismatchCount,
+        reviewCount,
+      });
+
+      setHostBookings(list);
     } catch (e) {
       console.error("Error loading host revenue:", e);
     }
-
-    return () => {
-      cancelledLocal = true;
-    };
   }, [user?.uid]);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!alive) return;
-      const cleanup = await loadRevenueAndBookings();
-      return cleanup;
+      await loadRevenueAndBookings();
     })();
     return () => {
       alive = false;
     };
   }, [loadRevenueAndBookings]);
 
-  // ✅ refresh after cancellation / any action that redirects here
+  // ✅ post-action refresh + toast + highlight + URL cleanup
   useEffect(() => {
     let alive = true;
+
     (async () => {
-      if (!shouldForceRefresh || !user?.uid) return;
+      if (!refreshMeta.should || !user?.uid) return;
       try {
         if (!alive) return;
 
-        // run a full refresh
-        await Promise.all([loadListings(), loadWallet(), loadSubscription(), loadRevenueAndBookings()]);
+        await Promise.all([
+          loadListings(),
+          loadWallet(),
+          loadSubscription(),
+          loadRevenueAndBookings(),
+        ]);
 
-        // clean the URL (luxury polish)
-        const sp = new URLSearchParams(location.search || "");
-        if (sp.get("refresh") === "1") {
-          sp.delete("refresh");
-          navigate({ pathname: location.pathname, search: sp.toString() ? `?${sp.toString()}` : "" }, { replace: true, state: {} });
+        const action = safeLower(refreshMeta.action);
+        if (action) {
+          if (action === "cancelled") {
+            toast?.("Booking cancelled ✅", "info");
+            setHighlightKey("needsAttention");
+          } else if (action === "confirmed") {
+            toast?.("Booking confirmed ✅", "success");
+            setHighlightKey("confirmed");
+          } else if (action === "refunded") {
+            toast?.("Marked as refunded ✅", "success");
+            setHighlightKey("refunded");
+          } else {
+            toast?.("Dashboard refreshed ✅", "success");
+          }
         } else {
-          navigate(location.pathname, { replace: true, state: {} });
+          toast?.("Dashboard refreshed ✅", "success");
         }
-      } catch (_e) {
+
+        setTimeout(() => {
+          if (alive) setHighlightKey("");
+        }, 2200);
+
+        await sleep(250);
+        const sp = new URLSearchParams(location.search || "");
+        sp.delete("refresh");
+        sp.delete("action");
+        sp.delete("fromTab");
+
+        navigate(
+          {
+            pathname: location.pathname,
+            search: sp.toString() ? `?${sp.toString()}` : "",
+          },
+          { replace: true, state: {} }
+        );
+      } catch {
         // ignore
       }
     })();
+
     return () => {
       alive = false;
     };
   }, [
-    shouldForceRefresh,
+    refreshMeta.should,
+    refreshMeta.action,
     user?.uid,
     loadListings,
     loadWallet,
@@ -596,6 +664,7 @@ export default function HostDashboard() {
     location.pathname,
     location.search,
     navigate,
+    toast,
   ]);
 
   /* ---------- Filters / derived stats ---------- */
@@ -646,7 +715,8 @@ export default function HostDashboard() {
         </button>
 
         <div className="text-[11px] text-white/45">
-          Loaded listings: <span className="text-white/70 font-semibold">{rows.length}</span>
+          Loaded listings:{" "}
+          <span className="text-white/70 font-semibold">{rows.length}</span>
         </div>
 
         <header className="mt-2 flex flex-col md:flex-row md:items-end md:justify-between gap-3">
@@ -666,7 +736,9 @@ export default function HostDashboard() {
             {!subInfo.loading && isSubscribed && (
               <span className="text-xs font-semibold px-3 py-1 rounded-full border border-amber-400/50 bg-amber-400/10 text-amber-200">
                 Host Pro
-                {subInfo.expiresAt ? ` • until ${new Date(subInfo.expiresAt).toLocaleDateString()}` : ""}
+                {subInfo.expiresAt
+                  ? ` • until ${new Date(subInfo.expiresAt).toLocaleDateString()}`
+                  : ""}
               </span>
             )}
           </div>
@@ -698,18 +770,34 @@ export default function HostDashboard() {
             label="Active listing(s)"
             value={kpis.active}
             helper="Live stays on Nesta"
-            onClick={() => navigate("/manage-listings")}
+            onClick={goManageListings}
+            highlight={highlightKey === "listings"}
           />
 
-          <CardStat label="Confirmed bookings" value={rev.bookingsConfirmed} helper="Paid / confirmed" />
-          <CardStat label="Pending / upcoming" value={rev.bookingsPending} helper="Awaiting payment / arrival" />
+          <CardStat
+            label="Confirmed bookings"
+            value={rev.bookingsConfirmed}
+            helper="Paid / confirmed"
+            tone="emerald"
+            onClick={() => goReservationsTab("all")}
+            highlight={highlightKey === "confirmed"}
+          />
+
+          <CardStat
+            label="Pending / upcoming"
+            value={rev.bookingsPending}
+            helper="Awaiting payment / arrival"
+            tone="amber"
+            onClick={() => goReservationsTab("upcoming")}
+            highlight={highlightKey === "pending"}
+          />
 
           <CardStat
             label="Nightly portfolio"
             currency
             value={nightlyPortfolio}
             helper="Across active listings"
-            onClick={() => navigate("/manage-listings")}
+            onClick={goManageListings}
           />
 
           <CardStat
@@ -723,21 +811,23 @@ export default function HostDashboard() {
             label="Gross revenue (30 days)"
             currency
             value={rev.gross30d}
-            helper="Current momentum"
+            helper="Rolling • momentum"
           />
         </section>
 
         {/* Lock badge */}
-        {showWalletLockBadge && (
+        {(!isKycApproved || walletAvailable <= 0) && (
           <div className="flex items-center gap-2 text-[11px] text-amber-200/90">
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5">
               🔒
               <span className="font-semibold tracking-wide">
-                {withdrawalLockedByKyc ? "KYC REQUIRED FOR WITHDRAWALS" : "NO WITHDRAWABLE BALANCE"}
+                {!isKycApproved ? "KYC REQUIRED FOR WITHDRAWALS" : "NO WITHDRAWABLE BALANCE"}
               </span>
             </span>
             <span className="text-white/50">
-              {withdrawalLockedByKyc ? "Complete verification to unlock payouts" : "Funds will unlock after payout window clears"}
+              {!isKycApproved
+                ? "Complete verification to unlock payouts"
+                : "Funds will unlock after payout window clears"}
             </span>
           </div>
         )}
@@ -761,14 +851,14 @@ export default function HostDashboard() {
             helper={
               wallet.loading
                 ? "Loading…"
-                : withdrawalLockedByKyc
+                : !isKycApproved
                 ? "KYC required for payouts"
                 : walletPending > 0
                 ? "Clearing payout window"
                 : "No pending balance"
             }
             onClick={() => navigate("/withdrawals")}
-            disabled={withdrawalLockedByKyc}
+            disabled={!isKycApproved}
           />
 
           <CardStat
@@ -777,7 +867,7 @@ export default function HostDashboard() {
             value={walletLifetime}
             helper={wallet.loading ? "Loading…" : "All-time host earnings"}
             onClick={() => navigate("/withdrawals")}
-            disabled={withdrawalLockedByKyc}
+            disabled={!isKycApproved}
           />
         </section>
 
@@ -786,15 +876,33 @@ export default function HostDashboard() {
           <CardStat
             label="Needs attention"
             value={rev.needsAttention}
-            helper="Cancelled / refunded / mismatches"
+            helper="Pending / cancelled / refunded / review"
             tone="amber"
+            onClick={() => goReservationsTab("attention")}
+            highlight={highlightKey === "needsAttention"}
           />
-          <CardStat label="Cancelled" value={rev.cancelled} />
-          <CardStat label="Refunded" value={rev.refunded} />
+
           <CardStat
-            label="Payment mismatches"
+            label="Cancelled"
+            value={rev.cancelled}
+            tone="rose"
+            onClick={() => goReservationsTab("past")}
+            highlight={highlightKey === "cancelled"}
+          />
+
+          <CardStat
+            label="Refunded"
+            value={rev.refunded}
+            tone="rose"
+            onClick={() => goReservationsTab("past")}
+            highlight={highlightKey === "refunded"}
+          />
+
+          <CardStat
+            label="Payment issues"
             value={rev.mismatchCount + rev.reviewCount}
             helper={rev.reviewCount > 0 ? "Includes paid-needs-review" : "—"}
+            onClick={() => goReservationsTab("attention")}
           />
         </section>
 
@@ -802,7 +910,7 @@ export default function HostDashboard() {
         <section className="flex flex-wrap gap-3 items-center mt-1">
           <button
             type="button"
-            onClick={() => navigate("/manage-listings")}
+            onClick={goManageListings}
             className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
           >
             Manage your listing
@@ -810,7 +918,7 @@ export default function HostDashboard() {
 
           <button
             type="button"
-            onClick={() => navigate("/host-reservations")}
+            onClick={() => goReservationsTab("all")}
             className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
           >
             Open reservations
@@ -828,12 +936,14 @@ export default function HostDashboard() {
             disabled={!canWithdraw}
             onClick={() => navigate("/withdrawals")}
             className={`ml-auto px-4 py-2 rounded-xl text-sm font-semibold transition ${
-              canWithdraw ? "bg-amber-500 text-black hover:bg-amber-400" : "bg-white/10 text-white/40 cursor-not-allowed"
+              canWithdraw
+                ? "bg-amber-500 text-black hover:bg-amber-400"
+                : "bg-white/10 text-white/40 cursor-not-allowed"
             }`}
             title={
               wallet.loading
                 ? "Loading wallet…"
-                : withdrawalLockedByKyc
+                : !isKycApproved
                 ? "Complete KYC to withdraw earnings"
                 : "No withdrawable balance yet"
             }
@@ -846,13 +956,29 @@ export default function HostDashboard() {
         <section className="rounded-3xl bg-[#090c12] border border-white/5 p-4 md:p-5 space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto] gap-3">
             <Field>
-              <Input placeholder="Search (title, city, area)…" value={q} onChange={(e) => setQ(e.target.value)} />
+              <Input
+                placeholder="Search (title, city, area)…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
             </Field>
             <Field>
-              <Input type="number" min={0} placeholder="Min ₦/night" value={min} onChange={(e) => setMin(e.target.value)} />
+              <Input
+                type="number"
+                min={0}
+                placeholder="Min ₦/night"
+                value={min}
+                onChange={(e) => setMin(e.target.value)}
+              />
             </Field>
             <Field>
-              <Input type="number" min={0} placeholder="Max ₦/night" value={max} onChange={(e) => setMax(e.target.value)} />
+              <Input
+                type="number"
+                min={0}
+                placeholder="Max ₦/night"
+                value={max}
+                onChange={(e) => setMax(e.target.value)}
+              />
             </Field>
             <Field>
               <Select value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -887,14 +1013,26 @@ export default function HostDashboard() {
                 >
                   <div className="h-36 bg-gradient-to-br from-[#202736] via-[#151924] to-black/90 border-b border-white/10 overflow-hidden">
                     {Array.isArray(l.imageUrls) && l.imageUrls[0] ? (
-                      <img src={l.imageUrls[0]} alt={l.title || "Listing"} className="w-full h-full object-cover" loading="lazy" />
+                      <img
+                        src={l.imageUrls[0]}
+                        alt={l.title || "Listing"}
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
                     ) : l.primaryImageUrl ? (
-                      <img src={l.primaryImageUrl} alt={l.title || "Listing"} className="w-full h-full object-cover" loading="lazy" />
+                      <img
+                        src={l.primaryImageUrl}
+                        alt={l.title || "Listing"}
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
                     ) : null}
                   </div>
                   <div className="p-4">
                     <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-white text-lg flex-1 truncate">{l.title || "Untitled"}</h3>
+                      <h3 className="font-bold text-white text-lg flex-1 truncate">
+                        {l.title || "Untitled"}
+                      </h3>
                       <span className="text-[11px] px-2 py-0.5 rounded-md border border-white/15 text-white/70 capitalize">
                         {l.status || "active"}
                       </span>
@@ -929,22 +1067,32 @@ export default function HostDashboard() {
         <section className="mt-6 rounded-3xl bg-[#090c12] border border-white/5 overflow-hidden">
           <div className="flex items-center justify-between px-4 md:px-5 py-3">
             <h2 className="text-sm md:text-base font-semibold">Recent bookings</h2>
-            <button onClick={goReservations} className="text-xs md:text-sm text-white/60 hover:text-white">
+            <button
+              onClick={() => goReservationsTab("all")}
+              className="text-xs md:text-sm text-white/60 hover:text-white"
+            >
               Open reservations →
             </button>
           </div>
 
           {recentBookings.length === 0 ? (
-            <div className="px-4 md:px-5 pb-4 text-xs text-white/45">No bookings yet for this host account.</div>
+            <div className="px-4 md:px-5 pb-4 text-xs text-white/45">
+              No bookings yet for this host account.
+            </div>
           ) : (
             <ul className="divide-y divide-white/5 text-xs md:text-sm">
               {recentBookings.map((b) => (
-                <li key={b.id} className="px-4 md:px-5 py-3 flex items-center justify-between gap-3">
+                <li
+                  key={b.id}
+                  className="px-4 md:px-5 py-3 flex items-center justify-between gap-3"
+                >
                   <div className="min-w-0">
                     <p className="font-medium truncate">{b.listingTitle || "Listing"}</p>
                     <p className="text-[11px] text-white/45">{formatDateTime(b.createdAt)}</p>
                     {b.paymentMismatch ? (
-                      <p className="mt-1 text-[11px] text-amber-200/80">⚠ payment mismatch (review)</p>
+                      <p className="mt-1 text-[11px] text-amber-200/80">
+                        ⚠ payment mismatch (review)
+                      </p>
                     ) : null}
                   </div>
 

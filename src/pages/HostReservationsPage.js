@@ -14,15 +14,14 @@ import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../context/ToastContext";
 
-// ✅ Set this once if your route differs
-const HOST_DASHBOARD_PATH = "/host-dashboard";
+// ✅ Your AppRouter uses "/host"
+const HOST_DASHBOARD_PATH = "/host";
 
 // ✅ API base normalization (prevents /api/api mistakes)
 const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
 const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
 
-const ngn = (n) => `₦${Number(n || 0).toLocaleString()}`;
-
+const formatNgn = (n) => `₦${Number(n || 0).toLocaleString()}`;
 const sleep = (ms = 300) => new Promise((r) => setTimeout(r, ms));
 
 const toDateObj = (v) => {
@@ -37,11 +36,7 @@ const toDateObj = (v) => {
 const fmtDate = (v, fallback = "—") => {
   const d = toDateObj(v);
   if (!d || isNaN(d.getTime())) return fallback;
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 };
 
 const isPast = (checkOut) => {
@@ -89,15 +84,11 @@ const normalizeBooking = (docSnap) => {
   const data = docSnap.data ? docSnap.data() : docSnap;
   const id = docSnap.id || data.id;
 
-  const listingTitle =
-    data.listingTitle || data.listing?.title || data.title || "Listing";
-
+  const listingTitle = data.listingTitle || data.listing?.title || data.title || "Listing";
   const guestEmail = data.guestEmail || data.userEmail || data.email || "—";
 
   const amount =
-    Number(
-      data.amountLockedN ?? data.amountN ?? data.total ?? data.totalAmount ?? data.amount ?? 0
-    ) || 0;
+    Number(data.amountLockedN ?? data.amountN ?? data.total ?? data.totalAmount ?? data.amount ?? 0) || 0;
 
   return {
     id,
@@ -108,6 +99,10 @@ const normalizeBooking = (docSnap) => {
     checkIn: data.checkIn ?? data.checkin ?? data.startDate ?? data.from,
     checkOut: data.checkOut ?? data.checkout ?? data.endDate ?? data.to,
     createdAt: data.createdAt ?? data.created ?? data.created_on,
+
+    // for chat convenience (tolerate different shapes)
+    listingId: data.listingId ?? data.listing?.id ?? data.listingID ?? null,
+    guestUid: data.guestUid ?? data.userId ?? data.guestId ?? data.uid ?? null,
   };
 };
 
@@ -213,9 +208,7 @@ export default function HostReservationsPage({
 
   const markBusy = (id, flag) => setBusy((prev) => ({ ...prev, [id]: flag }));
 
-  // ✅ Luxury redirect helper
-  // - preserves current tab
-  // - triggers host dashboard refresh
+  // ✅ redirect helper (preserves tab)
   const redirectToDashboardRefresh = useCallback(
     async (fromTab = "all", actionLabel = "") => {
       const qp = new URLSearchParams();
@@ -223,7 +216,6 @@ export default function HostReservationsPage({
       qp.set("fromTab", String(fromTab || "all"));
       if (actionLabel) qp.set("action", actionLabel);
 
-      // micro pause for “luxury” feel
       await sleep(350);
 
       nav(`${HOST_DASHBOARD_PATH}?${qp.toString()}`, {
@@ -275,7 +267,6 @@ export default function HostReservationsPage({
       closeDrawer();
       await reload();
 
-      // Keep tab context (if they were in “attention”, keep that context)
       toast("Booking cancelled ✅", "info");
       await redirectToDashboardRefresh(tab, "cancelled");
     } catch (e) {
@@ -315,12 +306,26 @@ export default function HostReservationsPage({
     }
   };
 
+  // ✅ FIX: ChatPage expects state.partnerUid + state.listing
   const handleMessage = (row) => {
     if (!row?.id) return;
-    nav(`/booking/${row.id}/chat`, {
+
+    const partnerUid = row.guestUid || null;
+    const listing = row.listingId
+      ? { id: row.listingId, title: row.listingTitle || "Listing" }
+      : null;
+
+    if (!partnerUid || !listing?.id) {
+      alert("This booking is missing guest or listing information for chat.");
+      return;
+    }
+
+    nav("/chat", {
       state: {
-        booking: row,
+        partnerUid,
+        listing,
         from: ownerField === "partnerUid" ? "partner-reservations" : "host-reservations",
+        booking: row,
       },
     });
   };
@@ -393,7 +398,9 @@ export default function HostReservationsPage({
         {!loading && !err && filtered.length === 0 && (
           <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm">
             <p className="font-semibold mb-1">No reservations found.</p>
-            <p className="text-white/70">Once guests book your listing, reservations will appear here.</p>
+            <p className="text-white/70">
+              Once guests book your listing, reservations will appear here.
+            </p>
           </div>
         )}
 
@@ -427,7 +434,7 @@ export default function HostReservationsPage({
                       </p>
                     </div>
                     <div className="text-right text-xs md:text-sm">
-                      <div className="font-semibold">{ngn(row.amount || 0)}</div>
+                      <div className="font-semibold">{formatNgn(row.amount || 0)}</div>
                       <div className="text-white/50 mt-0.5">
                         Ref:{" "}
                         <span className="font-mono">
@@ -444,11 +451,13 @@ export default function HostReservationsPage({
         )}
       </div>
 
-      {/* Booking detail drawer */}
       <BookingDetailDrawer
         open={drawerOpen}
         booking={selected}
-        onClose={closeDrawer}
+        onClose={() => {
+          setDrawerOpen(false);
+          setSelected(null);
+        }}
         onConfirm={selected ? () => handleConfirm(selected) : undefined}
         onCancel={selected ? () => handleCancel(selected) : undefined}
         onRefund={selected ? () => handleRefund(selected) : undefined}
@@ -598,7 +607,6 @@ function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRe
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-sm">
       <div className="w-full max-w-md h-full bg-[#05070b] border-l border-white/10 shadow-2xl flex flex-col">
-        {/* Header */}
         <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2">
           <button
             onClick={onClose}
@@ -635,7 +643,7 @@ function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRe
 
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
             <div className="text-xs text-white/60">Amount</div>
-            <div className="font-semibold mt-0.5">{ngn(amount)}</div>
+            <div className="font-semibold mt-0.5">{formatNgn(amount)}</div>
             <div className="text-xs text-white/60 mt-1">
               Provider: {booking.provider || "—"} · Ref: {booking.reference || booking.id || "—"}
             </div>
@@ -656,7 +664,6 @@ function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRe
             </div>
           </div>
 
-          {/* Contact reveal */}
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <div>
