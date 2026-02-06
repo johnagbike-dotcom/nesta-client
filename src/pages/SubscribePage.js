@@ -6,10 +6,14 @@ import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import FeaturedCarousel from "../components/FeaturedCarousel";
 import SubscriptionBanner from "../components/SubscriptionBanner";
+
 // Payments
 import PaystackPop from "@paystack/inline-js";
 
-/* ---------------- Pricing (edit as you like) ---------------- */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
+/* ---------------- Pricing ---------------- */
 const PLAN_PRICES_NGN = {
   weekly: 2000,
   monthly: 5000,
@@ -25,9 +29,7 @@ const VALID_PLANS = Object.keys(PLAN_PRICES_NGN);
 /* --------------- Firestore helper: activate sub --------------- */
 async function activateSubscription(uid, plan = "monthly") {
   const now = Date.now();
-  const expiresAtISO = new Date(
-    now + (PLAN_MS[plan] || PLAN_MS.monthly)
-  ).toISOString();
+  const expiresAtISO = new Date(now + (PLAN_MS[plan] || PLAN_MS.monthly)).toISOString();
 
   await setDoc(
     doc(db, "users", uid),
@@ -55,12 +57,8 @@ function PlanCard({ title, price, note, active, onSelect, featured = false }) {
         background: featured
           ? "linear-gradient(135deg, rgba(240,180,41,0.25), rgba(217,154,11,0.1))"
           : "linear-gradient(135deg, rgba(240,180,41,0.15), rgba(217,154,11,0.05))",
-        border: featured
-          ? "2px solid #f0b429"
-          : "1px solid rgba(240,180,41,0.35)",
-        boxShadow: featured
-          ? "0 14px 28px rgba(0,0,0,0.35)"
-          : "0 10px 24px rgba(0,0,0,0.25)",
+        border: featured ? "2px solid #f0b429" : "1px solid rgba(240,180,41,0.35)",
+        boxShadow: featured ? "0 14px 28px rgba(0,0,0,0.35)" : "0 10px 24px rgba(0,0,0,0.25)",
         transform: featured ? "scale(1.02)" : "none",
         color: "#f3f4f6",
         outline: active ? "2px solid rgba(240,180,41,0.75)" : "none",
@@ -90,21 +88,12 @@ function PlanCard({ title, price, note, active, onSelect, featured = false }) {
           </span>
         )}
       </div>
-      <p
-        className="muted"
-        style={{ margin: "4px 0 10px", color: "#e5e7eb" }}
-      >
+
+      <p className="muted" style={{ margin: "4px 0 10px", color: "#e5e7eb" }}>
         {note}
       </p>
-      <div
-        style={{
-          fontSize: "1.4rem",
-          fontWeight: 800,
-          color: "#f3f4f6",
-        }}
-      >
-        {price}
-      </div>
+
+      <div style={{ fontSize: "1.4rem", fontWeight: 800, color: "#f3f4f6" }}>{price}</div>
     </button>
   );
 }
@@ -118,12 +107,8 @@ export default function SubscribePage() {
   const rawFromUrl = (params.get("plan") || "").toLowerCase();
   const planFromUrl = VALID_PLANS.includes(rawFromUrl) ? rawFromUrl : "";
 
-  const [plan, setPlan] = useState(planFromUrl || "monthly"); // weekly | monthly | annual
-
-  const amountNGN = useMemo(
-    () => PLAN_PRICES_NGN[plan] || PLAN_PRICES_NGN.monthly,
-    [plan]
-  );
+  const [plan, setPlan] = useState(planFromUrl || "monthly");
+  const amountNGN = useMemo(() => PLAN_PRICES_NGN[plan] || PLAN_PRICES_NGN.monthly, [plan]);
 
   useEffect(() => {
     if (planFromUrl) setPlan(planFromUrl);
@@ -159,21 +144,22 @@ export default function SubscribePage() {
   }, [user?.uid]);
 
   const isActive =
-    !!profile?.activeSubscription &&
-    (!!profile?.subscriptionPlan || !!profile?.subscriptionExpiresAt);
+    !!profile?.activeSubscription && (!!profile?.subscriptionPlan || !!profile?.subscriptionExpiresAt);
 
-  // Pay handlers
+  /* ---------------- Paystack ---------------- */
   const payWithPaystack = () => {
     if (!user) {
       alert("Please log in to subscribe.");
       nav("/login");
       return;
     }
+
     const pub = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY;
     if (!pub) {
-      alert("Missing REACT_APP_PAYSTACK_PUBLIC_KEY in .env.local");
+      alert("Missing REACT_APP_PAYSTACK_PUBLIC_KEY in env");
       return;
     }
+
     const paystack = new PaystackPop();
     paystack.newTransaction({
       key: pub,
@@ -201,6 +187,97 @@ export default function SubscribePage() {
     });
   };
 
+  /* ---------------- Flutterwave ---------------- */
+  const payWithFlutterwave = async () => {
+    if (!user) {
+      alert("Please log in to subscribe.");
+      nav("/login");
+      return;
+    }
+
+    const pub = process.env.REACT_APP_FLW_PUBLIC_KEY;
+    if (!pub) {
+      alert("Missing REACT_APP_FLW_PUBLIC_KEY in env");
+      return;
+    }
+
+    if (!window.FlutterwaveCheckout) {
+      alert("Flutterwave script not loaded. Add it in index.html.");
+      return;
+    }
+
+    const tx_ref = `nesta_sub_${user.uid}_${plan}_${Date.now()}`;
+
+    window.FlutterwaveCheckout({
+      public_key: pub,
+      tx_ref,
+      amount: amountNGN,
+      currency: "NGN",
+      payment_options: "card,banktransfer,ussd",
+      customer: {
+        email: user.email || "guest@example.com",
+        name: user.displayName || "Nesta User",
+      },
+      customizations: {
+        title: "Nesta Subscription",
+        description: `Host subscription (${plan})`,
+        logo: "https://your-logo-url-if-you-have-one",
+      },
+      meta: { uid: user.uid, plan, purpose: "nesta_subscription" },
+
+      callback: async (response) => {
+        try {
+          const transaction_id =
+            response?.transaction_id ||
+            response?.transactionId ||
+            response?.id ||
+            "";
+
+          if (!transaction_id) {
+            alert("Missing Flutterwave transaction id. Subscription not activated.");
+            return;
+          }
+
+          // ✅ Send Firebase ID token so server can enforce uid match
+          const token = await user.getIdToken();
+
+          // ✅ verify on server BEFORE activating
+          const res = await fetch(`${API_BASE}/flutterwave/verify-subscription`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              tx_ref,
+              transaction_id,
+              uid: user.uid,
+              plan,
+            }),
+          });
+
+          const payload = await res.json().catch(() => null);
+
+          if (!res.ok || !payload?.ok) {
+            alert(payload?.message || "Verification failed. Subscription not activated.");
+            return;
+          }
+
+          await activateSubscription(user.uid, plan);
+          alert("✅ Subscription activated");
+          nav(-1);
+        } catch (e) {
+          console.error(e);
+          alert("Payment succeeded, but subscription activation failed.");
+        }
+      },
+
+      onclose: () => {
+        // user closed modal
+      },
+    });
+  };
+
   // Early return for guests (we still show a taste of luxury with the carousel)
   if (!user) {
     return (
@@ -210,8 +287,7 @@ export default function SubscribePage() {
           style={{
             borderRadius: 16,
             border: "1px solid rgba(255,255,255,0.15)",
-            background:
-              "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(15,23,42,0.65))",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(15,23,42,0.65))",
             boxShadow:
               "0 20px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
             maxWidth: 780,
@@ -222,8 +298,8 @@ export default function SubscribePage() {
         >
           <h2 style={{ margin: "6px 0 6px" }}>Please log in to subscribe</h2>
           <p className="muted">
-            Subscriptions unlock host/partner contact visibility after bookings
-            and other premium tools.
+            Subscriptions unlock host/partner contact visibility after bookings and other premium
+            tools.
           </p>
         </div>
       </main>
@@ -239,8 +315,7 @@ export default function SubscribePage() {
         style={{
           borderRadius: 16,
           border: "1px solid rgba(255,255,255,0.15)",
-          background:
-            "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(15,23,42,0.65))",
+          background: "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(15,23,42,0.65))",
           boxShadow:
             "0 20px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
           maxWidth: 780,
@@ -248,12 +323,10 @@ export default function SubscribePage() {
           padding: 18,
         }}
       >
-        <h1 style={{ margin: "6px 0 2px", color: "#f3f4f6" }}>
-          Host subscription
-        </h1>
+        <h1 style={{ margin: "6px 0 2px", color: "#f3f4f6" }}>Host subscription</h1>
         <p className="muted" style={{ marginTop: 0 }}>
-          Boost visibility, unlock contact details after bookings, and enjoy
-          priority support on Nesta.
+          Boost visibility, unlock contact details after bookings, and enjoy priority support on
+          Nesta.
         </p>
 
         {/* Global subscription status strip */}
@@ -265,8 +338,7 @@ export default function SubscribePage() {
               marginTop: 14,
               borderRadius: 12,
               border: "1px solid rgba(148,163,184,0.35)",
-              background:
-                "linear-gradient(90deg, rgba(148,163,184,0.18), rgba(15,23,42,0.85))",
+              background: "linear-gradient(90deg, rgba(148,163,184,0.18), rgba(15,23,42,0.85))",
               padding: 12,
               fontSize: "0.9rem",
               color: "#e5e7eb",
@@ -280,28 +352,17 @@ export default function SubscribePage() {
               marginTop: 14,
               borderRadius: 12,
               border: "1px solid rgba(16,185,129,0.5)",
-              background:
-                "linear-gradient(135deg, rgba(16,185,129,0.18), rgba(6,95,70,0.9))",
+              background: "linear-gradient(135deg, rgba(16,185,129,0.18), rgba(6,95,70,0.9))",
               padding: 16,
               color: "#ecfdf5",
             }}
           >
-            <h2
-              style={{
-                margin: "0 0 4px",
-                fontSize: "1.05rem",
-                fontWeight: 600,
-              }}
-            >
+            <h2 style={{ margin: "0 0 4px", fontSize: "1.05rem", fontWeight: 600 }}>
               You&apos;re already covered
             </h2>
-            <p
-              className="muted"
-              style={{ margin: 0, fontSize: "0.9rem", color: "#d1fae5" }}
-            >
-              Your current plan will remain active until the expiry date shown
-              above. You&apos;ll be able to extend or upgrade closer to that
-              time. Thank you for partnering with Nesta.
+            <p className="muted" style={{ margin: 0, fontSize: "0.9rem", color: "#d1fae5" }}>
+              Your current plan will remain active until the expiry date shown above. You&apos;ll be
+              able to extend or upgrade closer to that time. Thank you for partnering with Nesta.
             </p>
           </div>
         ) : (
@@ -351,18 +412,15 @@ export default function SubscribePage() {
               <button className="btn btn-gold" onClick={payWithPaystack}>
                 Pay with Paystack (₦{amountNGN.toLocaleString()})
               </button>
+
+              <button className="btn btn-outline" onClick={payWithFlutterwave}>
+                Pay with Flutterwave (₦{amountNGN.toLocaleString()})
+              </button>
             </div>
 
-            <p
-              className="muted"
-              style={{
-                marginTop: 18,
-                fontSize: "0.85rem",
-                color: "#cbd5e1",
-              }}
-            >
-              Your subscription helps us keep Nesta safe, secure, and growing.
-              You can upgrade or extend at any time.
+            <p className="muted" style={{ marginTop: 18, fontSize: "0.85rem", color: "#cbd5e1" }}>
+              Your subscription helps us keep Nesta safe, secure, and growing. You can upgrade or
+              extend at any time.
             </p>
           </>
         )}

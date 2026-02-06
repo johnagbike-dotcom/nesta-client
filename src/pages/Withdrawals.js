@@ -8,8 +8,11 @@ import { useAuth } from "../auth/AuthContext";
 import Button from "../components/Button";
 
 /* ===================== API ===================== */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   timeout: 20000,
   withCredentials: false,
 });

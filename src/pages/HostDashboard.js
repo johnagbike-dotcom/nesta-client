@@ -11,6 +11,9 @@ import {
   getDoc,
   limit,
 } from "firebase/firestore";
+import axios from "axios";
+import { getAuth } from "firebase/auth";
+
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
@@ -42,6 +45,26 @@ function formatDateTime(v) {
     return "—";
   }
 }
+
+/* ---------- API (server wallet source of truth) ---------- */
+const api = axios.create({
+  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
+    /\/$/,
+    ""
+  ),
+  timeout: 20000,
+  withCredentials: false,
+});
+
+api.interceptors.request.use(async (config) => {
+  const u = getAuth().currentUser;
+  if (u) {
+    const token = await u.getIdToken();
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 /* ---------- Small reusable UI ---------- */
 
@@ -133,9 +156,7 @@ function EmptyState() {
       <h3 className="text-xl font-bold text-white mb-2">
         No listings yet for this host
       </h3>
-      <p className="text-white/70">
-        Add your first Nesta stay to start earning.
-      </p>
+      <p className="text-white/70">Add your first Nesta stay to start earning.</p>
       <Link
         to="/post/new"
         className="inline-block mt-4 px-5 py-3 rounded-xl bg-amber-500 text-black font-semibold hover:bg-amber-400"
@@ -201,12 +222,14 @@ export default function HostDashboard() {
   const { showToast: toast } = useToast();
   const { profile } = useUserProfile(user?.uid);
 
-  // --- KYC status ---
+  // --- KYC status (UI hint only; server policy remains truth) ---
   const kycStatusRaw =
     profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
   const kycStatus = String(kycStatusRaw).toLowerCase();
   const isKycApproved =
-    kycStatus === "approved" || kycStatus === "verified" || kycStatus === "complete";
+    kycStatus === "approved" ||
+    kycStatus === "verified" ||
+    kycStatus === "complete";
 
   const [rows, setRows] = useState([]); // host listings
   const [loading, setLoading] = useState(true);
@@ -225,18 +248,24 @@ export default function HostDashboard() {
     loading: true,
   });
 
-  // wallet (backend truth)
+  // wallet (server truth via /api/payouts/me/wallet)
   const [wallet, setWallet] = useState({
     loading: true,
     availableN: 0,
     pendingN: 0,
-    lifetimeEarnedN: 0,
+    currency: "NGN",
+    canWithdraw: false,
+    reason: "",
+    payoutStatus: "",
+    payoutPreview: null,
+    minWithdrawal: 1000,
   });
 
   /**
-   * Revenue decision (clean + consistent):
+   * Revenue decision:
    * - grossLifetime: sum of CONFIRMED/PAID/COMPLETED bookings
    * - gross30d: rolling last 30 days of confirmed bookings
+   * - netLifetimeTracked: sum of hostPayoutN/pricingSnapshot.netPayoutN (if present)
    */
   const [rev, setRev] = useState({
     grossLifetime: 0,
@@ -252,21 +281,17 @@ export default function HostDashboard() {
     reviewCount: 0,
   });
 
-  // bookings for this host (for recent strip)
   const [hostBookings, setHostBookings] = useState([]);
-
-  // UI highlight (luxury pulse after action)
   const [highlightKey, setHighlightKey] = useState("");
 
   const now = Date.now();
   const isSubscribed =
-    subInfo.active && (!subInfo.expiresAt || new Date(subInfo.expiresAt).getTime() > now);
+    subInfo.active &&
+    (!subInfo.expiresAt || new Date(subInfo.expiresAt).getTime() > now);
 
   const recentBookings = useMemo(() => hostBookings.slice(0, 5), [hostBookings]);
 
   const goManageListings = () => navigate("/manage-listings");
-
-  // ✅ Navigate with normalized tabs
   const goReservationsTab = (tab = "all") => {
     const t = String(tab || "all").toLowerCase();
     navigate(`/host-reservations?tab=${encodeURIComponent(t)}`);
@@ -274,23 +299,20 @@ export default function HostDashboard() {
 
   const walletAvailable = Number(wallet.availableN || 0);
   const walletPending = Number(wallet.pendingN || 0);
-  const walletLifetime = Number(wallet.lifetimeEarnedN || 0);
 
-  const withdrawalLockedByKyc = !isKycApproved;
-  const withdrawalLockedByZero = walletAvailable <= 0;
-  const canWithdraw = !withdrawalLockedByKyc && !withdrawalLockedByZero;
+  // Lifetime earned shown = tracked net (more accurate than old user fields)
+  const walletLifetime = Number(rev.netLifetimeTracked || 0);
 
-  const showWalletLockBadge = !canWithdraw;
+  const canWithdraw = wallet.canWithdraw === true && walletAvailable > 0;
 
   const walletPrimaryHelper = wallet.loading
     ? "Loading…"
-    : withdrawalLockedByKyc
-    ? "Complete KYC to withdraw"
-    : withdrawalLockedByZero
+    : wallet.canWithdraw === false
+    ? wallet.reason || "Withdrawals locked"
+    : walletAvailable <= 0
     ? "No withdrawable balance yet"
     : "Ready to withdraw";
 
-  // ✅ host dashboard refresh trigger (supports post-action redirect)
   const refreshMeta = useMemo(() => {
     const sp = new URLSearchParams(location.search || "");
     const qpRefresh = sp.get("refresh");
@@ -314,7 +336,6 @@ export default function HostDashboard() {
 
       const colRef = collection(db, "listings");
 
-      // Primary: ownerId
       const qOwnerId = query(
         colRef,
         where("ownerId", "==", user.uid),
@@ -323,7 +344,6 @@ export default function HostDashboard() {
       const snap1 = await getDocs(qOwnerId);
       let list = snap1.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      // Fallback: ownerUid
       if (list.length === 0) {
         const qOwnerUid = query(
           colRef,
@@ -334,7 +354,6 @@ export default function HostDashboard() {
         list = snap2.docs.map((d) => ({ id: d.id, ...d.data() }));
       }
 
-      // Fallback: hostUid
       if (list.length === 0) {
         const qHostUid = query(
           colRef,
@@ -401,7 +420,7 @@ export default function HostDashboard() {
     };
   }, [loadSubscription]);
 
-  /* ---------- Wallet info (Host) ---------- */
+  /* ---------- Wallet info (SERVER truth) ---------- */
   const loadWallet = useCallback(async () => {
     if (!user?.uid) {
       setWallet((w) => ({ ...w, loading: false }));
@@ -410,38 +429,37 @@ export default function HostDashboard() {
     try {
       setWallet((w) => ({ ...w, loading: true }));
 
-      const snap = await getDoc(doc(db, "users", user.uid));
-      const d = snap.exists() ? snap.data() || {} : {};
+      const { data } = await api.get("/payouts/me/wallet");
+      if (!data?.ok) {
+        setWallet((w) => ({
+          ...w,
+          loading: false,
+          canWithdraw: false,
+          reason: data?.error || "Failed to load wallet",
+        }));
+        return;
+      }
 
-      const availableN = Number(
-        d.walletAvailableN ??
-          d.availableBalanceN ??
-          d.availableN ??
-          d.wallet?.availableN ??
-          0
-      );
-
-      const pendingN = Number(
-        d.walletPendingN ?? d.pendingBalanceN ?? d.pendingN ?? d.wallet?.pendingN ?? 0
-      );
-
-      const lifetimeEarnedN = Number(
-        d.walletLifetimeEarnedN ??
-          d.lifetimeEarnedN ??
-          d.totalEarnedN ??
-          d.wallet?.lifetimeEarnedN ??
-          0
-      );
-
+      const w = data.wallet || {};
       setWallet({
         loading: false,
-        availableN: Number.isFinite(availableN) ? availableN : 0,
-        pendingN: Number.isFinite(pendingN) ? pendingN : 0,
-        lifetimeEarnedN: Number.isFinite(lifetimeEarnedN) ? lifetimeEarnedN : 0,
+        availableN: Number(w.available || 0),
+        pendingN: Number(w.pending || 0),
+        currency: w.currency || "NGN",
+        canWithdraw: data.canWithdraw !== false,
+        reason: data.reason || "",
+        payoutStatus: data.payoutStatus || "",
+        payoutPreview: data.payoutPreview || null,
+        minWithdrawal: Number(data.minWithdrawal || 1000),
       });
     } catch (e) {
       console.error("Error loading host wallet:", e);
-      setWallet((w) => ({ ...w, loading: false }));
+      setWallet((w) => ({
+        ...w,
+        loading: false,
+        canWithdraw: false,
+        reason: e?.response?.data?.error || "Failed to load wallet",
+      }));
     }
   }, [user?.uid]);
 
@@ -468,7 +486,10 @@ export default function HostDashboard() {
         );
         return await getDocs(qref);
       } catch (e) {
-        console.warn(`[host dashboard] bookings query failed for ${field}:`, e?.message || e);
+        console.warn(
+          `[host dashboard] bookings query failed for ${field}:`,
+          e?.message || e
+        );
         return null;
       }
     }
@@ -551,7 +572,8 @@ export default function HostDashboard() {
 
         list.push({
           id: docu.id,
-          listingTitle: d.listingTitle || d.listing?.title || d.title || "Listing",
+          listingTitle:
+            d.listingTitle || d.listing?.title || d.title || "Listing",
           status: d.status || "pending",
           amount: gross,
           createdAt: d.createdAt || null,
@@ -559,9 +581,12 @@ export default function HostDashboard() {
         });
       }
 
-      // Needs attention = pending + cancelled + refunded + mismatches/review
       const needsAttention =
-        bookingsPending + cancelledCount + refundedCount + mismatchCount + reviewCount;
+        bookingsPending +
+        cancelledCount +
+        refundedCount +
+        mismatchCount +
+        reviewCount;
 
       setRev({
         grossLifetime,
@@ -594,7 +619,7 @@ export default function HostDashboard() {
     };
   }, [loadRevenueAndBookings]);
 
-  // ✅ post-action refresh + toast + highlight + URL cleanup
+  // post-action refresh + toast + highlight + URL cleanup
   useEffect(() => {
     let alive = true;
 
@@ -693,7 +718,9 @@ export default function HostDashboard() {
   }, [filtered]);
 
   const kpis = useMemo(() => {
-    const active = filtered.filter((r) => (r.status || "active").toLowerCase() === "active").length;
+    const active = filtered.filter(
+      (r) => (r.status || "active").toLowerCase() === "active"
+    ).length;
     return { active };
   }, [filtered]);
 
@@ -726,7 +753,8 @@ export default function HostDashboard() {
             </h1>
             <p className="text-white/70 mt-2 max-w-2xl text-sm md:text-base">
               Manage your Nesta stay, see your bookings and{" "}
-              <span className="font-semibold">what you’ve earned</span> — all in one calm, luxury view.
+              <span className="font-semibold">what you’ve earned</span> — all in
+              one calm, luxury view.
             </p>
           </div>
 
@@ -747,7 +775,8 @@ export default function HostDashboard() {
         {!isKycApproved && (
           <section className="rounded-2xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-50 flex items-center justify-between gap-3">
             <p>
-              <span className="font-semibold">Finish your KYC</span> to unlock full visibility, payouts, and trust indicators on Nesta.
+              <span className="font-semibold">Finish your KYC</span> to unlock
+              full visibility, payouts, and trust indicators on Nesta.
             </p>
             <button
               onClick={() => navigate("/onboarding/kyc/gate")}
@@ -770,7 +799,7 @@ export default function HostDashboard() {
             label="Active listing(s)"
             value={kpis.active}
             helper="Live stays on Nesta"
-            onClick={goManageListings}
+            onClick={() => navigate("/manage-listings")}
             highlight={highlightKey === "listings"}
           />
 
@@ -797,7 +826,7 @@ export default function HostDashboard() {
             currency
             value={nightlyPortfolio}
             helper="Across active listings"
-            onClick={goManageListings}
+            onClick={() => navigate("/manage-listings")}
           />
 
           <CardStat
@@ -814,23 +843,6 @@ export default function HostDashboard() {
             helper="Rolling • momentum"
           />
         </section>
-
-        {/* Lock badge */}
-        {(!isKycApproved || walletAvailable <= 0) && (
-          <div className="flex items-center gap-2 text-[11px] text-amber-200/90">
-            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5">
-              🔒
-              <span className="font-semibold tracking-wide">
-                {!isKycApproved ? "KYC REQUIRED FOR WITHDRAWALS" : "NO WITHDRAWABLE BALANCE"}
-              </span>
-            </span>
-            <span className="text-white/50">
-              {!isKycApproved
-                ? "Complete verification to unlock payouts"
-                : "Funds will unlock after payout window clears"}
-            </span>
-          </div>
-        )}
 
         {/* HOST WALLET */}
         <section className="grid gap-3 md:gap-4 md:grid-cols-3">
@@ -851,23 +863,21 @@ export default function HostDashboard() {
             helper={
               wallet.loading
                 ? "Loading…"
-                : !isKycApproved
-                ? "KYC required for payouts"
                 : walletPending > 0
                 ? "Clearing payout window"
                 : "No pending balance"
             }
             onClick={() => navigate("/withdrawals")}
-            disabled={!isKycApproved}
+            disabled={wallet.canWithdraw === false}
           />
 
           <CardStat
             label="Lifetime earned"
             currency
             value={walletLifetime}
-            helper={wallet.loading ? "Loading…" : "All-time host earnings"}
+            helper={wallet.loading ? "Loading…" : "Tracked net earnings"}
             onClick={() => navigate("/withdrawals")}
-            disabled={!isKycApproved}
+            disabled={wallet.canWithdraw === false}
           />
         </section>
 
@@ -910,7 +920,7 @@ export default function HostDashboard() {
         <section className="flex flex-wrap gap-3 items-center mt-1">
           <button
             type="button"
-            onClick={goManageListings}
+            onClick={() => navigate("/manage-listings")}
             className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
           >
             Manage your listing
@@ -943,8 +953,8 @@ export default function HostDashboard() {
             title={
               wallet.loading
                 ? "Loading wallet…"
-                : !isKycApproved
-                ? "Complete KYC to withdraw earnings"
+                : wallet.canWithdraw === false
+                ? wallet.reason || "Withdrawals locked"
                 : "No withdrawable balance yet"
             }
           >
@@ -1088,7 +1098,9 @@ export default function HostDashboard() {
                 >
                   <div className="min-w-0">
                     <p className="font-medium truncate">{b.listingTitle || "Listing"}</p>
-                    <p className="text-[11px] text-white/45">{formatDateTime(b.createdAt)}</p>
+                    <p className="text-[11px] text-white/45">
+                      {formatDateTime(b.createdAt)}
+                    </p>
                     {b.paymentMismatch ? (
                       <p className="mt-1 text-[11px] text-amber-200/80">
                         ⚠ payment mismatch (review)
