@@ -97,6 +97,26 @@ function PlanCard({ title, price, note, active, onSelect, featured = false }) {
     </button>
   );
 }
+function loadFlutterwaveScript() {
+  return new Promise((resolve, reject) => {
+    if (window.FlutterwaveCheckout) return resolve(true);
+
+    const existing = document.querySelector('script[data-flw="1"]');
+    if (existing) {
+      existing.addEventListener("load", () => resolve(true));
+      existing.addEventListener("error", reject);
+      return;
+    }
+
+    const s = document.createElement("script");
+    s.src = "https://checkout.flutterwave.com/v3.js";
+    s.async = true;
+    s.dataset.flw = "1";
+    s.onload = () => resolve(true);
+    s.onerror = reject;
+    document.body.appendChild(s);
+  });
+}
 
 export default function SubscribePage() {
   const { user } = useAuth();
@@ -207,7 +227,11 @@ export default function SubscribePage() {
     }
 
     const tx_ref = `nesta_sub_${user.uid}_${plan}_${Date.now()}`;
-
+    await loadFlutterwaveScript();
+if (!window.FlutterwaveCheckout) {
+  alert("Flutterwave failed to load.");
+  return;
+}
     window.FlutterwaveCheckout({
       public_key: pub,
       tx_ref,
