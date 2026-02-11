@@ -23,6 +23,7 @@ import KycApplicationPage from "./pages/onboarding/KycApplicationPage";
 import KycGate from "./pages/onboarding/KycGate";
 import KycPending from "./pages/onboarding/KycPending";
 import KycRetry from "./pages/onboarding/KycRetry";
+import KycStart from "./pages/onboarding/KycStart";
 import OnboardingHost from "./pages/onboarding/HostOnboarding";
 import OnboardingPartner from "./pages/onboarding/PartnerOnboarding";
 
@@ -209,6 +210,17 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
+
+              {/* ✅ NEW: Step 1 page route */}
+              <Route
+                path="/onboarding/kyc/start"
+                element={
+                  <RequireAuth>
+                    <KycStart />
+                  </RequireAuth>
+                }
+              />
+
               <Route
                 path="/onboarding/kyc/gate"
                 element={

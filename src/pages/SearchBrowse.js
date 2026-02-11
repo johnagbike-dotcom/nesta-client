@@ -188,16 +188,33 @@ function toMillis(ts) {
   if (typeof ts === "number") return ts;
   if (ts?.seconds) return ts.seconds * 1000 + Math.floor((ts.nanoseconds || 0) / 1e6);
   if (ts instanceof Date) return ts.getTime();
+  if (ts?.toMillis) return ts.toMillis();
   return 0;
 }
 
-function normCity(v) {
-  const s = String(v || "").trim();
+function digitsOnly(v) {
+  return String(v || "").replace(/[^\d]/g, "");
+}
+
+function normalizeCityKey(cityRaw) {
+  const s = String(cityRaw || "").trim().replace(/\s+/g, " ").toLowerCase();
   if (!s) return "";
-  const low = s.toLowerCase();
-  if (low === "any" || low === "all" || low === "any city" || low === "all cities")
-    return "";
-  return low;
+
+  if (
+    s === "abuja" ||
+    s === "abuja fct" ||
+    s === "fct" ||
+    s === "f.c.t" ||
+    s === "abuja-fct" ||
+    s === "abuja, fct"
+  ) {
+    return "abuja fct";
+  }
+
+  if (s === "portharcourt" || s === "port-harcourt") return "port harcourt";
+
+  if (s === "any" || s === "all" || s === "any city" || s === "all cities") return "";
+  return s;
 }
 
 // Defensive dedupe key (in case Firestore has duplicate docs / imports)
@@ -212,16 +229,36 @@ function listingKey(l) {
   return `${city}::${title}::${price}::${String(firstImg).slice(0, 60)}`;
 }
 
+function extractIndexUrl(err) {
+  const msg = String(err?.message || "");
+  const m = msg.match(/https:\/\/console\.firebase\.google\.com\/[^\s)]+/);
+  return m && m[0] ? m[0] : null;
+}
+
+function isIndexRequiredError(err) {
+  const msg = String(err?.message || "");
+  // Firestore typically throws "FAILED_PRECONDITION" + "requires an index"
+  return msg.toLowerCase().includes("requires an index");
+}
+
 export default function SearchBrowse() {
   const [params] = useSearchParams();
   const nav = useNavigate();
 
-  const q = (params.get("q") || "").trim();
-  const cityParam = (params.get("city") || "").trim();
-  const city = normCity(cityParam);
+  // ✅ Accept multiple keys from HomePage / older links
+  const rawLoc =
+    (params.get("loc") || "").trim() ||
+    (params.get("location") || "").trim() ||
+    (params.get("city") || "").trim();
 
-  const min = params.get("min") ? Number(params.get("min")) : undefined;
-  const max = params.get("max") ? Number(params.get("max")) : undefined;
+  const q = (params.get("q") || rawLoc || "").trim();
+  const cityParam = (params.get("city") || "").trim(); // only treat explicit ?city as exact city
+  const cityKey = normalizeCityKey(cityParam);
+
+  const minRaw = params.get("min");
+  const maxRaw = params.get("max");
+  const min = minRaw ? Number(digitsOnly(minRaw)) : undefined;
+  const max = maxRaw ? Number(digitsOnly(maxRaw)) : undefined;
 
   const [loading, setLoading] = useState(true);
   const [listings, setListings] = useState([]);
@@ -231,8 +268,11 @@ export default function SearchBrowse() {
   const [lastDoc, setLastDoc] = useState(null);
   const [hasMore, setHasMore] = useState(false);
 
+  // If Firestore index is missing, we fall back to a query that does NOT require composite indexes.
+  const [usingFallback, setUsingFallback] = useState(false);
+
   const seenIdsRef = useRef(new Set());
-  const seenKeysRef = useRef(new Set()); // ✅ dedupe by content too
+  const seenKeysRef = useRef(new Set());
 
   const [favs, setFavs] = useState(() => {
     try {
@@ -259,33 +299,55 @@ export default function SearchBrowse() {
 
   const clientMatch = useCallback(
     (r) => {
-      // Case-insensitive city match
-      if (city) {
-        const c = (r.city || "").toString().trim().toLowerCase();
-        if (c !== city) return false;
+      // ✅ Only show active listings (client-side safety too)
+      // If you don’t store status, this will still pass.
+      const st = String(r?.status || "active").toLowerCase();
+      if (st && st !== "active") return false;
+
+      // ✅ Exact city filter ONLY when ?city is present
+      if (cityKey) {
+        const listingCityKey = normalizeCityKey(r.city);
+        if (listingCityKey !== cityKey) return false;
       }
+
+      // ✅ Keyword search (title/city/area)
       if (q) {
         const needle = q.toLowerCase();
         const title = (r.title || "").toString().toLowerCase();
         const cityStr = (r.city || "").toString().toLowerCase();
         const area = (r.area || "").toString().toLowerCase();
-        if (!(title.includes(needle) || cityStr.includes(needle) || area.includes(needle)))
-          return false;
+
+        const ok = title.includes(needle) || cityStr.includes(needle) || area.includes(needle);
+        if (!ok) return false;
       }
+
+      // ✅ price filter (client-side guard, because fallback query may not apply it server-side)
+      const price = Number(r.pricePerNight || r.price || 0);
+      if (Number.isFinite(min) && price < min) return false;
+      if (Number.isFinite(max) && price > max) return false;
+
       return true;
     },
-    [q, city]
+    [q, cityKey, min, max]
   );
 
-  const buildBaseQuery = useCallback(
+  /**
+   * Preferred query (FAST, but requires composite index for:
+   * - status == active + orderBy(updatedAt)
+   * - status == active + orderBy(pricePerNight) (when min/max provided)
+   */
+  const buildIndexedQuery = useCallback(
     (after = null) => {
       const parts = [];
+
+      // ✅ server-side active filter
+      parts.push(where("status", "==", "active"));
 
       // price filters
       if (Number.isFinite(min)) parts.push(where("pricePerNight", ">=", min));
       if (Number.isFinite(max)) parts.push(where("pricePerNight", "<=", max));
 
-      // order: price if filtering; else updatedAt
+      // order
       const order =
         Number.isFinite(min) || Number.isFinite(max)
           ? orderBy("pricePerNight", "asc")
@@ -298,16 +360,39 @@ export default function SearchBrowse() {
     [col, min, max]
   );
 
-  // ✅ memoized normalizeRows (prevents repeat-fetch loops)
+  /**
+   * Fallback query (NO composite index required):
+   * - no where(status) and no orderBy(updatedAt/pricePerNight)
+   * - paginate by default __name__ ordering, then filter/sort on client
+   *
+   * NOTE: This is just a temporary “works even without indexes” mode.
+   */
+  const buildFallbackQuery = useCallback(
+    (after = null) => {
+      let qx = fsQuery(col, limit(PAGE_LIMIT));
+      if (after) qx = fsQuery(col, startAfter(after), limit(PAGE_LIMIT));
+      return qx;
+    },
+    [col]
+  );
+
   const normalizeRows = useCallback(
-    (docs) => {
+    (docs, mode) => {
       let rows = docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      // client-side filter (q + city)
+      // client-side filters (q/city/min/max/status)
       rows = rows.filter(clientMatch);
 
-      // stable sort when not using price ordering
-      if (!(Number.isFinite(min) || Number.isFinite(max))) {
+      // sort client-side (both indexed + fallback end up stable)
+      const usingPrice =
+        Number.isFinite(min) || Number.isFinite(max) || String(mode) === "price";
+      if (usingPrice) {
+        rows.sort((a, b) => {
+          const pa = Number(a.pricePerNight || a.price || 0);
+          const pb = Number(b.pricePerNight || b.price || 0);
+          return pa - pb;
+        });
+      } else {
         rows.sort((a, b) => {
           const at = toMillis(a?.updatedAt || a?.createdAt);
           const bt = toMillis(b?.updatedAt || b?.createdAt);
@@ -315,7 +400,7 @@ export default function SearchBrowse() {
         });
       }
 
-      // ✅ content-dedupe to prevent accidental duplicates showing (e.g. Abuja twice)
+      // content dedupe
       const next = [];
       for (const r of rows) {
         const k = listingKey(r);
@@ -329,6 +414,32 @@ export default function SearchBrowse() {
     [clientMatch, min, max]
   );
 
+  async function safeGetDocs(primaryQuery, fallbackQuery) {
+    try {
+      const snap = await getDocs(primaryQuery);
+      return { snap, usedFallback: false, err: null };
+    } catch (err) {
+      // If missing index, fall back automatically so your page still works.
+      if (isIndexRequiredError(err)) {
+        const url = extractIndexUrl(err);
+        if (url) setIndexUrl(url);
+        setUsingFallback(true);
+        window.dispatchEvent(
+          new CustomEvent("toast", {
+            detail: {
+              msg: "Search index missing — using fallback mode (slower).",
+              timeoutMs: 3200,
+            },
+          })
+        );
+
+        const snap = await getDocs(fallbackQuery);
+        return { snap, usedFallback: true, err };
+      }
+      throw err;
+    }
+  }
+
   /* -------------------------- Firestore fetch (first page) -------------------------- */
   useEffect(() => {
     let mounted = true;
@@ -336,6 +447,7 @@ export default function SearchBrowse() {
     // reset paging + animation memory + content dedupe memory
     setLastDoc(null);
     setHasMore(false);
+    setUsingFallback(false);
     seenIdsRef.current = new Set();
     seenKeysRef.current = new Set();
 
@@ -345,22 +457,32 @@ export default function SearchBrowse() {
       setIndexUrl(null);
 
       try {
-        const snap = await getDocs(buildBaseQuery(null));
+        const wantsPrice = Number.isFinite(min) || Number.isFinite(max);
+        const primary = buildIndexedQuery(null);
+        const fallback = buildFallbackQuery(null);
+
+        const { snap, usedFallback } = await safeGetDocs(primary, fallback);
         if (!mounted) return;
 
-        const rows = normalizeRows(snap.docs);
+        const rows = normalizeRows(snap.docs, wantsPrice ? "price" : "updated");
         setListings(rows);
 
         const nextLast = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
         setLastDoc(nextLast);
 
+        // We can keep paging in both modes:
+        // - indexed mode: hasMore if page full
+        // - fallback mode: also page full (but results are client-filtered, so may appear less)
         setHasMore(snap.docs.length === PAGE_LIMIT);
+
+        if (!usedFallback) setUsingFallback(false);
       } catch (err) {
         console.error("[Search] load failed:", err);
         if (!mounted) return;
 
-        const m = (err?.message || "").match(/https:\/\/console\.firebase\.google\.com\/[^\s)]+/);
-        if (m && m[0]) setIndexUrl(m[0]);
+        const url = extractIndexUrl(err);
+        if (url) setIndexUrl(url);
+
         setError("Couldn't load listings.");
       } finally {
         if (mounted) setLoading(false);
@@ -371,7 +493,15 @@ export default function SearchBrowse() {
     return () => {
       mounted = false;
     };
-  }, [buildBaseQuery, normalizeRows, q, cityParam, min, max]);
+  }, [
+    buildIndexedQuery,
+    buildFallbackQuery,
+    normalizeRows,
+    q,
+    cityParam,
+    min,
+    max,
+  ]);
 
   /* -------------------------- Load more -------------------------- */
   const loadMore = useCallback(async () => {
@@ -379,8 +509,17 @@ export default function SearchBrowse() {
     isLoadingMoreRef.current = true;
 
     try {
-      const snap = await getDocs(buildBaseQuery(lastDoc));
-      const rows = normalizeRows(snap.docs);
+      const wantsPrice = Number.isFinite(min) || Number.isFinite(max);
+
+      const primary = usingFallback
+        ? buildFallbackQuery(lastDoc) // keep fallback once it’s activated
+        : buildIndexedQuery(lastDoc);
+
+      const fallback = buildFallbackQuery(lastDoc);
+
+      const { snap, usedFallback } = await safeGetDocs(primary, fallback);
+
+      const rows = normalizeRows(snap.docs, wantsPrice ? "price" : "updated");
 
       const nextLast = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
       setLastDoc(nextLast);
@@ -391,12 +530,23 @@ export default function SearchBrowse() {
         const merged = [...prev, ...rows.filter((x) => !seen.has(x.id))];
         return merged;
       });
+
+      if (!usedFallback) setUsingFallback(false);
     } catch (err) {
       console.error("Load more failed:", err);
     } finally {
       isLoadingMoreRef.current = false;
     }
-  }, [hasMore, lastDoc, buildBaseQuery, normalizeRows]);
+  }, [
+    hasMore,
+    lastDoc,
+    buildIndexedQuery,
+    buildFallbackQuery,
+    normalizeRows,
+    min,
+    max,
+    usingFallback,
+  ]);
 
   /* ---------------------- IntersectionObserver hook-up ---------------------- */
   useEffect(() => {
@@ -440,10 +590,14 @@ export default function SearchBrowse() {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
-        window.dispatchEvent(new CustomEvent("toast", { detail: { msg: "Removed from favourites" } }));
+        window.dispatchEvent(
+          new CustomEvent("toast", { detail: { msg: "Removed from favourites" } })
+        );
       } else {
         next.add(id);
-        window.dispatchEvent(new CustomEvent("toast", { detail: { msg: "Added to favourites" } }));
+        window.dispatchEvent(
+          new CustomEvent("toast", { detail: { msg: "Added to favourites" } })
+        );
       }
       return next;
     });
@@ -451,6 +605,7 @@ export default function SearchBrowse() {
 
   const filterChips = [
     { label: "Search", value: q || "Any" },
+    // Only show “City” chip when user actually set ?city=
     { label: "City", value: cityParam || "Any" },
     { label: "Min ₦", value: Number.isFinite(min) ? min.toLocaleString("en-NG") : "Any" },
     { label: "Max ₦", value: Number.isFinite(max) ? max.toLocaleString("en-NG") : "Any" },
@@ -476,9 +631,11 @@ export default function SearchBrowse() {
             <button onClick={() => window.history.back()} className="btn" style={btnGhost}>
               ← Back
             </button>
+
             {listings.length > 0 && !loading && (
               <span className="text-xs text-white/60">
                 {listings.length} stay{listings.length === 1 ? "" : "s"} found
+                {usingFallback ? " • fallback" : ""}
               </span>
             )}
           </div>
@@ -534,11 +691,11 @@ export default function SearchBrowse() {
             {error}{" "}
             {indexUrl ? (
               <>
-                If the console shows an index URL,{" "}
+                Firestore needs a composite index.{" "}
                 <a href={indexUrl} target="_blank" rel="noreferrer" style={link}>
-                  open this link
+                  Open the index link
                 </a>{" "}
-                to auto-create the index, then refresh.
+                to auto-create it, then refresh.
               </>
             ) : (
               <>Check your Firestore rules and network.</>
@@ -554,7 +711,11 @@ export default function SearchBrowse() {
           <>
             <div className={gridCls}>
               {listings.map((l, i) => (
-                <div key={l.id} className="fade-in" style={{ animationDelay: getAnimDelay(l.id, i) }}>
+                <div
+                  key={l.id}
+                  className="fade-in"
+                  style={{ animationDelay: getAnimDelay(l.id, i) }}
+                >
                   <ListingCard
                     l={l}
                     onView={() => nav(`/listing/${l.id}`)}

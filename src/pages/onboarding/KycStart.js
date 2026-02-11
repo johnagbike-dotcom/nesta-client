@@ -1,12 +1,23 @@
 // src/pages/onboarding/KycStart.js
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { startKycFlow } from "../../api/kycProfile";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import useUserProfile from "../../hooks/useUserProfile";
+import {
+  createInitialKycProfile,
+  loadKycProfile,
+  saveKycProfile,
+} from "../../api/kycProfile";
+
+function normalizeIntentRole(raw) {
+  const r = String(raw || "").toLowerCase();
+  return r === "partner" || r === "verified_partner" ? "partner" : "host";
+}
 
 export default function KycStart() {
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
+
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
 
@@ -19,36 +30,68 @@ export default function KycStart() {
     }
 
     setSubmitting(true);
-    let role = "host";
+
+    // ✅ Priority order:
+    // 1) URL (?role=host|partner) from homepage CTAs (ONLY if present)
+    // 2) profile role
+    // 3) localStorage role
+    // 4) host
+    const rawUrlRole = searchParams.get("role"); // null if absent
+    const urlRole = rawUrlRole ? normalizeIntentRole(rawUrlRole) : "";
+
+    const roleFromProfile = normalizeIntentRole(
+      profile?.role || profile?.accountType || profile?.type
+    );
+
+    let roleFromStorage = "";
+    try {
+      const rawStored = localStorage.getItem("nesta_role");
+      roleFromStorage = rawStored ? normalizeIntentRole(rawStored) : "";
+    } catch {
+      // ignore
+    }
+
+    let role = urlRole || roleFromProfile || roleFromStorage || "host";
+    role = normalizeIntentRole(role);
+
+    // remember intent for the rest of the onboarding flow
+    try {
+      localStorage.setItem("nesta_kyc_intent", role);
+    } catch {
+      // ignore
+    }
 
     try {
-      // determine role: profile role first, fallback to localStorage, then host
-      const roleFromStorage = localStorage.getItem("nesta_role");
-      role = (profile?.role || roleFromStorage || "host").toLowerCase();
+      // Ensure KYC doc exists (so Step 2/3 never "floats" without a record)
+      const existing = await loadKycProfile(user.uid);
 
-      // only host/partner are meaningful here
-      if (role !== "partner") role = "host";
+      if (!existing) {
+        // ✅ Create initial stub doc (API expects uid, role)
+        await createInitialKycProfile(user.uid, role);
 
-      // remember intent for the rest of the onboarding flow
-      try {
-        localStorage.setItem("nesta_kyc_intent", role);
-      } catch {
-        // ignore if localStorage not available
+        // ✅ Add email + status in a merge-safe way
+        await saveKycProfile(user.uid, {
+          email: user.email || "",
+          status: "DRAFT",
+          role,
+          step: 1,
+        });
+      } else {
+        // ✅ Keep role/email aligned (safe merge)
+        await saveKycProfile(user.uid, {
+          role,
+          email: user.email || existing.email || "",
+          status: existing.status || "DRAFT",
+        });
       }
-
-      await startKycFlow({
-        uid: user.uid,
-        role,
-        email: user.email || "",
-      });
     } catch (e) {
       console.error("Could not start KYC:", e);
-      // we still continue so the user isn't blocked
+      // continue anyway so user isn't blocked
     } finally {
       setSubmitting(false);
     }
 
-    // go to the main KYC application form (step 2)
+    // ✅ Step 2 (application details)
     nav(`/onboarding/kyc/apply?role=${encodeURIComponent(role)}`);
   }
 
@@ -65,6 +108,7 @@ export default function KycStart() {
       <h1 style={{ fontSize: 28, fontWeight: 900 }}>
         Let's verify your identity
       </h1>
+
       <p style={{ marginTop: 10, color: "#a9b2c4" }}>
         We'll confirm your identity using your uploaded documents. This keeps
         Nesta a trusted environment where all hosts and verified partners are
@@ -80,8 +124,7 @@ export default function KycStart() {
           fontSize: 16,
           fontWeight: 800,
           borderRadius: 12,
-          background:
-            "linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c)",
+          background: "linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c)",
           border: "1px solid rgba(255,210,64,.6)",
           cursor: "pointer",
           opacity: submitting ? 0.6 : 1,

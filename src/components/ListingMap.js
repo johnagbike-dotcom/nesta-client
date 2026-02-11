@@ -12,30 +12,66 @@ const nestaDarkStyle = [
 ];
 
 // ---- simple global loader so we only inject the script once ----
+// NOTE: With `loading=async`, Google expects a `callback=` param.
+// Without it, you can hit `maps.Map is not a constructor`.
 function loadGoogleMaps(apiKey) {
   if (typeof window === "undefined") return Promise.reject(new Error("no window"));
-  if (window.google && window.google.maps) return Promise.resolve(window.google.maps);
+
+  // Already fully loaded
+  if (window.google?.maps?.Map) return Promise.resolve(window.google.maps);
 
   if (window.__nestaGMapsPromise) return window.__nestaGMapsPromise;
 
   window.__nestaGMapsPromise = new Promise((resolve, reject) => {
+    // Ensure we have a stable global callback for Google to invoke
+    window.__nestaGMapsOnLoad = () => {
+      if (window.google?.maps?.Map) resolve(window.google.maps);
+      else reject(new Error("Google Maps loaded but API is incomplete"));
+    };
+
     const existing = document.querySelector('script[data-nesta-gmaps="1"]');
     if (existing) {
-      existing.addEventListener("load", () => resolve(window.google.maps));
-      existing.addEventListener("error", () => reject(new Error("Google maps script error")));
+      // If script exists but API not ready yet, wait via callback or poll a little
+      if (window.google?.maps?.Map) {
+        resolve(window.google.maps);
+        return;
+      }
+
+      // Small fallback polling in case browser cached script and callback timing differs
+      let tries = 0;
+      const t = setInterval(() => {
+        tries += 1;
+        if (window.google?.maps?.Map) {
+          clearInterval(t);
+          resolve(window.google.maps);
+        } else if (tries >= 50) {
+          clearInterval(t);
+          reject(new Error("Google Maps timed out"));
+        }
+      }, 100);
+
+      existing.addEventListener("error", () => {
+        clearInterval(t);
+        reject(new Error("Google maps script error"));
+      });
+
       return;
     }
 
+    const params = new URLSearchParams({
+      key: apiKey,
+      loading: "async",
+      callback: "__nestaGMapsOnLoad",
+      v: "weekly",
+      // libraries: "places", // uncomment if you use Places (autocomplete/search)
+    });
+
     const script = document.createElement("script");
     script.dataset.nestaGmaps = "1";
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
+    script.src = `https://maps.googleapis.com/maps/api/js?${params.toString()}`;
     script.async = true;
     script.defer = true;
 
-    script.onload = () => {
-      if (window.google && window.google.maps) resolve(window.google.maps);
-      else reject(new Error("Google maps failed to load"));
-    };
     script.onerror = () => reject(new Error("Google maps script error"));
 
     document.head.appendChild(script);

@@ -1,5 +1,5 @@
 // src/pages/HomePage.js
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import FeaturedCarousel from "../components/FeaturedCarousel";
 import { useAuth } from "../auth/AuthContext";
@@ -8,7 +8,6 @@ import useUserProfile from "../hooks/useUserProfile";
 /* ---------- page constants ---------- */
 
 // Hero image – local file in /public
-// e.g. public/hero.jpg (Ikoyi Link Bridge, Abuja Gate, etc.)
 const HERO_BG = "/hero.jpg";
 const HERO_BG_FALLBACK = HERO_BG;
 
@@ -52,9 +51,46 @@ function normalizeRole(raw) {
   return r;
 }
 
+function digitsOnly(v) {
+  // allows: "₦50,000" -> "50000"
+  return String(v || "").replace(/[^\d]/g, "");
+}
+
+function normalizeKey(s) {
+  return String(s || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/**
+ * If the user types an AREA (Ikoyi/Lekki/Wuse/etc) we should NOT set ?city=
+ * because SearchBrowse uses exact city matching.
+ * We only set ?city= for known city intents.
+ */
+function isKnownCityIntent(input) {
+  const k = normalizeKey(input);
+
+  // Add more cities here as you expand inventory
+  const known = new Set([
+    "lagos",
+    "abuja",
+    "abuja fct",
+    "abuja, fct",
+    "fct",
+    "f.c.t",
+    "port harcourt",
+    "port-harcourt",
+    "portharcourt",
+  ]);
+
+  return known.has(k);
+}
+
 /* ---------- component ---------- */
 export default function HomePage() {
   const nav = useNavigate();
+
   const [loc, setLoc] = useState("");
   const [minN, setMinN] = useState("");
   const [maxN, setMaxN] = useState("");
@@ -70,19 +106,63 @@ export default function HomePage() {
 
   const heroBg = HERO_BG || HERO_BG_FALLBACK;
 
+  // ✅ Always send onboarding CTAs through Step 1 (KycStart)
+  const hostStartLink = "/onboarding/kyc/start?role=host";
+  const partnerStartLink = "/onboarding/kyc/start?role=partner";
+
+  // Optional: show a slightly smarter placeholder based on typical searches
+  const locPlaceholder = useMemo(
+    () => "City or area (e.g. Lagos, Abuja, Ikoyi, Wuse, Lekki)",
+    []
+  );
+
+  function buildSearchQueryString({ text, min, max, forceCity = false } = {}) {
+    const qs = new URLSearchParams();
+
+    const t = String(text || "").trim();
+    const minV = digitsOnly(min).trim();
+    const maxV = digitsOnly(max).trim();
+
+    if (t) {
+      // Always include q so SearchBrowse can match title/area/city client-side
+      qs.set("q", t);
+
+      // Only include exact city filter when it is truly a city
+      if (forceCity || isKnownCityIntent(t)) {
+        qs.set("city", t);
+      }
+    }
+
+    if (minV) qs.set("min", minV);
+    if (maxV) qs.set("max", maxV);
+
+    return qs.toString();
+  }
+
   function handleSearch(e) {
     e?.preventDefault?.();
-    const qs = new URLSearchParams();
-    if (loc.trim()) qs.set("loc", loc.trim());
-    if (minN.trim()) qs.set("min", minN.trim());
-    if (maxN.trim()) qs.set("max", maxN.trim());
-    nav(`/explore${qs.toString() ? `?${qs.toString()}` : ""}`);
+
+    const queryString = buildSearchQueryString({
+      text: loc,
+      min: minN,
+      max: maxN,
+    });
+
+    nav(`/search${queryString ? `?${queryString}` : ""}`);
   }
 
   function goToDestination(d) {
-    const qs = new URLSearchParams();
-    qs.set("loc", d.query);
-    nav(`/explore?${qs.toString()}`);
+    const city = String(d?.query || "").trim();
+
+    // Destinations are always cities → force city filter
+    const queryString = buildSearchQueryString({
+      text: city,
+      min: "",
+      max: "",
+      forceCity: true,
+    });
+
+    nav(`/search${queryString ? `?${queryString}` : ""}`);
   }
 
   return (
@@ -117,31 +197,15 @@ export default function HomePage() {
           padding: 0 18px;
         }
 
-        /* ---------- KEYFRAMES ---------- */
-
         @keyframes heroFadeIn {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
         }
 
         @keyframes softRise {
-          from {
-            opacity: 0;
-            transform: translateY(6px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-
-        /* ---------- HERO ---------- */
 
         .hero-wrap {
           position: relative;
@@ -166,17 +230,8 @@ export default function HomePage() {
           position: absolute;
           inset: 0;
           background:
-            radial-gradient(
-              1100px 520px at 15% 15%,
-              rgba(9,12,20,.30),
-              rgba(3,5,10,.60)
-            ),
-            linear-gradient(
-              135deg,
-              rgba(3,5,10,.45) 0%,
-              rgba(3,5,10,.70) 60%,
-              rgba(3,5,10,.80) 100%
-            );
+            radial-gradient(1100px 520px at 15% 15%, rgba(9,12,20,.30), rgba(3,5,10,.60)),
+            linear-gradient(135deg, rgba(3,5,10,.45) 0%, rgba(3,5,10,.70) 60%, rgba(3,5,10,.80) 100%);
         }
 
         .hero-body {
@@ -272,9 +327,7 @@ export default function HomePage() {
           background: rgba(255,255,255,.04);
           border-color: rgba(255,255,255,.34);
         }
-        .btn-ghost:active {
-          transform: translateY(1px);
-        }
+        .btn-ghost:active { transform: translateY(1px); }
 
         .search-shell {
           margin-top: 4px;
@@ -302,11 +355,7 @@ export default function HomePage() {
           outline: none;
           font-size: 14px;
         }
-        .pill::placeholder {
-          color: #96a0b4;
-        }
-
-        /* ---------- SECTIONS ---------- */
+        .pill::placeholder { color: #96a0b4; }
 
         .section-title {
           font-family: 'Playfair Display', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif;
@@ -315,14 +364,11 @@ export default function HomePage() {
           color: #f5f2ea;
           margin: 0 0 14px;
         }
-
         .section-sub {
           color: #a8b0c4;
           font-size: 14px;
           margin: 0 0 18px;
         }
-
-        /* Destinations */
 
         .dest-grid {
           display: grid;
@@ -357,9 +403,7 @@ export default function HomePage() {
           transform: scale(1.02);
           transition: transform .45s ease;
         }
-        .dest-card:hover .dest-img {
-          transform: scale(1.06);
-        }
+        .dest-card:hover .dest-img { transform: scale(1.06); }
         .dest-overlay {
           position: absolute;
           inset: 0;
@@ -378,10 +422,7 @@ export default function HomePage() {
           font-weight: 600;
           margin-bottom: 4px;
         }
-        .dest-tagline {
-          font-size: 13px;
-          color: #d3d9e9;
-        }
+        .dest-tagline { font-size: 13px; color: #d3d9e9; }
 
         .host-cta {
           display: grid;
@@ -389,8 +430,7 @@ export default function HomePage() {
           gap: 16px;
           align-items: center;
           border: 1px solid rgba(255,255,255,.14);
-          background:
-            radial-gradient(circle at top left, rgba(255,255,255,.07), rgba(0,0,0,.82));
+          background: radial-gradient(circle at top left, rgba(255,255,255,.07), rgba(0,0,0,.82));
           border-radius: 22px;
           padding: 22px;
           overflow: hidden;
@@ -400,8 +440,7 @@ export default function HomePage() {
           transform: translateY(-3px);
           box-shadow: 0 22px 52px rgba(0,0,0,.8);
           border-color: rgba(255,255,255,.22);
-          background:
-            radial-gradient(circle at top left, rgba(255,255,255,.1), rgba(0,0,0,.84));
+          background: radial-gradient(circle at top left, rgba(255,255,255,.1), rgba(0,0,0,.84));
         }
         .host-img {
           width: 100%;
@@ -410,85 +449,37 @@ export default function HomePage() {
           border-radius: 16px;
         }
 
-        /* ---------- RESPONSIVE ---------- */
-
         @media (max-width: 900px) {
-          .hero-body {
-            padding: 40px 18px 26px;
-          }
-          .hero-title {
-            font-size: 30px;
-          }
-          .hero-sub {
-            font-size: 15px;
-          }
-          .search-row {
-            grid-template-columns: 1fr;
-          }
-          .search-shell {
-            padding: 10px;
-          }
-          .host-cta {
-            grid-template-columns: 1fr;
-          }
-          .host-img {
-            height: 220px;
-          }
+          .hero-body { padding: 40px 18px 26px; }
+          .hero-title { font-size: 30px; }
+          .hero-sub { font-size: 15px; }
+          .search-row { grid-template-columns: 1fr; }
+          .search-shell { padding: 10px; }
+          .host-cta { grid-template-columns: 1fr; }
+          .host-img { height: 220px; }
         }
 
-        /* Extra mobile polish for Nigerian users */
         @media (max-width: 640px) {
-          .hero-body {
-            padding: 32px 16px 22px;
-          }
-          .hero-title {
-            font-size: 26px;
-            line-height: 1.15;
-          }
-          .hero-sub {
-            font-size: 14px;
-            max-width: 100%;
-          }
-          .cta-row {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 10px;
-          }
-          .btn-gold,
-          .btn-ghost {
-            width: 100%;
-            justify-content: center;
-          }
-          .section-title {
-            font-size: 20px;
-          }
-          .section-sub {
-            font-size: 13px;
-          }
-          .dest-grid {
-            grid-template-columns: 1fr;
-          }
-          .host-img {
-            height: 200px;
-          }
+          .hero-body { padding: 32px 16px 22px; }
+          .hero-title { font-size: 26px; line-height: 1.15; }
+          .hero-sub { font-size: 14px; max-width: 100%; }
+          .cta-row { flex-direction: column; align-items: stretch; gap: 10px; }
+          .btn-gold, .btn-ghost { width: 100%; justify-content: center; }
+          .section-title { font-size: 20px; }
+          .section-sub { font-size: 13px; }
+          .dest-grid { grid-template-columns: 1fr; }
+          .host-img { height: 200px; }
         }
       `}</style>
 
       <div className="page-wrap">
-        {/* Full-page background image + transparent overlay */}
-        <div
-          className="page-bg"
-          style={{ backgroundImage: `url(${heroBg})` }}
-        />
+        <div className="page-bg" style={{ backgroundImage: `url(${heroBg})` }} />
         <div className="page-overlay" />
 
         {/* ───────── Hero ───────── */}
         <section className="container" style={{ marginTop: 18 }}>
           <div className="hero-wrap">
-            <div
-              className="hero-bg"
-              style={{ backgroundImage: `url(${heroBg})` }}
-            />
+            <div className="hero-bg" style={{ backgroundImage: `url(${heroBg})` }} />
             <div className="hero-scrim" />
             <div className="hero-body">
               <div className="hero-kicker">NESTA • SIGNATURE STAYS</div>
@@ -500,12 +491,10 @@ export default function HomePage() {
               </h1>
 
               <p className="hero-sub">
-                Thoughtfully curated apartments, villas and city homes in
-                Nigeria’s most desirable neighbourhoods — with verified hosts,
-                secure local payments and concierge-style support.
+                Thoughtfully curated apartments, villas and city homes in Nigeria’s most desirable
+                neighbourhoods — with verified hosts, secure local payments and concierge-style support.
               </p>
 
-              {/* Role-aware CTAs */}
               <div className="cta-row">
                 {hasDashboardRole ? (
                   <>
@@ -533,7 +522,7 @@ export default function HomePage() {
                     <Link to="/explore" className="btn-gold">
                       Explore stays
                     </Link>
-                    <Link to="/onboarding/kyc/apply" className="btn-ghost">
+                    <Link to={hostStartLink} className="btn-ghost">
                       List your home
                     </Link>
                   </>
@@ -545,7 +534,7 @@ export default function HomePage() {
                 <form className="search-row" onSubmit={handleSearch}>
                   <input
                     className="pill"
-                    placeholder="City, area (e.g. Ikoyi, Wuse, Lekki)"
+                    placeholder={locPlaceholder}
                     value={loc}
                     onChange={(e) => setLoc(e.target.value)}
                   />
@@ -572,12 +561,11 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* ───────── Featured stays (carousel) – premium slot ───────── */}
+        {/* ───────── Featured stays (carousel) ───────── */}
         <section className="container" style={section(32)}>
           <h2 className="section-title">Featured stays</h2>
           <p className="section-sub">
-            Sponsored homes that highlight the Nesta standard — design-led,
-            professionally cleaned and ready when you arrive.
+            Sponsored homes that highlight the Nesta standard — design-led, professionally cleaned and ready when you arrive.
           </p>
           <FeaturedCarousel />
         </section>
@@ -586,17 +574,11 @@ export default function HomePage() {
         <section className="container" style={section(28)}>
           <h2 className="section-title">Signature destinations</h2>
           <p className="section-sub">
-            Business trips, relocations or weekend escapes — start with
-            Nigeria’s most requested neighbourhoods.
+            Business trips, relocations or weekend escapes — start with Nigeria’s most requested neighbourhoods.
           </p>
           <div className="dest-grid">
             {destinations.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                className="dest-card"
-                onClick={() => goToDestination(d)}
-              >
+              <button key={d.id} type="button" className="dest-card" onClick={() => goToDestination(d)}>
                 <img src={d.img} alt={d.name} className="dest-img" />
                 <div className="dest-overlay" />
                 <div className="dest-body">
@@ -624,27 +606,20 @@ export default function HomePage() {
                 Start your hosting journey
               </h3>
               <p style={{ color: "#c9d2e3", marginTop: 8, fontSize: 14 }}>
-                Turn your space into a premium stay with verified guests,
-                pro photography and dedicated Nesta host support.
+                Turn your space into a premium stay with verified guests, pro photography and dedicated Nesta host support.
               </p>
+
               {isHost ? (
-                <Link
-                  to="/host"
-                  className="btn-gold"
-                  style={{ marginTop: 10 }}
-                >
+                <Link to="/host" className="btn-gold" style={{ marginTop: 10 }}>
                   Go to host dashboard
                 </Link>
               ) : (
-                <Link
-                  to="/onboarding/kyc/apply"
-                  className="btn-gold"
-                  style={{ marginTop: 10 }}
-                >
+                <Link to={hostStartLink} className="btn-gold" style={{ marginTop: 10 }}>
                   Start host application
                 </Link>
               )}
             </div>
+
             <img
               className="host-img"
               alt="Elegant bedroom interior"
@@ -669,28 +644,20 @@ export default function HomePage() {
                 Scale as a Verified Partner
               </h3>
               <p style={{ color: "#c9d2e3", marginTop: 8, fontSize: 14 }}>
-                Grow premium portfolios with unified commission tracking,
-                payouts and performance analytics — all in one calm Nesta
-                dashboard.
+                Grow premium portfolios with unified commission tracking, payouts and performance analytics — all in one calm Nesta dashboard.
               </p>
+
               {isPartner ? (
-                <Link
-                  to="/partner"
-                  className="btn-gold"
-                  style={{ marginTop: 10 }}
-                >
+                <Link to="/partner" className="btn-gold" style={{ marginTop: 10 }}>
                   Go to partner dashboard
                 </Link>
               ) : (
-                <Link
-                  to="/onboarding/kyc/apply?role=partner"
-                  className="btn-gold"
-                  style={{ marginTop: 10 }}
-                >
+                <Link to={partnerStartLink} className="btn-gold" style={{ marginTop: 10 }}>
                   Start partner application
                 </Link>
               )}
             </div>
+
             <img
               className="host-img"
               alt="Contemporary living space"

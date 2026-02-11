@@ -1,14 +1,23 @@
 // src/pages/onboarding/KycApplicationPage.js
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import useUserProfile from "../../hooks/useUserProfile";
-import { loadKycProfile, saveKycProfile } from "../../api/kycProfile";
+import {
+  createInitialKycProfile,
+  loadKycProfile,
+  saveKycProfile,
+} from "../../api/kycProfile";
 
 const COUNTRY_DEFAULT = "Nigeria";
 
 function safe(str) {
   return String(str || "");
+}
+
+function normalizeRole(raw) {
+  const r = String(raw || "").toLowerCase();
+  return r === "partner" || r === "verified_partner" ? "partner" : "host";
 }
 
 export default function KycApplicationPage() {
@@ -22,25 +31,22 @@ export default function KycApplicationPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  // role from URL (?role=host | partner) or from existing profile
-  const urlRole = safe(searchParams.get("role")).toLowerCase();
-  const inferredRole =
+  // role from URL (?role=host|partner) or inferred fallback
+  const urlRole = normalizeRole(searchParams.get("role"));
+  const inferredRole = normalizeRole(
     urlRole ||
-    safe(userProfile?.role).toLowerCase() ||
-    safe(userProfile?.accountType).toLowerCase();
+      safe(userProfile?.role).toLowerCase() ||
+      safe(userProfile?.accountType).toLowerCase() ||
+      safe(userProfile?.type).toLowerCase()
+  );
 
-  const targetRole =
-    inferredRole === "partner" || inferredRole === "verified_partner"
-      ? "partner"
-      : "host"; // default to host
-
+  const targetRole = inferredRole; // "host" | "partner"
   const isHost = targetRole === "host";
   const isPartner = targetRole === "partner";
 
   const [form, setForm] = useState({
-    role: targetRole, // host | partner
-    accountType: isHost ? "individual" : "individual", // individual | company
-    // personal / main contact
+    role: targetRole,
+    accountType: isHost ? "individual" : "individual",
     fullName: "",
     phone: "",
     dob: "",
@@ -50,11 +56,9 @@ export default function KycApplicationPage() {
     stateRegion: "",
     country: COUNTRY_DEFAULT,
     postcode: "",
-    // ID document
     idType: "International passport",
     idNumber: "",
     idExpiry: "",
-    // company-specific (for partner+company)
     companyName: "",
     companyRegNo: "",
     companyCountry: COUNTRY_DEFAULT,
@@ -63,7 +67,7 @@ export default function KycApplicationPage() {
     companyContactRole: "",
   });
 
-  /* ---------- load existing KYC profile ---------- */
+  /* ---------- load / create existing KYC profile (defensive) ---------- */
   useEffect(() => {
     let live = true;
 
@@ -77,19 +81,27 @@ export default function KycApplicationPage() {
       setError("");
 
       try {
-        const data = await loadKycProfile(user.uid);
+        // ✅ Ensure doc exists (handles direct hits to /apply)
+        const existing = await loadKycProfile(user.uid);
+        if (!existing) {
+          await createInitialKycProfile(user.uid, targetRole);
+        } else {
+          // ✅ keep role aligned with intent (URL > profile)
+          const docRole = normalizeRole(existing.role);
+          if (docRole !== targetRole) {
+            await saveKycProfile(user.uid, { role: targetRole });
+          }
+        }
+
+        const data = (await loadKycProfile(user.uid)) || null;
+
         if (live && data) {
-          const roleFromDoc = safe(data.role).toLowerCase();
-          const finalRole =
-            roleFromDoc === "partner" || roleFromDoc === "verified_partner"
-              ? "partner"
-              : targetRole;
+          const finalRole = normalizeRole(data.role || targetRole);
 
           setForm((prev) => ({
             ...prev,
             ...data,
             role: finalRole,
-            // host must always be individual
             accountType:
               finalRole === "host"
                 ? "individual"
@@ -113,7 +125,7 @@ export default function KycApplicationPage() {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.uid]);
+  }, [user?.uid, targetRole]);
 
   const onChange = (e) => {
     const { name, value } = e.target;
@@ -121,7 +133,6 @@ export default function KycApplicationPage() {
   };
 
   const handleAccountTypeChange = (type) => {
-    // host should never be able to change this – defensive guard
     if (isHost) return;
     setForm((prev) => ({ ...prev, accountType: type }));
   };
@@ -140,13 +151,13 @@ export default function KycApplicationPage() {
       const payload = {
         ...form,
         role: targetRole,
-        // enforce host = individual
         accountType: isHost ? "individual" : form.accountType,
+        step: 2,
       };
 
       await saveKycProfile(user.uid, payload);
 
-      // after saving details → go to uploads page
+      // after saving details → go to uploads page (step 3)
       navigate("/onboarding/kyc", { replace: true });
     } catch (err) {
       console.error(err);
@@ -162,12 +173,11 @@ export default function KycApplicationPage() {
   const isCompany = isPartner && accountType === "company";
 
   const headerLabel = isHost ? "Host application" : "Partner application";
-  const accountQuestionVisible = isPartner; // ⬅ host no longer sees the question
+  const accountQuestionVisible = isPartner;
 
   return (
     <main className="min-h-screen bg-[#05070a] pt-20 pb-16 px-4 text-white">
       <div className="max-w-4xl mx-auto">
-        {/* Header */}
         <header className="mb-6">
           <p className="text-xs tracking-[0.35em] uppercase text-amber-200/80">
             Nesta • KYC • Step 2 of 3
@@ -176,14 +186,13 @@ export default function KycApplicationPage() {
             Tell us about you
           </h1>
           <p className="mt-2 text-sm md:text-base text-white/70 max-w-2xl">
-            We ask for these details once to keep Nesta safe and compliant. For
-            a company partner, fill in both the company and primary contact
+            We ask for these details once to keep Nesta safe and compliant. For a
+            company partner, fill in both the company and primary contact
             details.
           </p>
         </header>
 
         <section className="rounded-3xl border border-white/10 bg-[#070b12] p-6 md:p-8 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
-          {/* Card header */}
           <div className="flex items-start justify-between gap-4 mb-4 md:mb-6">
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-2xl bg-amber-400/90 flex items-center justify-center text-black font-bold text-lg">
@@ -205,7 +214,6 @@ export default function KycApplicationPage() {
           </div>
 
           <form onSubmit={onSubmit} className="space-y-6">
-            {/* Account type question */}
             {accountQuestionVisible ? (
               <div>
                 <p className="text-sm font-semibold mb-2">
@@ -249,7 +257,6 @@ export default function KycApplicationPage() {
               </div>
             )}
 
-            {/* Company details – only when partner + company */}
             {isCompany && (
               <div className="space-y-4 pt-4 border-t border-white/10">
                 <h2 className="text-sm font-semibold text-white/80">
@@ -332,7 +339,6 @@ export default function KycApplicationPage() {
               </div>
             )}
 
-            {/* Personal / contact details */}
             <div className="space-y-4 pt-4 border-t border-white/10">
               <h2 className="text-sm font-semibold text-white/80">
                 Primary contact details
@@ -378,7 +384,6 @@ export default function KycApplicationPage() {
               </div>
             </div>
 
-            {/* Address */}
             <div className="space-y-4 pt-4 border-t border-white/10">
               <h2 className="text-sm font-semibold text-white/80">
                 Serviceable address
@@ -452,7 +457,6 @@ export default function KycApplicationPage() {
               </div>
             </div>
 
-            {/* ID document */}
             <div className="space-y-4 pt-4 border-t border-white/10">
               <h2 className="text-sm font-semibold text-white/80">
                 Primary ID document
@@ -498,7 +502,6 @@ export default function KycApplicationPage() {
               </div>
             </div>
 
-            {/* Error + actions */}
             {error && (
               <div className="mt-2 text-sm text-red-300 bg-red-900/30 border border-red-500/50 rounded-xl px-4 py-3">
                 {error}

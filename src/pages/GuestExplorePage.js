@@ -1,6 +1,6 @@
 // src/pages/GuestExplorePage.js
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "../firebase";
 import { motion } from "framer-motion";
@@ -17,6 +17,10 @@ const FALLBACK =
   "https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=1200&q=60";
 
 /* ───────────────────────── helpers ───────────────────────── */
+
+function digitsOnly(v) {
+  return String(v || "").replace(/[^\d]/g, "");
+}
 
 function getListingCover(listing) {
   if (!listing) return null;
@@ -50,7 +54,6 @@ function normalizeCityKey(cityRaw) {
   const s = String(cityRaw || "").trim().replace(/\s+/g, " ").toLowerCase();
   if (!s) return "";
 
-  // Abuja variants
   if (
     s === "abuja" ||
     s === "abuja fct" ||
@@ -62,7 +65,6 @@ function normalizeCityKey(cityRaw) {
     return "abuja fct";
   }
 
-  // Port Harcourt variants
   if (s === "portharcourt" || s === "port-harcourt") return "port harcourt";
 
   return s;
@@ -81,11 +83,6 @@ function displayCityLabel(cityKeyOrRaw) {
     .join(" ");
 }
 
-/**
- * ✅ Rating source of truth:
- * - New: ratingAvg + ratingCount (from reviews aggregation)
- * - Fallback: rating (legacy)
- */
 function getRatingData(l) {
   const avg =
     Number.isFinite(Number(l?.ratingAvg)) && Number(l?.ratingAvg) > 0
@@ -205,6 +202,7 @@ function FeaturedRow({ items, onOpen }) {
 export default function GuestExplorePage() {
   const { user } = useAuth();
   const nav = useNavigate();
+  const [params] = useSearchParams();
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -218,10 +216,27 @@ export default function GuestExplorePage() {
   const [sortBy, setSortBy] = useState("newest"); // newest | price_low | price_high | premium
   const [minRating, setMinRating] = useState("all"); // all | 4.5 | 4.0 | 3.0
 
-  // ✅ used by FavButton when not logged in
   const requireLogin = useCallback(() => {
     nav("/login", { state: { from: "/explore", intent: "favourites" } });
   }, [nav]);
+
+  // ✅ read query params (supports older links to /explore?loc=...&min=...&max=...)
+  useEffect(() => {
+    const rawLoc =
+      (params.get("loc") || "").trim() ||
+      (params.get("city") || "").trim() ||
+      (params.get("location") || "").trim() ||
+      (params.get("q") || "").trim();
+
+    const min = params.get("min") ? digitsOnly(params.get("min")) : "";
+    const max = params.get("max") ? digitsOnly(params.get("max")) : "";
+
+    if (rawLoc) setKw(rawLoc);
+    if (min) setMinN(min);
+    if (max) setMaxN(max);
+    // cityKey is set after rows load (so we can match available cities)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -256,7 +271,6 @@ export default function GuestExplorePage() {
     return () => {
       live = false;
     };
-    // eslint-disable-next-line
   }, []);
 
   const cityOptions = useMemo(() => {
@@ -271,6 +285,21 @@ export default function GuestExplorePage() {
       .map(([key, label]) => ({ key, label }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [rows]);
+
+  // ✅ after rows load, if URL has a loc/city that matches, set the city dropdown too
+  useEffect(() => {
+    const rawLoc =
+      (params.get("loc") || "").trim() ||
+      (params.get("city") || "").trim() ||
+      (params.get("location") || "").trim();
+
+    const targetKey = normalizeCityKey(rawLoc);
+    if (!targetKey) return;
+
+    const exists = cityOptions.some((c) => c.key === targetKey);
+    if (exists) setCityKey(targetKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cityOptions]);
 
   const filtered = useMemo(() => {
     const nowMs = Date.now();
@@ -346,7 +375,6 @@ export default function GuestExplorePage() {
     return onlyFeatured.slice(0, 12);
   }, [filtered]);
 
-  // ✅ prevent duplicates: hide featured from the main grid
   const featuredIds = useMemo(() => new Set(featuredInSearch.map((x) => x.id)), [featuredInSearch]);
   const gridRows = useMemo(() => filtered.filter((x) => !featuredIds.has(x.id)), [filtered, featuredIds]);
 
@@ -372,7 +400,6 @@ export default function GuestExplorePage() {
   return (
     <main className="min-h-screen bg-[#05070a] pt-20 pb-12 px-4 text-white">
       <div className="max-w-6xl mx-auto space-y-6">
-        {/* hero / header */}
         <section className="rounded-3xl bg-gradient-to-br from-[#141824] via-[#090c12] to-black/95 border border-white/5 p-6 md:p-8 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
           <p className="text-xs tracking-[0.35em] uppercase text-amber-200/75">
             Nesta • Luxury stays
@@ -411,7 +438,6 @@ export default function GuestExplorePage() {
             </div>
           </div>
 
-          {/* filters row */}
           <div className="mt-6 grid grid-cols-1 md:grid-cols-[1.4fr,1fr,1fr,1fr,auto,auto] gap-3">
             <input
               value={kw}
@@ -475,7 +501,6 @@ export default function GuestExplorePage() {
             </select>
           </div>
 
-          {/* quick chips */}
           <div className="mt-4 flex flex-wrap gap-2">
             {["Ikoyi", "Lekki", "VI", "Gwarinpa", "Asokoro", "Wuse 2"].map((c) => (
               <button
@@ -493,7 +518,6 @@ export default function GuestExplorePage() {
           </div>
         </section>
 
-        {/* content */}
         {loading ? (
           <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -585,7 +609,6 @@ export default function GuestExplorePage() {
                         </p>
                       </div>
 
-                      {/* ✅ stars visible on every card (if any reviews exist) */}
                       <Stars value={avg} count={count} />
 
                       <div className="flex flex-wrap gap-2 text-[11px] text-white/60">
