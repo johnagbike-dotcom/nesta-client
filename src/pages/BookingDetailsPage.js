@@ -66,6 +66,30 @@ async function getBearerToken() {
   }
 }
 
+function lower(v) {
+  return String(v || "").toLowerCase().trim();
+}
+
+/**
+ * ✅ Only treat as confirmed if payment is actually paid (server truth).
+ * This prevents “payment error but booking looks confirmed” on the UI.
+ */
+function isPaymentActuallyPaid(booking) {
+  if (!booking) return false;
+  const pay = lower(booking.paymentStatus);
+  const st = lower(booking.status);
+  const paidFlag = booking.paid === true;
+
+  // Pay status wins
+  if (pay === "paid") return true;
+
+  // Some legacy data may only set status
+  // Keep conservative: only accept "confirmed/paid" if paidFlag is true too
+  if ((st === "confirmed" || st === "paid") && paidFlag) return true;
+
+  return false;
+}
+
 /* ---------- component ---------- */
 export default function BookingDetailsPage() {
   const { id } = useParams();
@@ -93,7 +117,11 @@ export default function BookingDetailsPage() {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
-        if (alive) setData(json || null);
+
+        // Your API returns { ok:true, booking: {...} } (based on bookings.js)
+        const booking = json?.booking || json?.data || json || null;
+
+        if (alive) setData(booking);
       } catch (e) {
         if (alive) setErr("Could not load this booking. Please go back and try again.");
       } finally {
@@ -105,7 +133,10 @@ export default function BookingDetailsPage() {
     };
   }, [id]);
 
-  const status = useMemo(() => String(data?.status || "").toLowerCase(), [data]);
+  const status = useMemo(() => lower(data?.status), [data]);
+  const paymentStatus = useMemo(() => lower(data?.paymentStatus), [data]);
+
+  const paidOrConfirmed = useMemo(() => isPaymentActuallyPaid(data), [data]);
 
   const hasCancelReq =
     (data?.cancellationRequested ||
@@ -114,15 +145,16 @@ export default function BookingDetailsPage() {
       status === "refund_requested") &&
     !["cancelled", "refunded"].includes(status);
 
+  // ✅ Only allow cancel/chat/checkin if payment is truly paid/confirmed
   const canCancel =
     !!data &&
+    paidOrConfirmed &&
     !isPast(data.checkOut) &&
-    ["confirmed", "paid"].includes(status) &&
     !["cancelled", "refunded", "cancel_request", "refund_requested"].includes(status) &&
     !hasCancelReq;
 
-  const canChat = !!data && ["confirmed", "paid"].includes(status);
-  const canCheckInGuide = !!data && !isPast(data.checkOut) && ["confirmed", "paid"].includes(status);
+  const canChat = !!data && paidOrConfirmed;
+  const canCheckInGuide = !!data && paidOrConfirmed && !isPast(data.checkOut);
 
   async function handleCancel() {
     if (!data) return;
@@ -183,11 +215,16 @@ export default function BookingDetailsPage() {
   function openChat() {
     if (!data) return;
 
+    if (!canChat) {
+      alert("Chat is available after payment is verified and the booking is confirmed.");
+      return;
+    }
+
     const bookingId = data.id || id;
     const listingId = data.listingId || data.listing?.id || null;
     const title = data.listingTitle || data.listing?.title || "Listing";
 
-    const ownership = String(data.ownershipType || "").toLowerCase();
+    const ownership = lower(data.ownershipType);
     const counterpartUid =
       ownership === "host"
         ? data.ownerId || data.hostId || null
@@ -209,32 +246,37 @@ export default function BookingDetailsPage() {
   }
 
   const statusTone = (() => {
-    if (status === "paid" || status === "confirmed")
+    // ✅ Prefer paymentStatus for tone
+    if (paymentStatus === "paid" || paidOrConfirmed)
       return "border-emerald-400 text-emerald-300 bg-emerald-400/10";
+
     if (status === "cancelled") return "border-red-400 text-red-300 bg-red-400/10";
     if (status === "refunded") return "border-amber-400 text-amber-200 bg-amber-500/10";
     if (status === "cancel_request" || status === "refund_requested")
       return "border-amber-400 text-amber-200 bg-amber-500/10";
+
+    if (status === "payment-review" || paymentStatus === "payment-review")
+      return "border-amber-400 text-amber-200 bg-amber-500/10";
+
     return "border-slate-400 text-slate-200 bg-slate-500/10";
   })();
 
   const statusLabel = (() => {
-    switch (status) {
-      case "paid":
-      case "confirmed":
-        return "confirmed";
-      case "cancelled":
-        return "cancelled";
-      case "refunded":
-        return "refunded";
-      case "cancel_request":
-      case "refund_requested":
-        return "cancel requested";
-      case "pending":
-        return "pending";
-      default:
-        return status || "pending";
-    }
+    // ✅ More accurate labels across your lifecycle
+    if (status === "cancelled") return "cancelled";
+    if (status === "refunded") return "refunded";
+    if (status === "cancel_request" || status === "refund_requested") return "cancel requested";
+
+    if (paymentStatus === "paid" && (status === "paid-pending-confirmation" || status === "pending_payment"))
+      return "payment received";
+
+    if (paidOrConfirmed) return "confirmed";
+
+    if (status === "pending_payment") return "pending payment";
+    if (status === "payment-review" || paymentStatus === "payment-review") return "payment review";
+
+    if (status === "pending") return "pending";
+    return status || "pending";
   })();
 
   return (
@@ -281,7 +323,17 @@ export default function BookingDetailsPage() {
                 </h1>
                 <p className="text-sm text-gray-300 mt-1">{data.listingLocation || ""}</p>
                 <p className="mt-2 text-xs text-gray-400">Created: {fmt(data.createdAt)}</p>
-                <p className="mt-1 text-[11px] text-gray-500 font-mono">Ref: {data.id || id}</p>
+
+                <p className="mt-1 text-[11px] text-gray-500 font-mono">
+                  Ref: {data.reference || data.id || id}
+                </p>
+
+                <p className="mt-1 text-[11px] text-gray-500">
+                  Payment:{" "}
+                  <span className="font-mono">
+                    {data.paymentStatus || "unpaid"} {data.provider ? `(${data.provider})` : ""}
+                  </span>
+                </p>
               </div>
 
               <span className={`self-start text-xs px-2.5 py-1 rounded-full border ${statusTone}`}>
@@ -311,17 +363,23 @@ export default function BookingDetailsPage() {
             <section className="mt-6 rounded-2xl bg-black/45 border border-white/12 p-4">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-gray-300">Subtotal</span>
-                <span className="font-medium">{ngn(data.subtotal)}</span>
+                <span className="font-medium">{ngn(data.subtotal ?? data.amountN ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between text-sm mt-1">
                 <span className="text-gray-300">Service fee</span>
-                <span className="font-medium">{ngn(data.fee)}</span>
+                <span className="font-medium">{ngn(data.fee ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/10 text-sm">
                 <span className="font-semibold">Total</span>
-                <span className="font-semibold text-amber-300">{ngn(data.total)}</span>
+                <span className="font-semibold text-amber-300">{ngn(data.total ?? data.amountN ?? 0)}</span>
               </div>
             </section>
+
+            {!paidOrConfirmed && (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3 text-[12px] text-gray-300">
+                Payment has not been verified yet. Your booking will only be confirmed after Flutterwave confirms the charge.
+              </div>
+            )}
 
             <section className="mt-7 flex flex-wrap items-center justify-end gap-2">
               <button

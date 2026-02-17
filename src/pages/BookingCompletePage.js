@@ -1,5 +1,5 @@
 // src/pages/BookingCompletePage.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 /* ---------- helpers ---------- */
@@ -7,7 +7,6 @@ const safeText = (v) => {
   if (v == null) return "";
   if (typeof v === "string" || typeof v === "number" || typeof v === "boolean")
     return String(v);
-  // Firestore Timestamp-ish
   if (typeof v === "object" && typeof v.seconds === "number") {
     try {
       return new Date(v.seconds * 1000).toLocaleString();
@@ -66,20 +65,24 @@ const diffNights = (checkIn, checkOut) => {
   inD = inD instanceof Date ? inD : new Date(inD);
   outD = outD instanceof Date ? outD : new Date(outD);
 
-  // normalize to noon to avoid DST edges
   const ms = outD.setHours(12, 0, 0, 0) - inD.setHours(12, 0, 0, 0);
   return ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
 };
 
-function isBookingConfirmed(statusRaw) {
+function isPaidOrConfirmed(statusRaw, paymentStatusRaw) {
   const s = String(statusRaw || "").toLowerCase().trim();
-  // keep this generous to match different data shapes
-  return ["confirmed", "paid", "success", "completed"].includes(s) || s.includes("success");
+  const p = String(paymentStatusRaw || "").toLowerCase().trim();
+  return (
+    p === "paid" ||
+    s === "confirmed" ||
+    s === "paid" ||
+    s === "paid-pending-confirmation" ||
+    s === "paid-needs-review"
+  );
 }
 
 function resolveHostUidFromBooking(b) {
   if (!b || typeof b !== "object") return null;
-  // try common field names used across Nesta pages
   return (
     b.hostId ||
     b.hostUid ||
@@ -96,34 +99,93 @@ function resolveHostUidFromBooking(b) {
   );
 }
 
+function getIdToken() {
+  // Adjust to your auth storage strategy if different
+  return (
+    localStorage.getItem("idToken") ||
+    localStorage.getItem("token") ||
+    localStorage.getItem("accessToken") ||
+    ""
+  );
+}
+
+async function apiGetJson(url) {
+  const token = getIdToken();
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "Content-Type": "application/json",
+    },
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(json?.error || json?.message || "Request failed");
+    err.status = res.status;
+    err.body = json;
+    throw err;
+  }
+  return json;
+}
+
+async function apiPostJson(url, body) {
+  const token = getIdToken();
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body || {}),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(json?.error || json?.message || "Request failed");
+    err.status = res.status;
+    err.body = json;
+    throw err;
+  }
+  return json;
+}
+
 /* ---------- page ---------- */
 export default function BookingCompletePage() {
   const { state } = useLocation();
   const nav = useNavigate();
-  const [snapshot, setSnapshot] = useState(null);
 
-  // If we were navigated here from BookingDetailsPage or BookingsPage,
-  // we’ll have a full canonical booking in state.booking.
+  const [snapshot, setSnapshot] = useState(null);
+  const [serverBooking, setServerBooking] = useState(null);
+  const [serverError, setServerError] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const pollRef = useRef(null);
+
+  // Receipt mode (when you navigate from My Bookings with a full booking object)
   const routeBooking =
     state?.booking &&
     (state.booking.listingTitle || state.booking.total || state.booking.amountN)
       ? state.booking
       : null;
 
-  // Tiny ribbon label (where did the user come from?)
   const entrySourceRibbon = routeBooking
     ? "My Bookings → Receipt"
     : "Post-checkout summary";
 
   useEffect(() => {
-    // In "receipt mode" (existing booking), skip snapshot logic.
-    if (routeBooking) return;
+    // Receipt mode: we still optionally poll server to ensure latest status
+    if (routeBooking) {
+      setSnapshot({
+        mode: "receipt",
+        bookingIdOrRef: routeBooking.id || routeBooking.reference || "",
+        provider: routeBooking.provider || "",
+        when: new Date().toISOString(),
+      });
+      return;
+    }
 
-    // 1) prefer router state
+    // Snapshot mode: read from router state then sessionStorage
     const statePending = state?.booking || state?.pending || null;
     const stateTx = state?.tx || null;
 
-    // 2) fall back to sessionStorage
     let pending = null;
     let tx = null;
 
@@ -140,7 +202,10 @@ export default function BookingCompletePage() {
 
     try {
       if (!stateTx) {
-        const raw = sessionStorage.getItem("paystack_tx");
+        // ✅ support both paystack and flutterwave keys
+        const raw =
+          sessionStorage.getItem("flutterwave_tx") ||
+          sessionStorage.getItem("paystack_tx");
         tx = raw ? JSON.parse(raw) : null;
       } else {
         tx = stateTx;
@@ -149,24 +214,43 @@ export default function BookingCompletePage() {
       tx = null;
     }
 
-    // normalize tx shape
+    // Normalize tx shape (supports Paystack + Flutterwave)
     const normalizedTx =
       tx && typeof tx === "object"
         ? {
+            provider: (tx.provider || tx.gateway || tx.type || "").toString(),
             status: (tx.status || tx.message || tx.data?.status || "").toString(),
             reference:
               tx.reference ||
               tx.trxref ||
               tx.data?.reference ||
               tx.data?.txRef ||
+              tx.data?.tx_ref ||
+              tx.tx_ref ||
+              "",
+            transaction_id:
+              tx.transaction_id ||
+              tx.data?.id ||
+              tx.id ||
+              tx.data?.transaction_id ||
               "",
             raw: tx,
           }
         : null;
 
+    // Determine bookingIdOrRef
+    const bookingIdOrRef =
+      safeText(pending?.bookingId) ||
+      safeText(pending?.id) ||
+      safeText(pending?.reference) ||
+      safeText(normalizedTx?.reference) ||
+      "";
+
     setSnapshot({
+      mode: "snapshot",
       pending: pending || null,
       tx: normalizedTx,
+      bookingIdOrRef,
       when: new Date().toISOString(),
     });
 
@@ -177,16 +261,18 @@ export default function BookingCompletePage() {
     try {
       sessionStorage.removeItem("paystack_tx");
     } catch {}
+    try {
+      sessionStorage.removeItem("flutterwave_tx");
+    } catch {}
   }, [state, routeBooking]);
 
+  // Compute display info from snapshot.pending (for UI only; not proof of payment)
   const info = useMemo(() => {
     const p = snapshot?.pending;
     if (!p) return null;
 
     const listing = p.listing || {};
-    const nightly = Number(
-      listing.pricePerNight ?? listing.price ?? p.pricePerNight ?? 0
-    );
+    const nightly = Number(listing.pricePerNight ?? listing.price ?? p.pricePerNight ?? 0);
     const checkIn = p.checkIn ?? listing.checkIn ?? null;
     const checkOut = p.checkOut ?? listing.checkOut ?? null;
     const nights = diffNights(checkIn, checkOut);
@@ -203,7 +289,6 @@ export default function BookingCompletePage() {
         city: safeText(listing.city),
         area: safeText(listing.area),
       },
-      // For post-booking chat unlock later, keep host id if present
       hostId:
         safeText(
           listing.hostId ||
@@ -225,44 +310,108 @@ export default function BookingCompletePage() {
     };
   }, [snapshot]);
 
-  const isSuccess = (snapshot?.tx?.status || "")
-    .toString()
-    .toLowerCase()
-    .includes("success");
+  // ✅ Server-truth poller (booking status)
+  useEffect(() => {
+    if (!snapshot?.bookingIdOrRef) return;
+
+    let cancelled = false;
+    setServerError("");
+    setServerBooking(null);
+
+    async function loadOnce() {
+      try {
+        const json = await apiGetJson(`/api/bookings/${encodeURIComponent(snapshot.bookingIdOrRef)}`);
+        if (!cancelled) setServerBooking(json?.booking || null);
+      } catch (e) {
+        if (!cancelled) setServerError(e?.message || "Could not load booking status.");
+      }
+    }
+
+    // first load immediately
+    loadOnce();
+
+    // poll for a short time (payment + webhook can take a few seconds)
+    const started = Date.now();
+    const maxMs = 90_000; // 90s
+    const intervalMs = 3000;
+
+    pollRef.current = setInterval(async () => {
+      if (Date.now() - started > maxMs) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+        return;
+      }
+      await loadOnce();
+    }, intervalMs);
+
+    return () => {
+      cancelled = true;
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [snapshot?.bookingIdOrRef]);
+
+  // ✅ If flutterwave info exists, attempt server verify-booking once (optional)
+  useEffect(() => {
+    if (!snapshot || routeBooking) return;
+    const provider = (snapshot?.tx?.provider || "").toLowerCase();
+    const hasFlw = provider.includes("flutter") || safeText(snapshot?.tx?.transaction_id);
+    if (!hasFlw) return;
+
+    const bookingId = safeText(snapshot?.pending?.bookingId) || safeText(snapshot?.bookingIdOrRef);
+    const tx_ref = safeText(snapshot?.tx?.reference);
+    const transaction_id = safeText(snapshot?.tx?.transaction_id);
+
+    if (!bookingId || !tx_ref || !transaction_id) return;
+
+    let didRun = false;
+
+    (async () => {
+      if (didRun) return;
+      didRun = true;
+      setVerifying(true);
+      try {
+        // If you haven't added this endpoint yet, it will fail silently (and webhook polling still works)
+        await apiPostJson(`/api/flutterwave/verify-booking`, {
+          bookingId,
+          tx_ref,
+          transaction_id,
+        });
+      } catch {
+        // swallow - the polling will still pick up webhook confirmation
+      } finally {
+        setVerifying(false);
+      }
+    })();
+  }, [snapshot, routeBooking]);
 
   /* ---------- RECEIPT MODE (existing booking) ---------- */
   if (routeBooking) {
-    const b = routeBooking;
+    const b = serverBooking || routeBooking; // prefer freshest data
 
-    const listingTitle =
-      b.listingTitle || b.listing?.title || b.title || "Listing";
-    const location =
-      b.listingLocation || [b.city, b.area].filter(Boolean).join(", ") || "";
+    const listingTitle = b.listingTitle || b.listing?.title || b.title || "Listing";
+    const location = b.listingLocation || [b.city, b.area].filter(Boolean).join(", ") || "";
     const ref = b.reference || b.ref || b.id || "";
     const status = (b.status || "").toLowerCase();
+    const payStatus = (b.paymentStatus || "").toLowerCase();
 
     const nights =
-      typeof b.nights === "number" && b.nights > 0
-        ? b.nights
-        : diffNights(b.checkIn, b.checkOut);
+      typeof b.nights === "number" && b.nights > 0 ? b.nights : diffNights(b.checkIn, b.checkOut);
 
     const nightly =
       b.pricePerNight ||
       b.listing?.pricePerNight ||
       (nights > 0 ? (b.total || b.amountN || 0) / nights : 0);
 
-    const subtotal =
-      b.subtotal ?? (nights > 0 ? nights * Number(nightly || 0) : 0);
-
-    const fee =
-      b.fee ??
-      (b.total != null ? Math.max(0, Number(b.total) - subtotal) : 0);
-
+    const subtotal = b.subtotal ?? (nights > 0 ? nights * Number(nightly || 0) : 0);
+    const fee = b.fee ?? (b.total != null ? Math.max(0, Number(b.total) - subtotal) : 0);
     const total = b.total != null ? Number(b.total) : subtotal + fee;
 
-    const confirmed = isBookingConfirmed(status);
+    const confirmed = isPaidOrConfirmed(status, payStatus);
     const hostUid = resolveHostUidFromBooking(b);
-    const listingId = safeText(b.listingId || b.listing?.id || b.id || "");
+    const listingId = safeText(b.listingId || b.listing?.id || "");
 
     const canChat = !!(confirmed && hostUid && listingId);
 
@@ -281,7 +430,6 @@ export default function BookingCompletePage() {
                 "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
             }}
           >
-            {/* header */}
             <div
               style={{
                 display: "flex",
@@ -296,31 +444,31 @@ export default function BookingCompletePage() {
                     width: 42,
                     height: 42,
                     borderRadius: 12,
-                    background: confirmed
-                      ? "rgba(16,185,129,0.15)"
-                      : "rgba(239,68,68,0.15)",
+                    background: confirmed ? "rgba(16,185,129,0.15)" : "rgba(148,163,184,0.12)",
                     display: "grid",
                     placeItems: "center",
                     border: confirmed
                       ? "1px solid rgba(16,185,129,0.35)"
-                      : "1px solid rgba(239,68,68,0.35)",
+                      : "1px solid rgba(148,163,184,0.35)",
                   }}
                 >
-                  <span style={{ fontSize: 22 }}>
-                    {confirmed ? "✅" : "⚠️"}
-                  </span>
+                  <span style={{ fontSize: 22 }}>{confirmed ? "✅" : "⏳"}</span>
                 </div>
                 <div>
                   <h2 style={{ margin: "0 0 6px" }}>
-                    {confirmed ? "Booking confirmed" : "Booking receipt"}
+                    {confirmed ? "Booking confirmed" : "Booking processing"}
                   </h2>
                   <div className="muted" style={{ fontSize: 13 }}>
                     Ref: {safeText(ref) || "—"}
                   </div>
+                  {!confirmed && (
+                    <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                      We’ll update this receipt once payment is verified.
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* tiny ribbon */}
               <div>
                 <span
                   style={{
@@ -338,7 +486,6 @@ export default function BookingCompletePage() {
               </div>
             </div>
 
-            {/* body */}
             <div
               style={{
                 display: "grid",
@@ -347,11 +494,8 @@ export default function BookingCompletePage() {
                 marginTop: 20,
               }}
             >
-              {/* left: stay details */}
               <section>
-                <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>
-                  {listingTitle}
-                </h3>
+                <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>{listingTitle}</h3>
                 {location && (
                   <p className="muted" style={{ margin: 0 }}>
                     {location}
@@ -403,12 +547,11 @@ export default function BookingCompletePage() {
                         fontSize: 11,
                       }}
                     >
-                      {b.status || "—"}
+                      {b.status || "—"} / {b.paymentStatus || "—"}
                     </span>
                   </div>
                 </div>
 
-                {/* ✅ Chat unlocks only after confirmed */}
                 {canChat ? (
                   <div style={{ marginTop: 14 }}>
                     <button
@@ -417,10 +560,7 @@ export default function BookingCompletePage() {
                         nav("/chat", {
                           state: {
                             partnerUid: hostUid,
-                            listing: {
-                              id: listingId,
-                              title: listingTitle,
-                            },
+                            listing: { id: listingId, title: listingTitle },
                           },
                         })
                       }
@@ -436,7 +576,6 @@ export default function BookingCompletePage() {
                 ) : null}
               </section>
 
-              {/* right: totals */}
               <section
                 style={{
                   borderRadius: 14,
@@ -445,30 +584,14 @@ export default function BookingCompletePage() {
                   border: "1px solid rgba(148,163,184,0.4)",
                 }}
               >
-                <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>
-                  Payment summary
-                </h3>
+                <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>Payment summary</h3>
 
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 4,
-                    fontSize: 14,
-                  }}
-                >
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                   <span className="muted">Nightly rate × {nights || 1}</span>
                   <span style={{ fontWeight: 600 }}>{ngn(subtotal)}</span>
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 4,
-                    fontSize: 14,
-                  }}
-                >
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                   <span className="muted">Service fee</span>
                   <span style={{ fontWeight: 600 }}>{ngn(fee)}</span>
                 </div>
@@ -486,18 +609,16 @@ export default function BookingCompletePage() {
                   <span>Total</span>
                   <span>{ngn(total)}</span>
                 </div>
+
+                {serverError ? (
+                  <div style={{ marginTop: 10, fontSize: 12 }} className="muted">
+                    Could not refresh status: {serverError}
+                  </div>
+                ) : null}
               </section>
             </div>
 
-            {/* footer actions */}
-            <div
-              style={{
-                marginTop: 22,
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 10,
-              }}
-            >
+            <div style={{ marginTop: 22, display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <Link className="btn ghost" to="/bookings">
                 My bookings
               </Link>
@@ -511,16 +632,14 @@ export default function BookingCompletePage() {
     );
   }
 
-  /* ---------- PENDING SNAPSHOT / CHECKOUT FLOW ---------- */
+  /* ---------- SNAPSHOT / CHECKOUT FLOW ---------- */
   if (!snapshot) {
     return (
       <main className="dash-bg">
         <div className="container dash-wrap">
           <div className="card" style={{ padding: 24, borderRadius: 16 }}>
             <h2>Finishing up…</h2>
-            <p className="muted">
-              Please wait while we prepare your booking summary.
-            </p>
+            <p className="muted">Please wait while we prepare your booking summary.</p>
           </div>
         </div>
       </main>
@@ -541,10 +660,7 @@ export default function BookingCompletePage() {
             }}
           >
             <h2 style={{ marginTop: 0 }}>Checkout</h2>
-            <p>
-              We couldn’t find your booking details. Please go back to Explore
-              and select a listing again.
-            </p>
+            <p>We couldn’t find your booking details. Please go back to Explore and select a listing again.</p>
             <div style={{ marginTop: 16 }}>
               <Link className="btn" to="/explore">
                 Explore listings
@@ -558,8 +674,9 @@ export default function BookingCompletePage() {
 
   const { listing, checkIn, checkOut, guests, nights, nightly, subtotal, fee, total, feePct } = info;
 
-  // In checkout snapshot flow, chat should NOT be shown here by default.
-  // It will appear later inside My Bookings receipt (confirmed booking) once status is confirmed.
+  const b = serverBooking;
+  const confirmed = b ? isPaidOrConfirmed(b.status, b.paymentStatus) : false;
+  const processing = !confirmed;
 
   return (
     <main className="dash-bg">
@@ -576,7 +693,6 @@ export default function BookingCompletePage() {
               "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
           }}
         >
-          {/* header */}
           <div
             style={{
               display: "flex",
@@ -591,31 +707,38 @@ export default function BookingCompletePage() {
                   width: 42,
                   height: 42,
                   borderRadius: 12,
-                  background: isSuccess
-                    ? "rgba(16,185,129,0.15)"
-                    : "rgba(239,68,68,0.15)",
+                  background: confirmed ? "rgba(16,185,129,0.15)" : "rgba(148,163,184,0.12)",
                   display: "grid",
                   placeItems: "center",
-                  border: isSuccess
+                  border: confirmed
                     ? "1px solid rgba(16,185,129,0.35)"
-                    : "1px solid rgba(239,68,68,0.35)",
+                    : "1px solid rgba(148,163,184,0.35)",
                 }}
               >
-                <span style={{ fontSize: 22 }}>{isSuccess ? "✅" : "⚠️"}</span>
+                <span style={{ fontSize: 22 }}>{confirmed ? "✅" : "⏳"}</span>
               </div>
               <div>
                 <h2 style={{ margin: "0 0 6px" }}>
-                  {isSuccess ? "Payment successful" : "Payment status unknown"}
+                  {confirmed ? "Booking confirmed" : "Payment processing"}
                 </h2>
                 <div className="muted" style={{ fontSize: 13 }}>
-                  {safeText(snapshot?.tx?.reference) ? (
+                  {safeText(snapshot?.bookingIdOrRef) ? (
                     <>
-                      Reference: <code>{safeText(snapshot.tx.reference)}</code>
+                      Booking: <code>{safeText(snapshot.bookingIdOrRef)}</code>
                     </>
                   ) : (
                     <>Completed at {fmtDate(snapshot.when)}</>
                   )}
                 </div>
+                {verifying ? (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Verifying with Flutterwave…
+                  </div>
+                ) : processing ? (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    We’re confirming your payment. This can take a few seconds.
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -636,7 +759,6 @@ export default function BookingCompletePage() {
             </div>
           </div>
 
-          {/* summary + totals */}
           <div
             style={{
               display: "grid",
@@ -668,6 +790,30 @@ export default function BookingCompletePage() {
                 <br />
                 Nights: <strong>{nights}</strong>
               </div>
+
+              {b ? (
+                <div style={{ marginTop: 12, fontSize: 12 }} className="muted">
+                  Status:{" "}
+                  <span
+                    style={{
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      border: "1px solid rgba(148,163,184,0.6)",
+                      fontSize: 11,
+                    }}
+                  >
+                    {b.status || "—"} / {b.paymentStatus || "—"}
+                  </span>
+                </div>
+              ) : serverError ? (
+                <div style={{ marginTop: 12, fontSize: 12 }} className="muted">
+                  Could not load booking status: {serverError}
+                </div>
+              ) : (
+                <div style={{ marginTop: 12, fontSize: 12 }} className="muted">
+                  Fetching booking status…
+                </div>
+              )}
             </section>
 
             <section
@@ -706,7 +852,23 @@ export default function BookingCompletePage() {
                 <Link className="btn ghost" to="/explore">
                   Explore more
                 </Link>
+                {!confirmed ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => nav("/bookings")}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                  >
+                    I’ll check later
+                  </button>
+                ) : null}
               </div>
+
+              {!confirmed ? (
+                <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+                  Don’t worry — your booking will only be confirmed after payment is verified.
+                </div>
+              ) : null}
             </section>
           </div>
         </div>

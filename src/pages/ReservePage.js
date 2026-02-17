@@ -100,8 +100,7 @@ function safeLower(v) {
   return String(v ?? "").trim().toLowerCase();
 }
 
-// Paystack prefers metadata + custom_fields sometimes.
-// We'll keep metadata clean and auditable.
+// Paystack metadata (auditable)
 function buildPaystackMetadata({
   bookingId,
   reference,
@@ -116,27 +115,57 @@ function buildPaystackMetadata({
   const listingTitle = listing?.title || "Listing";
 
   return {
-    // routing
     type: "booking",
     paymentType: "booking",
-
-    // strong linkage
     bookingId: bookingId || "",
     reference: reference || "",
     listingId,
-
-    // booking snapshot
     listingTitle,
     checkIn: checkIn || "",
     checkOut: checkOut || "",
     guests: Number(guests || 1),
     nights: Number(nights || 1),
     amountN: Number(amountN || 0),
-
-    // optional: helps dashboards later
     brand: "NestaNg",
     channel: "web",
   };
+}
+
+/* ---------- storage helpers (single source for success page) ---------- */
+function storeBookingPending({
+  bookingId,
+  reference,
+  listing,
+  checkIn,
+  checkOut,
+  guests,
+  nights,
+  total,
+  provider,
+}) {
+  try {
+    sessionStorage.setItem(
+      "booking_pending",
+      JSON.stringify({
+        bookingId,
+        reference,
+        listing,
+        checkIn,
+        checkOut,
+        guests,
+        nights,
+        total,
+        provider,
+        savedAt: new Date().toISOString(),
+      })
+    );
+  } catch {}
+}
+
+function storeProviderTx(key, payload) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(payload));
+  } catch {}
 }
 
 export default function ReservePage() {
@@ -174,8 +203,8 @@ export default function ReservePage() {
   const [checkOut, setCheckOut] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // include reference in holdInfo for Paystack/Flutterwave consistency
-  const [holdInfo, setHoldInfo] = useState(null); // { id, reference, expiresAt }
+  // holdInfo: { id, reference, expiresAt }
+  const [holdInfo, setHoldInfo] = useState(null);
 
   // availability state
   const [checkingAvail, setCheckingAvail] = useState(false);
@@ -183,7 +212,7 @@ export default function ReservePage() {
   const [availMsg, setAvailMsg] = useState("");
 
   // payment provider
-  const [payProvider, setPayProvider] = useState("flutterwave"); // "flutterwave" | "paystack"
+  const [payProvider, setPayProvider] = useState("flutterwave");
 
   const todayMin = useMemo(() => toYmdLocal(new Date()), []);
   const checkOutMin = useMemo(() => {
@@ -247,8 +276,6 @@ export default function ReservePage() {
   const total = useMemo(() => {
     if (!listing) return 0;
     const perNight = Number(listing.pricePerNight || 0);
-    // NOTE: Your pricing is "per night * nights * guests" as provided.
-    // If later you move to flat nightly pricing (not per guest), change here.
     return Math.max(perNight * nights * Number(guests || 0), 0);
   }, [listing, nights, guests]);
 
@@ -260,7 +287,44 @@ export default function ReservePage() {
     user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail
   );
 
-  // include reference in redirect url so Success page can show it if needed
+  // Success/verify page route (must render BookingCompletePage)
+  function goToVerifyPage({ bookingId, reference, provider, tx = null }) {
+    // Store tx for BookingCompletePage to read (optional)
+    if (provider === "flutterwave") {
+      storeProviderTx("flutterwave_tx", {
+        provider: "flutterwave",
+        status: "initiated",
+        reference,
+        transaction_id: tx?.transaction_id || tx?.id || "",
+        raw: tx || null,
+        when: new Date().toISOString(),
+      });
+    } else if (provider === "paystack") {
+      storeProviderTx("paystack_tx", {
+        provider: "paystack",
+        status: "processing",
+        reference,
+        raw: tx || null,
+        when: new Date().toISOString(),
+      });
+    }
+
+    nav("/reserve/success", {
+      replace: true,
+      state: {
+        bookingId,
+        reference,
+        provider,
+        listing,
+        checkIn,
+        checkOut,
+        guests,
+        nights,
+      },
+    });
+  }
+
+  // include reference in redirect url so success page can poll/verify
   function buildRedirectUrl(provider = "flutterwave", bookingId = "", reference = "") {
     const origin = window.location.origin;
     const qp = new URLSearchParams();
@@ -276,7 +340,7 @@ export default function ReservePage() {
     return `${origin}/reserve/success?${qp.toString()}`;
   }
 
-  // Availability via API helper (single source of truth)
+  // Availability via API helper
   const checkAvailability = useCallback(
     async (ci, co) => {
       if (!listing?.id) return { ok: true, msg: "" };
@@ -303,7 +367,6 @@ export default function ReservePage() {
         return { ok: true, msg: "" };
       } catch (e) {
         console.error("[ReservePage] availability check failed:", e);
-        // Non-blocking: allow user proceed, hold endpoint will hard-check again
         return {
           ok: true,
           msg: "Availability could not be verified right now. If payment fails, try again.",
@@ -393,20 +456,30 @@ export default function ReservePage() {
         ttlMinutes: 90,
       };
 
-      // Bearer token handled inside createBookingHoldAPI()
       const data = await createBookingHoldAPI(payload);
 
-      // store reference in state
       setHoldInfo({
         id: data.bookingId,
         reference: data.reference,
         expiresAt: data.expiresAt || null,
       });
 
+      // ✅ critical: stage pending record before payment starts
+      storeBookingPending({
+        bookingId: data.bookingId,
+        reference: data.reference,
+        listing,
+        checkIn,
+        checkOut,
+        guests,
+        nights,
+        total,
+        provider: payProvider,
+      });
+
       return { bookingId: data.bookingId, reference: data.reference };
     } catch (e) {
       console.error(e);
-
       const msg = e?.message || "Could not create a reservation hold.";
       toast(msg, "error");
 
@@ -436,7 +509,6 @@ export default function ReservePage() {
     const amountKobo = Math.max(100, Math.floor(Number(total || 0) * 100));
     setBusy(true);
 
-    // ✅ PAYSTACK METADATA (this is what you requested)
     const metadata = buildPaystackMetadata({
       bookingId,
       reference,
@@ -453,31 +525,43 @@ export default function ReservePage() {
       email: user?.email || "guest@example.com",
       amount: amountKobo,
       currency: "NGN",
-
-      // strong linkage (Paystack returns this reference in webhook)
       ref: reference,
-
-      // ✅ metadata (Paystack will deliver this to webhook in data.metadata)
       metadata,
 
-      callback: function () {
+      // ✅ DO NOT claim success here — just go to verification page
+      callback: function (resp) {
         setBusy(false);
-        toast("Payment received ✅ Redirecting…", "success");
-        nav("/reserve/success", {
-          replace: true,
-          state: {
-            bookingId,
-            reference,
-            listing,
-            checkIn,
-            checkOut,
-            provider: "paystack",
-          },
+
+        // Store a lightweight tx snapshot for the verify page
+        storeProviderTx("paystack_tx", {
+          provider: "paystack",
+          status: "callback_received",
+          reference,
+          raw: resp || null,
+          when: new Date().toISOString(),
+        });
+
+        toast("Payment submitted. Verifying…", "info");
+
+        goToVerifyPage({
+          bookingId,
+          reference,
+          provider: "paystack",
+          tx: resp || null,
         });
       },
+
       onClose: function () {
         setBusy(false);
-        toast("Payment closed.", "info");
+        toast("Payment was closed. No booking confirmation yet.", "info");
+
+        // Optionally still route to verify page so user can see pending status
+        goToVerifyPage({
+          bookingId,
+          reference,
+          provider: "paystack",
+          tx: { status: "closed" },
+        });
       },
     });
 
@@ -492,6 +576,16 @@ export default function ReservePage() {
 
     try {
       setBusy(true);
+
+      // ✅ Stage a "flutterwave initiated" tx before redirect
+      storeProviderTx("flutterwave_tx", {
+        provider: "flutterwave",
+        status: "initiated",
+        reference,
+        transaction_id: "",
+        raw: null,
+        when: new Date().toISOString(),
+      });
 
       const redirectUrl = buildRedirectUrl("flutterwave", bookingId, reference);
 
@@ -516,7 +610,6 @@ export default function ReservePage() {
         });
       };
 
-      // token normal + retry with forced refresh
       let token = await user.getIdToken(false);
       let res = await doInit(token);
 
@@ -533,6 +626,7 @@ export default function ReservePage() {
         return;
       }
 
+      // ✅ Redirect to Flutterwave checkout
       window.location.href = data.link;
     } catch (e) {
       console.error(e);
@@ -645,6 +739,7 @@ export default function ReservePage() {
                 </div>
               )}
 
+              {/* STEP 1 */}
               {step === 1 && (
                 <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
                   <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
@@ -727,6 +822,7 @@ export default function ReservePage() {
                 </div>
               )}
 
+              {/* STEP 2 */}
               {step === 2 && (
                 <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
                   <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">
@@ -770,6 +866,7 @@ export default function ReservePage() {
                 </div>
               )}
 
+              {/* STEP 3 */}
               {step === 3 && (
                 <div className="rounded-3xl bg-white/5 border border-white/10 p-4 md:p-5 space-y-4">
                   <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-[0.15em]">

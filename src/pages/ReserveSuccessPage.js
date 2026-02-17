@@ -12,30 +12,62 @@ function safeLower(v) {
   return safeStr(v).toLowerCase();
 }
 
-function toMillis(v) {
-  if (!v) return 0;
-  try {
-    if (typeof v?.toDate === "function") return v.toDate().getTime();
-    if (typeof v?.seconds === "number") return v.seconds * 1000;
-    const d = v instanceof Date ? v : new Date(v);
-    return Number.isNaN(d.getTime()) ? 0 : d.getTime();
-  } catch {
-    return 0;
-  }
-}
-
 function formatMoneyNGN(n) {
   const x = Math.round(Number(n || 0));
   return `₦${x.toLocaleString("en-NG")}`;
 }
 
+function normalizeBookingShape(raw) {
+  const b = raw || {};
+  return {
+    id: b.id || b.bookingId || null,
+    reference: b.reference || b.ref || null,
+    status: safeLower(b.status || ""),
+    paymentStatus: safeLower(b.paymentStatus || ""),
+    paid: !!b.paid,
+    gateway: safeLower(b.gateway || ""),
+    provider: safeLower(b.provider || ""),
+    paymentMismatch: !!b.paymentMismatch,
+    amountN: Number(b.amountLockedN ?? b.amountPaidN ?? b.amountN ?? b.amount ?? b.total ?? 0),
+    listingTitle: b.listingTitle || b.title || b.listing?.title || "",
+    listingId: b.listingId || b.listing?.id || null,
+    checkIn: b.checkIn || null,
+    checkOut: b.checkOut || null,
+  };
+}
+
+function deriveModeFromBooking(b) {
+  const status = safeLower(b?.status || "");
+  const payStatus = safeLower(b?.paymentStatus || "");
+  const paid = !!b?.paid || payStatus === "paid" || status === "paid";
+  const mismatch = !!b?.paymentMismatch || status === "paid-needs-review";
+
+  // ✅ If mismatch/review flags are present, treat as review (don’t show success)
+  if (mismatch) {
+    return { mode: "review", message: "Payment received — reviewing details to confirm your booking." };
+  }
+
+  // ✅ Only show SUCCESS when booking is confirmed/completed
+  if (status === "confirmed" || status === "completed") {
+    return { mode: "success", message: "Booking confirmed ✅ Your reservation is secured." };
+  }
+
+  // Paid is not the final state (still settling / webhook)
+  if (paid || b?.gateway === "success") {
+    return { mode: "confirming", message: "Payment detected ✅ Finalising your booking…" };
+  }
+
+  // Otherwise still waiting
+  return { mode: "confirming", message: "Confirming your booking…" };
+}
+
 /**
- * Luxury-state machine (truthful):
- * - verifying: validating payment (Flutterwave verify endpoint) OR loading
- * - confirming: payment ok, waiting for webhook to set booking confirmed
- * - success: booking confirmed
- * - review: paid-needs-review / mismatch / requires attention
- * - failed: not successful / cannot verify / booking missing
+ * Luxury-state machine:
+ * - verifying: (optional) verifying payment provider details
+ * - confirming: waiting for server booking to become confirmed
+ * - success: confirmed/completed
+ * - review: paid-needs-review / mismatch / attention
+ * - failed: not found / verification hard-fail / timeout with unpaid
  */
 export default function ReserveSuccessPage() {
   const nav = useNavigate();
@@ -55,7 +87,6 @@ export default function ReserveSuccessPage() {
   const stateReference = safeStr(state?.reference || "");
 
   // ----- From Flutterwave (query redirect) -----
-  // Typical Flutterwave return: status, tx_ref, transaction_id
   const flwStatus = safeLower(searchParams.get("status") || searchParams.get("payment_status") || "");
   const flwTxRef = safeStr(searchParams.get("tx_ref") || searchParams.get("reference") || "");
   const flwTransactionId = safeStr(
@@ -81,7 +112,6 @@ export default function ReserveSuccessPage() {
   // UI machine
   const [mode, setMode] = useState("verifying"); // verifying | confirming | success | review | failed
   const [message, setMessage] = useState("Preparing your confirmation…");
-  const [verified, setVerified] = useState(false);
 
   const stopRef = useRef(false);
 
@@ -92,7 +122,7 @@ export default function ReserveSuccessPage() {
     return "paystack";
   }, [stateProvider, flwTxRef, flwTransactionId, flwStatus]);
 
-  // A “display reference” for UI
+  // Display reference (for support / UX)
   const displayReference = useMemo(() => {
     if (provider === "flutterwave") return flwTxRef || qpReference || "";
     return stateReference || qpReference || "";
@@ -133,114 +163,42 @@ export default function ReserveSuccessPage() {
     }
   }
 
-  // Step 1: Flutterwave verify (server-side) — only to confirm payment was successful.
-  // We DO NOT mark booking as paid from client (webhook does settlement + commission).
+  /**
+   * Step 0 (truthful):
+   * - For Paystack: DO NOT claim “payment received”
+   * - For Flutterwave: if status is explicitly failed/cancelled, show failed; else continue to confirming.
+   *
+   * We let the webhook/server be the source of truth.
+   */
   useEffect(() => {
-    let alive = true;
+    // Default: move to confirming and let polling settle it.
+    if (provider !== "flutterwave") {
+      setMode("confirming");
+      setMessage("Processing your payment… Confirming your booking.");
+      return;
+    }
 
-    (async () => {
-      // If Paystack, we assume payment succeeded because we navigated here after callback.
-      // Still we wait for webhook to confirm the booking.
-      if (provider !== "flutterwave") {
-        setVerified(true);
-        setMode("confirming");
-        setMessage("Payment received ✅ Confirming your booking…");
-        return;
-      }
+    // Flutterwave: only hard-fail if explicitly failed/cancelled
+    if (flwStatus && ["failed", "cancelled", "canceled", "error"].includes(flwStatus)) {
+      setMode("failed");
+      setMessage("Payment was not completed. If you were charged, contact support with your reference.");
+      return;
+    }
 
-      // Flutterwave path
-      // If flutterwave says not successful, show failed state.
-      if (flwStatus && flwStatus !== "successful") {
-        setMode("failed");
-        setMessage(
-          "Payment was not successful. If you were charged, contact support with your reference."
-        );
-        return;
-      }
+    setMode("confirming");
+    setMessage("Confirming your booking…");
+  }, [provider, flwStatus]);
 
-      // Need a transaction id to verify reliably
-      if (!flwTransactionId) {
-        setMode("failed");
-        setMessage(
-          "We could not verify this payment (missing transaction id). Please contact support."
-        );
-        return;
-      }
-
-      setMode("verifying");
-      setMessage("Verifying payment…");
-
-      try {
-        // Need auth to call verify endpoint
-        let token = await getIdTokenOrNull(false);
-        if (!token) {
-          setMode("failed");
-          setMessage("Please log in again to confirm this payment.");
-          return;
-        }
-
-        // Verify via server
-        let res = await fetch(
-          `${API}/flutterwave/verify?transactionId=${encodeURIComponent(flwTransactionId)}`,
-          {
-            method: "GET",
-            headers: { Authorization: `Bearer ${token}` },
-          }
-        );
-
-        if (res.status === 401) {
-          token = await getIdTokenOrNull(true);
-          res = await fetch(
-            `${API}/flutterwave/verify?transactionId=${encodeURIComponent(flwTransactionId)}`,
-            {
-              method: "GET",
-              headers: { Authorization: `Bearer ${token}` },
-            }
-          );
-        }
-
-        const data = await res.json().catch(() => null);
-
-        if (!res.ok || !data?.ok) {
-          setMode("failed");
-          setMessage(data?.message || "Payment verification failed.");
-          return;
-        }
-
-        // Confirm it matches our tx_ref where possible
-        const verifiedRef = safeStr(data?.tx_ref || data?.reference || "");
-        if (flwTxRef && verifiedRef && flwTxRef !== verifiedRef) {
-          setMode("failed");
-          setMessage("Payment reference mismatch. Please contact support.");
-          return;
-        }
-
-        if (!alive) return;
-        setVerified(true);
-        setMode("confirming");
-        setMessage("Payment verified ✅ Confirming your booking…");
-      } catch (e) {
-        console.error("[ReserveSuccess] verify failed:", e);
-        if (!alive) return;
-        setMode("failed");
-        setMessage(
-          "We could not verify this payment right now. Please contact support if you were charged."
-        );
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider, flwStatus, flwTransactionId, flwTxRef]);
-
-  // Step 2: Poll booking doc until webhook settles it to confirmed (or review)
+  /**
+   * Step 1: Poll booking until webhook settles it (server is source of truth)
+   * Prefer API: GET /api/bookings/:idOrRef (auth)
+   * Fallback to Firestore read if API fails
+   */
   useEffect(() => {
     stopRef.current = false;
 
-    if (!bookingId) {
-      // If we can't resolve bookingId, we can’t poll — show graceful state
+    const idOrRef = bookingId || displayReference || "";
+    if (!idOrRef) {
       setMode("failed");
       setMessage("We could not locate your booking. Please contact support with your reference.");
       return () => {};
@@ -249,85 +207,88 @@ export default function ReserveSuccessPage() {
     let alive = true;
 
     const POLL_MS = 2000;
-    const MAX_WAIT_MS = 60_000; // 60s luxury window
+    const MAX_WAIT_MS = 90_000; // 90s window
     const start = Date.now();
+
+    async function fetchViaApi() {
+      const token = await getIdTokenOrNull(false);
+      if (!token) return { ok: false, reason: "no_token" };
+
+      let res = await fetch(`${API}/bookings/${encodeURIComponent(idOrRef)}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        credentials: "include",
+      });
+
+      if (res.status === 401) {
+        const token2 = await getIdTokenOrNull(true);
+        if (!token2) return { ok: false, reason: "no_token_refresh" };
+        res = await fetch(`${API}/bookings/${encodeURIComponent(idOrRef)}`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token2}`, "Content-Type": "application/json" },
+          credentials: "include",
+        });
+      }
+
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok || !json?.booking) return { ok: false, reason: "api_failed", json };
+
+      return { ok: true, booking: normalizeBookingShape(json.booking) };
+    }
+
+    async function fetchViaFirestore() {
+      // Firestore fallback only if bookingId exists
+      if (!bookingId) return { ok: false, reason: "no_bookingId_firestore" };
+      try {
+        const snap = await getDoc(doc(db, "bookings", bookingId));
+        if (!snap.exists()) return { ok: false, reason: "not_found" };
+        return { ok: true, booking: normalizeBookingShape({ id: snap.id, ...(snap.data() || {}) }) };
+      } catch (e) {
+        return { ok: false, reason: "firestore_failed", error: e };
+      }
+    }
 
     async function poll() {
       if (!alive || stopRef.current) return;
 
-      try {
-        const snap = await getDoc(doc(db, "bookings", bookingId));
-        if (!alive || stopRef.current) return;
+      let result = await fetchViaApi();
 
-        if (!snap.exists()) {
-          // Booking missing (rare) — keep calm, but stop soon
+      // fallback
+      if (!result.ok) {
+        const fb = await fetchViaFirestore();
+        if (fb.ok) result = fb;
+      }
+
+      if (result.ok && result.booking) {
+        setBooking(result.booking);
+
+        const { mode: nextMode, message: nextMsg } = deriveModeFromBooking(result.booking);
+
+        setMode(nextMode);
+        setMessage(nextMsg);
+
+        // stop conditions
+        if (nextMode === "success" || nextMode === "review") {
+          stopRef.current = true;
+          return;
+        }
+      } else {
+        // If we cannot fetch booking, keep trying a bit before failing
+        if (Date.now() - start > 15_000) {
           setMode("failed");
-          setMessage("Booking record not found. If you paid, contact support.");
+          setMessage("We could not confirm your booking record. If you paid, contact support with your reference.");
           stopRef.current = true;
           return;
         }
+      }
 
-        const d = snap.data() || {};
-        setBooking({ id: snap.id, ...d });
-
-        const status = safeLower(d.status || "");
-        const paid = !!d.paid || safeLower(d.paymentStatus || "") === "paid";
-        const mismatch = !!d.paymentMismatch || safeLower(d.status || "") === "paid-needs-review";
-        const gateway = safeLower(d.gateway || "");
-        const providerOnBooking = safeLower(d.provider || "");
-
-        // Review / attention
-        if (mismatch) {
-          setMode("review");
-          setMessage(
-            "Payment received — we’re reviewing the details to confirm your booking. You will not be charged twice."
-          );
-          stopRef.current = true;
-          return;
-        }
-
-        // Success target: confirmed (or completed)
-        if (status === "confirmed" || status === "completed") {
-          setMode("success");
-          setMessage("Booking confirmed ✅ Your reservation is secured.");
-          stopRef.current = true;
-          return;
-        }
-
-        // Accept “paid” as an interim (but keep waiting for confirmed)
-        if (paid || status === "paid" || gateway === "success") {
-          // if someone accidentally sets paid, still wait for confirmed
-          setMode("confirming");
-          setMessage("Payment received ✅ Finalising your booking…");
-        } else {
-          // Still pending
-          // Keep the messaging calm, don’t alarm
-          setMode((m) => (m === "verifying" ? "verifying" : "confirming"));
-          setMessage("Confirming your booking…");
-        }
-
-        // Guard: if provider mismatches (rare), move to review
-        if (provider && providerOnBooking && providerOnBooking !== provider && status !== "confirmed") {
-          setMode("review");
-          setMessage(
-            "We’re reviewing your payment provider details to confirm your booking. If you were charged, you're protected."
-          );
-          stopRef.current = true;
-          return;
-        }
-
-        // timeout
-        if (Date.now() - start > MAX_WAIT_MS) {
-          setMode("review");
-          setMessage(
-            "We’re still confirming this booking. If you were charged, your payment is safe — please check your bookings in a minute."
-          );
-          stopRef.current = true;
-          return;
-        }
-      } catch (e) {
-        console.warn("[ReserveSuccess] booking poll failed:", e?.message || e);
-        // Don’t fail hard on transient errors. Let it keep trying a bit.
+      // timeout handling
+      if (Date.now() - start > MAX_WAIT_MS) {
+        // If still not confirmed after long wait, go to review (safe)
+        setMode("review");
+        setMessage("We’re still confirming this booking. Please check My Bookings shortly.");
+        stopRef.current = true;
+        return;
       }
 
       setTimeout(poll, POLL_MS);
@@ -339,7 +300,8 @@ export default function ReserveSuccessPage() {
       alive = false;
       stopRef.current = true;
     };
-  }, [bookingId, provider]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookingId, displayReference, provider, API, user]);
 
   const heading = useMemo(() => {
     if (mode === "failed") return "Payment Not Confirmed";
@@ -366,15 +328,12 @@ export default function ReserveSuccessPage() {
   const showPulse = mode === "verifying" || mode === "confirming" || mode === "review";
 
   const bookingStatus = safeLower(booking?.status || "");
-  const bookingGross = Number(
-    booking?.amountLockedN ?? booking?.amountPaidN ?? booking?.amountN ?? booking?.amount ?? 0
-  );
+  const bookingGross = Number(booking?.amountN || 0);
 
-  // Luxury copy: do not expose internal statuses too harshly; show “secured / confirming / reviewing”.
   const footerCopy =
     "Contact details stay hidden by policy — they reveal only when booking rules and verification windows permit.";
 
-  const canGoBookings = mode !== "verifying"; // once we’ve progressed a bit
+  const canGoBookings = mode !== "verifying";
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white pt-24 px-4 pb-16">
@@ -423,7 +382,7 @@ export default function ReserveSuccessPage() {
 
         <p className="text-gray-300 mt-3 text-sm leading-relaxed">
           {message ||
-            "Your reservation has been secured. Your host/partner will share check-in instructions shortly."}
+            "We’re confirming your booking. If you were charged, your payment is safe."}
         </p>
 
         {/* Listing */}
@@ -444,14 +403,20 @@ export default function ReserveSuccessPage() {
         {/* Amount */}
         {bookingGross > 0 ? (
           <p className="mt-2 text-xs text-gray-400">
-            Amount: <span className="text-white/80 font-semibold">{formatMoneyNGN(bookingGross)}</span>
+            Amount:{" "}
+            <span className="text-white/80 font-semibold">
+              {formatMoneyNGN(bookingGross)}
+            </span>
           </p>
         ) : null}
 
-        {/* Booking ID (internal reference) */}
-        {bookingId ? (
+        {/* Booking ID */}
+        {booking?.id || bookingId ? (
           <p className="mt-1 text-xs text-gray-400">
-            Booking ID: <span className="font-mono text-emerald-300">{bookingId}</span>
+            Booking ID:{" "}
+            <span className="font-mono text-emerald-300">
+              {booking?.id || bookingId}
+            </span>
           </p>
         ) : null}
 
@@ -470,7 +435,7 @@ export default function ReserveSuccessPage() {
           </p>
         ) : null}
 
-        {/* Booking status hint (soft, luxury) */}
+        {/* Booking status hint (soft) */}
         {bookingStatus ? (
           <p className="mt-3 text-[11px] text-white/45">
             Status:{" "}
@@ -480,7 +445,7 @@ export default function ReserveSuccessPage() {
                 : bookingStatus === "paid-needs-review"
                 ? "Reviewing"
                 : bookingStatus === "paid"
-                ? "Payment received"
+                ? "Payment detected"
                 : bookingStatus}
             </span>
           </p>
@@ -513,15 +478,8 @@ export default function ReserveSuccessPage() {
           {footerCopy}
         </p>
 
-        {/* Verified footer */}
-        {provider === "flutterwave" && verified && mode !== "failed" ? (
-          <p className="mt-2 text-[11px] text-emerald-200/80">
-            Payment verified server-side ✅
-          </p>
-        ) : null}
-
         {/* Support hint for review/failed */}
-        {(mode === "review" || mode === "failed") ? (
+        {mode === "review" || mode === "failed" ? (
           <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left">
             <p className="text-xs text-white/80 font-semibold">Need help?</p>
             <p className="mt-1 text-[11px] text-white/60 leading-relaxed">
