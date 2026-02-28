@@ -235,14 +235,14 @@ export default function BookingDetailsPage() {
       return;
     }
 
-    nav("/chat", {
-      state: {
-        partnerUid: counterpartUid,
-        listing: { id: listingId, title },
-        bookingId,
-        from: "bookingDetail",
-      },
-    });
+    nav(`/booking/${bookingId}/chat`, {
+  state: {
+    partnerUid: counterpartUid,
+    listing: { id: listingId, title },
+    bookingId,
+    from: "bookingDetail",
+  },
+});
   }
 
   const statusTone = (() => {

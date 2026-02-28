@@ -33,6 +33,7 @@ import GuestDashboard from "./pages/GuestDashboard";
 import ListingDetails from "./pages/ListingDetails";
 import ReservePage from "./pages/ReservePage";
 import ChatPage from "./pages/ChatPage";
+import ChatStart from "./pages/ChatStart";
 import Wishlist from "./pages/Wishlist";
 import GuestBookings from "./pages/GuestBookings";
 import InboxPage from "./pages/InboxPage";
@@ -323,7 +324,14 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
+              <Route
+  path="/booking/:bookingId/chat"
+  element={
+    <RequireAuth>
+      <ChatStart />
+    </RequireAuth>
+  }
+/>
               {/* ✅ Favourites / Wishlist (aliases) */}
               <Route
                 path="/favourites"

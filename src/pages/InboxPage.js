@@ -51,7 +51,7 @@ function timeAgo(ts) {
 }
 
 /**
- * IMPORTANT: Standardize localStorage key:
+ * Standardize localStorage key:
  * nesta_chat_lastread_<uid>_chats:<chatId>
  */
 function getLocalLastRead(uid, chatId) {
@@ -75,7 +75,7 @@ function setLocalLastRead(uid, chatId) {
 
 function lastMessageText(lastMessage) {
   if (!lastMessage) return "";
-  if (typeof lastMessage === "string") return lastMessage; // tolerate legacy
+  if (typeof lastMessage === "string") return lastMessage;
   if (typeof lastMessage?.text === "string") return lastMessage.text;
   return "";
 }
@@ -90,15 +90,10 @@ function initials(nameOrEmail = "") {
 
 function playSoftBeep() {
   try {
-    if (
-      typeof document !== "undefined" &&
-      document.visibilityState !== "visible"
-    )
-      return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return;
 
-    // only after user gesture; browsers will block otherwise
     const ctx = new AudioCtx();
     const o = ctx.createOscillator();
     const g = ctx.createGain();
@@ -126,7 +121,7 @@ function playSoftBeep() {
 /* ───────────────── component ───────────────── */
 
 export default function InboxPage() {
-  const { user, profile } = useAuth(); // ✅ useAuth profile is enough (no need for useUserProfile here)
+  const { user, profile } = useAuth();
   const nav = useNavigate();
   const uid = user?.uid || null;
 
@@ -141,7 +136,6 @@ export default function InboxPage() {
   const [presenceMap, setPresenceMap] = useState({});
   const presenceUnsubsRef = useRef({});
 
-  // users_public cache
   const [counterCache, setCounterCache] = useState({});
   const counterLoadingRef = useRef({});
 
@@ -149,7 +143,6 @@ export default function InboxPage() {
   const toastTimerRef = useRef(null);
   const lastUnreadSetRef = useRef(new Set());
 
-  // ✅ Smart dashboard routing (safe even if role not ready yet)
   const goBackSmart = useCallback(() => {
     const r = String(profile?.role || role || "").trim().toLowerCase();
     if (r === "partner") return nav("/partner");
@@ -158,7 +151,7 @@ export default function InboxPage() {
     return nav("/dashboard");
   }, [nav, profile?.role, role]);
 
-  /* ───────────────── chats listener (ONLY chats collection, with fallback) ───────────────── */
+  /* ───────────────── chats listener ───────────────── */
   useEffect(() => {
     if (!uid) {
       setThreads([]);
@@ -197,7 +190,6 @@ export default function InboxPage() {
             };
           });
 
-          // Always sort locally to avoid relying on Firestore ordering
           rows.sort((a, b) => toMillisSafe(b.updatedAt) - toMillisSafe(a.updatedAt));
 
           setThreads(rows);
@@ -206,7 +198,6 @@ export default function InboxPage() {
         (err) => {
           console.error(`[Inbox] chats onSnapshot (${label}):`, err);
 
-          // fallback once if sorted query fails
           if (label === "sorted") {
             try {
               unsub && unsub();
@@ -251,13 +242,12 @@ export default function InboxPage() {
     [uid]
   );
 
-  /* ───────────────── presence per thread (chats/{chatId}/presence/{otherUid}) ───────────────── */
+  /* ───────────────── presence per thread ───────────────── */
   useEffect(() => {
     if (!uid) return;
 
     const currentIds = new Set(threads.map((t) => t.id));
 
-    // cleanup removed listeners
     for (const chatId of Object.keys(presenceUnsubsRef.current)) {
       if (!currentIds.has(chatId)) {
         presenceUnsubsRef.current[chatId]();
@@ -294,7 +284,7 @@ export default function InboxPage() {
     });
   }, [threads, uid]);
 
-  /* ───────────────── counterparty profile fetch (users_public) ───────────────── */
+  /* ───────────────── counterparty profile fetch ───────────────── */
   useEffect(() => {
     if (!uid) return;
 
@@ -304,8 +294,7 @@ export default function InboxPage() {
       const other = Array.isArray(t.participants)
         ? t.participants.find((p) => p !== uid)
         : null;
-      if (other && !counterCache[other] && !counterLoadingRef.current[other])
-        needed.add(other);
+      if (other && !counterCache[other] && !counterLoadingRef.current[other]) needed.add(other);
     });
 
     if (needed.size === 0) return;
@@ -352,11 +341,7 @@ export default function InboxPage() {
       ? filtered.filter((t) => {
           const title = (t.listingTitle || "").toLowerCase();
           const last = lastMessageText(t.lastMessage).toLowerCase();
-          return (
-            title.includes(kw) ||
-            last.includes(kw) ||
-            (t.id || "").toLowerCase().includes(kw)
-          );
+          return title.includes(kw) || last.includes(kw) || (t.id || "").toLowerCase().includes(kw);
         })
       : filtered;
 
@@ -372,7 +357,7 @@ export default function InboxPage() {
 
   const unreadCount = useMemo(() => rows.filter(isUnread).length, [rows, isUnread]);
 
-  /* ───────────────── toast + beep when new unread arrives ───────────────── */
+  /* ───────────────── toast + beep ───────────────── */
   useEffect(() => {
     if (!uid) return;
     if (loading) return;
@@ -389,11 +374,7 @@ export default function InboxPage() {
 
     if (newlyUnread.length > 0 && !showArchived) {
       playSoftBeep();
-      setToast(
-        newlyUnread.length === 1
-          ? "New message received"
-          : `${newlyUnread.length} new messages received`
-      );
+      setToast(newlyUnread.length === 1 ? "New message received" : `${newlyUnread.length} new messages received`);
       clearTimeout(toastTimerRef.current);
       toastTimerRef.current = setTimeout(() => setToast(null), 2600);
     }
@@ -428,7 +409,6 @@ export default function InboxPage() {
   async function openThread(t) {
     if (!uid) return;
 
-    // mark read (server + local)
     try {
       const ref = doc(db, "chats", t.id);
       await updateDoc(ref, {
@@ -441,12 +421,8 @@ export default function InboxPage() {
 
     setLocalLastRead(uid, t.id);
 
-    const partnerUid = Array.isArray(t.participants)
-      ? t.participants.find((p) => p !== uid)
-      : null;
-    const listing = t.listingId
-      ? { id: t.listingId, title: t.listingTitle || "Listing" }
-      : null;
+    const partnerUid = Array.isArray(t.participants) ? t.participants.find((p) => p !== uid) : null;
+    const listing = t.listingId ? { id: t.listingId, title: t.listingTitle || "Listing" } : null;
 
     nav("/chat", {
       state: { chatId: t.id, partnerUid, listing, from: "inbox" },
@@ -487,9 +463,7 @@ export default function InboxPage() {
       <main className="min-h-screen bg-[#0f1419] text-white px-4 py-8 motion-fade-in nesta-inbox">
         <div className="max-w-4xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h1 className="text-2xl font-extrabold">Inbox</h1>
-          <p className="text-gray-300 mt-1">
-            Please sign in to view your conversations.
-          </p>
+          <p className="text-gray-300 mt-1">Please sign in to view your conversations.</p>
           <div className="mt-4 flex gap-2">
             <button
               onClick={() => nav(-1)}
@@ -522,12 +496,8 @@ export default function InboxPage() {
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2">
               <div>
-                <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-                  Inbox
-                </h1>
-                <p className="text-gray-300 mt-1">
-                  Messages with hosts &amp; verified partners
-                </p>
+                <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Inbox</h1>
+                <p className="text-gray-300 mt-1">Messages with hosts &amp; verified partners</p>
               </div>
 
               {unreadCount > 0 && (
@@ -540,7 +510,6 @@ export default function InboxPage() {
               )}
             </div>
 
-            {/* ✅ Back controls */}
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={() => nav(-1)}
@@ -604,9 +573,23 @@ export default function InboxPage() {
             <p className="font-semibold mb-1">
               {showArchived ? "No archived conversations." : "No conversations yet."}
             </p>
-            <p className="text-gray-300">
-              You’ll see your messages here after you contact a host/partner.
-            </p>
+            <p className="text-gray-300">You’ll see your messages here after you contact a host/partner.</p>
+            {!showArchived ? (
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() => nav("/bookings")}
+                  className="px-4 py-2 rounded-xl bg-amber-500 text-black font-semibold hover:bg-amber-400 text-sm btn-amber"
+                >
+                  Go to Bookings
+                </button>
+                <button
+                  onClick={() => nav("/explore")}
+                  className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
+                >
+                  Browse stays
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -624,32 +607,20 @@ export default function InboxPage() {
               const pres = presenceMap[t.id] || { typing: false, online: false };
 
               const counter = partnerUid ? counterCache[partnerUid] : null;
-              const displayName =
-                counter?.displayName ||
-                (partnerUid ? partnerUid.slice(0, 8) : "User");
+              const displayName = counter?.displayName || (partnerUid ? partnerUid.slice(0, 8) : "User");
               const avatar = counter?.photoURL || null;
 
               return (
                 <li
                   key={t.id}
-                  className={[
-                    "nesta-chat-row card-glow",
-                    unread ? "nesta-chat-unread" : "",
-                  ].join(" ")}
+                  className={["nesta-chat-row card-glow", unread ? "nesta-chat-unread" : ""].join(" ")}
                 >
                   <div className="p-4 flex items-start gap-3">
                     <div className="relative shrink-0 w-12 h-12 rounded-xl bg-white/5 border border-white/10 overflow-hidden grid place-items-center">
                       {avatar ? (
-                        <img
-                          src={avatar}
-                          alt={displayName}
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                        />
+                        <img src={avatar} alt={displayName} className="w-full h-full object-cover" loading="lazy" />
                       ) : (
-                        <span className="text-sm font-bold text-amber-200">
-                          {initials(displayName)}
-                        </span>
+                        <span className="text-sm font-bold text-amber-200">{initials(displayName)}</span>
                       )}
 
                       {pres.online && (
@@ -661,9 +632,7 @@ export default function InboxPage() {
                         />
                       )}
 
-                      {unread && !pres.online && (
-                        <span className="absolute -top-1 -right-1 nesta-unread-dot" />
-                      )}
+                      {unread && !pres.online && <span className="absolute -top-1 -right-1 nesta-unread-dot" />}
                     </div>
 
                     <div className="flex-1 min-w-0">
@@ -692,9 +661,7 @@ export default function InboxPage() {
                           </span>
                         )}
 
-                        <span className="ml-auto text-xs text-gray-400">
-                          {timeAgo(t.updatedAt)}
-                        </span>
+                        <span className="ml-auto text-xs text-gray-400">{timeAgo(t.updatedAt)}</span>
                       </div>
 
                       <div className="mt-0.5 text-gray-300 line-clamp-1">

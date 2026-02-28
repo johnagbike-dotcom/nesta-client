@@ -15,6 +15,7 @@ import {
   setDoc,
   updateDoc,
 } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
@@ -22,13 +23,14 @@ import "../styles/polish.css";
 import "../styles/motion.css";
 
 /**
- * Feature flag:
- * - Missing -> default OFF (safe)
- * - Set REACT_APP_CHAT_ENABLED=true to enable chat.
- * NOTE: We DO NOT show any admin instructions in UI.
+ * ✅ Chat enabled default:
+ * - If env is missing, chat is ON (prevents accidental production disable).
+ * - Only OFF when REACT_APP_CHAT_ENABLED explicitly set to "false".
  */
 const CHAT_ENABLED =
-  String(process.env.REACT_APP_CHAT_ENABLED || "").trim().toLowerCase() === "true";
+  String(process.env.REACT_APP_CHAT_ENABLED || "")
+    .trim()
+    .toLowerCase() !== "false";
 
 const QUICK_GUEST = [
   "Hello 👋",
@@ -69,6 +71,22 @@ function safeMillis(ts) {
   }
 }
 
+function safeStr(v) {
+  return String(v ?? "").trim();
+}
+function safeLower(v) {
+  return safeStr(v).toLowerCase();
+}
+
+async function getBearerToken() {
+  try {
+    const auth = getAuth();
+    return auth.currentUser ? await auth.currentUser.getIdToken() : "";
+  } catch {
+    return "";
+  }
+}
+
 export default function ChatPage() {
   const nav = useNavigate();
   const params = useParams();
@@ -85,16 +103,23 @@ export default function ChatPage() {
       ? QUICK_HOST
       : QUICK_PARTNER;
 
+  // Supports:
+  // - /chat (expects state)
+  // - /chat/:uid (paramUid)
+  // - /booking/:bookingId/chat (bookingId)
   const forcedChatId = state?.chatId || state?.threadId || null;
   const paramUid = params?.uid || null;
+  const bookingIdParam = params?.bookingId || null;
 
   const partnerUidFromState = state?.partnerUid || paramUid || null;
   const listingFromState = state?.listing || null; // { id, title }
 
   const [chatId, setChatId] = useState(forcedChatId || null);
   const [headerTitle, setHeaderTitle] = useState("Chat");
-  const [counterUid] = useState(partnerUidFromState);
-  const [listing] = useState(listingFromState);
+
+  // ✅ MUST be mutable (so booking/:bookingId/chat can hydrate)
+  const [counterUid, setCounterUid] = useState(partnerUidFromState);
+  const [listing, setListing] = useState(listingFromState);
 
   const [chatMeta, setChatMeta] = useState(null);
   const [counterProfile, setCounterProfile] = useState(null);
@@ -113,6 +138,73 @@ export default function ChatPage() {
   const typingIdleRef = useRef(null);
   const myPresenceRef = useRef(null);
   const otherPresenceRef = useRef(null);
+
+  // ✅ If opened via /booking/:bookingId/chat, hydrate listing + partnerUid from booking
+  useEffect(() => {
+    let alive = true;
+
+    async function hydrateFromBooking() {
+      if (!CHAT_ENABLED) return;
+      if (!user?.uid) return;
+      if (!bookingIdParam) return;
+
+      // If we already have both, no need.
+      if (counterUid && listing?.id) return;
+
+      try {
+        setPageError("");
+
+        // Prefer API (so it matches your server truth), fallback to Firestore
+        const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+        const API = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
+        let booking = null;
+
+        const token = await getBearerToken();
+        if (token) {
+          const res = await fetch(`${API}/bookings/${encodeURIComponent(bookingIdParam)}`, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const json = await res.json().catch(() => null);
+          booking = json?.booking || json?.data || json || null;
+        }
+
+        if (!booking) {
+          // Firestore fallback
+          const snap = await getDoc(doc(db, "bookings", String(bookingIdParam)));
+          booking = snap.exists() ? { id: snap.id, ...(snap.data() || {}) } : null;
+        }
+
+        if (!booking) throw new Error("booking_not_found");
+
+        const listingId = booking.listingId || booking?.listing?.id || null;
+        const listingTitle = booking.listingTitle || booking?.listing?.title || "Listing";
+
+        // host vs partner resolution
+        const ownership = safeLower(booking.ownershipType || "");
+        const counterpartUid =
+          ownership === "host"
+            ? booking.ownerId || booking.hostId || booking.partnerUid || null
+            : booking.partnerUid || booking.ownerId || booking.hostId || null;
+
+        if (!listingId || !counterpartUid) throw new Error("booking_missing_chat_fields");
+
+        if (!alive) return;
+        setListing({ id: String(listingId), title: listingTitle });
+        setCounterUid(String(counterpartUid));
+      } catch (e) {
+        console.error("[ChatPage] hydrateFromBooking failed:", e);
+        if (!alive) return;
+        setPageError("Couldn’t open messages for this booking. Please try again.");
+      }
+    }
+
+    hydrateFromBooking();
+    return () => {
+      alive = false;
+    };
+  }, [bookingIdParam, user?.uid, counterUid, listing?.id]);
 
   const canRunChat = useMemo(() => {
     if (!CHAT_ENABLED) return false;
@@ -163,7 +255,7 @@ export default function ChatPage() {
     lastMineCreatedMs > 0 &&
     otherLastReadMs >= lastMineCreatedMs;
 
-  // ✅ Luxury: silent archive gate (read-only for archived threads)
+  // ✅ Archive gate
   const isArchivedForMe = useMemo(() => {
     if (!user?.uid) return false;
     return !!chatMeta?.archived?.[user.uid];
@@ -195,7 +287,7 @@ export default function ChatPage() {
             participants: [user.uid, counterUid],
             listingId: listing.id,
             listingTitle: listing.title || "Listing",
-            archived: {}, // ✅ new: per-user archive flags
+            archived: {},
             pinned: {},
             lastReadAt: {},
             unreadFor: [],
@@ -340,7 +432,6 @@ export default function ChatPage() {
   const onSend = useCallback(async () => {
     if (!canRunChat || !user?.uid || !chatId) return;
 
-    // ✅ Luxury: prevent sending if archived (read-only)
     if (isArchivedForMe) {
       setPageError(
         "This conversation is archived. Your stay has ended. For follow-ups, please contact support."
@@ -385,9 +476,7 @@ export default function ChatPage() {
     const v = e.target.value;
     setMessage(v);
 
-    // ✅ Do not update presence typing if archived
     if (isArchivedForMe) return;
-
     if (!canRunChat || !myPresenceRef.current || !user?.uid) return;
 
     setDoc(
@@ -424,7 +513,7 @@ export default function ChatPage() {
     setTimeout(onSend, 20);
   };
 
-  // RENDER (no hook below this line)
+  // RENDER
 
   if (!CHAT_ENABLED) {
     return (
@@ -432,8 +521,7 @@ export default function ChatPage() {
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-white/5 p-6 motion-pop">
           <h1 className="text-xl font-extrabold tracking-tight">Messaging</h1>
           <p className="text-white/70 mt-2 text-sm leading-relaxed">
-            Messaging is available after a booking is confirmed. Please proceed with{" "}
-            <span className="text-white/90 font-semibold">Reserve / Book</span>.
+            Messaging is currently unavailable.
           </p>
 
           <div className="mt-4 flex flex-wrap gap-2">
@@ -472,6 +560,9 @@ export default function ChatPage() {
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h2 className="text-2xl font-bold mb-2">Messages</h2>
           <p className="text-gray-300">Open a conversation from your Bookings.</p>
+          {pageError ? (
+            <div className="mt-3 text-sm text-rose-200">{pageError}</div>
+          ) : null}
         </div>
       </main>
     );
@@ -546,7 +637,6 @@ export default function ChatPage() {
           </div>
         ) : null}
 
-        {/* ✅ Luxury: soft archive banner (read-only state) */}
         {isArchivedForMe ? (
           <div className="mb-3 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/70 motion-pop">
             This conversation is archived. Your stay has ended. For follow-ups, please contact support.
@@ -593,9 +683,7 @@ export default function ChatPage() {
                 value={message}
                 onChange={onChangeMessage}
                 onKeyDown={onKeyDown}
-                placeholder={
-                  isArchivedForMe ? "Archived conversation (read-only)" : "Type a message…"
-                }
+                placeholder={isArchivedForMe ? "Archived conversation (read-only)" : "Type a message…"}
                 disabled={inputDisabled}
                 className={`flex-1 px-3 py-2 rounded-xl bg-black/30 border border-white/10 outline-none lux-focus ${
                   inputDisabled ? "opacity-60 cursor-not-allowed" : ""

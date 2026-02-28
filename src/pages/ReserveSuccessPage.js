@@ -28,7 +28,17 @@ function normalizeBookingShape(raw) {
     gateway: safeLower(b.gateway || ""),
     provider: safeLower(b.provider || ""),
     paymentMismatch: !!b.paymentMismatch,
-    amountN: Number(b.amountLockedN ?? b.amountPaidN ?? b.amountN ?? b.amount ?? b.total ?? 0),
+
+    // amounts (prefer locked/paid)
+    amountN: Number(
+      b.amountLockedN ??
+        b.amountPaidN ??
+        b.amountN ??
+        b.amount ??
+        b.total ??
+        0
+    ),
+
     listingTitle: b.listingTitle || b.title || b.listing?.title || "",
     listingId: b.listingId || b.listing?.id || null,
     checkIn: b.checkIn || null,
@@ -36,24 +46,54 @@ function normalizeBookingShape(raw) {
   };
 }
 
+/**
+ * ✅ UPDATED: Treat Nesta "paid_pending_release" as a confirmed booking (UX),
+ * because webhook settlement sets status to paid_pending_release (not "confirmed").
+ * This prevents "Messaging available after booking is confirmed" from blocking.
+ */
 function deriveModeFromBooking(b) {
   const status = safeLower(b?.status || "");
   const payStatus = safeLower(b?.paymentStatus || "");
-  const paid = !!b?.paid || payStatus === "paid" || status === "paid";
-  const mismatch = !!b?.paymentMismatch || status === "paid-needs-review" || payStatus === "payment-review";
+  const paid =
+    !!b?.paid ||
+    payStatus === "paid" ||
+    status === "paid" ||
+    status === "paid_pending_release" ||
+    status === "released";
+
+  const mismatch =
+    !!b?.paymentMismatch ||
+    status === "paid-needs-review" ||
+    payStatus === "payment-review" ||
+    status === "payment-review";
 
   // ✅ If mismatch/review flags are present, treat as review (don’t show success)
   if (mismatch) {
-    return { mode: "review", message: "Payment received — reviewing details to confirm your booking." };
+    return {
+      mode: "review",
+      message: "Payment received — reviewing details to confirm your booking.",
+    };
   }
 
-  // ✅ Only show SUCCESS when booking is confirmed/completed
-  if (status === "confirmed" || status === "completed") {
-    return { mode: "success", message: "Booking confirmed ✅ Your reservation is secured." };
+  // ✅ SUCCESS states (UX “confirmed”)
+  // - confirmed/completed: legacy
+  // - paid_pending_release/released: new settlement lifecycle
+  // - paymentStatus=paid: server truth
+  if (
+    status === "confirmed" ||
+    status === "completed" ||
+    status === "paid_pending_release" ||
+    status === "released" ||
+    payStatus === "paid"
+  ) {
+    return {
+      mode: "success",
+      message: "Booking confirmed ✅ Your reservation is secured.",
+    };
   }
 
-  // Paid is not the final state (still settling / webhook)
-  if (paid || b?.gateway === "success" || payStatus === "paid-pending-confirmation") {
+  // Paid is detected but not yet in a final state (still settling / webhook)
+  if (paid || b?.gateway === "success" || payStatus === "paid-pending-confirmation" || payStatus === "verified") {
     return { mode: "confirming", message: "Payment detected ✅ Finalising your booking…" };
   }
 
@@ -64,8 +104,8 @@ function deriveModeFromBooking(b) {
 /**
  * Luxury-state machine:
  * - verifying: verifying payment provider details (Flutterwave only)
- * - confirming: waiting for server booking to become confirmed/released
- * - success: confirmed/completed
+ * - confirming: waiting for server booking to become paid_pending_release / confirmed / released
+ * - success: confirmed/completed/paid_pending_release/released
  * - review: mismatch / attention
  * - failed: not found / verification hard-fail / timeout with unpaid
  */
@@ -251,7 +291,6 @@ export default function ReserveSuccessPage() {
           const lowered = safeLower(msg);
 
           if (res.status === 409) {
-            // replay protection triggered -> review
             if (!alive) return;
             setMode("review");
             setMessage("Payment received — verifying details. Please check My Bookings shortly.");
@@ -264,7 +303,6 @@ export default function ReserveSuccessPage() {
             setMessage("Payment received — reviewing details to confirm your booking.");
             return;
           }
-
           // otherwise continue polling; webhook may still settle
         }
 
@@ -273,7 +311,6 @@ export default function ReserveSuccessPage() {
         setMessage("Payment detected ✅ Finalising your booking…");
       } catch {
         if (!alive) return;
-        // Don’t block UX; proceed to polling
         setMode("confirming");
         setMessage("Confirming your booking…");
       }
@@ -521,6 +558,10 @@ export default function ReserveSuccessPage() {
             <span className="text-white/70">
               {bookingStatus === "confirmed" || bookingStatus === "completed"
                 ? "Confirmed"
+                : bookingStatus === "paid_pending_release"
+                ? "Confirmed (paid — pending release)"
+                : bookingStatus === "released"
+                ? "Confirmed (released)"
                 : bookingStatus === "paid-needs-review"
                 ? "Reviewing"
                 : bookingStatus === "paid"
@@ -555,7 +596,7 @@ export default function ReserveSuccessPage() {
 
         <p className="mt-6 text-[11px] text-gray-500 leading-relaxed">{footerCopy}</p>
 
-        {(mode === "review" || mode === "failed") ? (
+        {mode === "review" || mode === "failed" ? (
           <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left">
             <p className="text-xs text-white/80 font-semibold">Need help?</p>
             <p className="mt-1 text-[11px] text-white/60 leading-relaxed">
