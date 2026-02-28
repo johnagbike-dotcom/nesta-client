@@ -48,7 +48,6 @@ const API = normaliseApiRoot(getEnvApiBase());
 /* ---------------- AUTH TOKEN (HARDENED) ---------------- */
 
 // Wait for Firebase Auth to hydrate (prevents false "logged out" reads (auth.currentUser null))
-// NOTE: increase timeout because mobile + slow networks can exceed 2.5s.
 function waitForAuthUser({ timeoutMs = 8000 } = {}) {
   return new Promise((resolve) => {
     if (auth.currentUser) return resolve(auth.currentUser);
@@ -66,7 +65,6 @@ function waitForAuthUser({ timeoutMs = 8000 } = {}) {
     };
 
     unsub = onAuthStateChanged(auth, (u) => stop(u));
-
     setTimeout(() => stop(auth.currentUser || null), timeoutMs);
   });
 }
@@ -88,7 +86,6 @@ async function getIdToken({ forceRefresh = false, waitUser = true, requireAuth =
   try {
     return await u.getIdToken(!!forceRefresh);
   } catch (e) {
-    // If token retrieval fails, treat like unauthorized for protected calls
     if (requireAuth) {
       const err = new Error("Unauthorized");
       err.status = 401;
@@ -98,6 +95,14 @@ async function getIdToken({ forceRefresh = false, waitUser = true, requireAuth =
     }
     return null;
   }
+}
+
+// Provider normalisation used across flows (paystack/flutterwave)
+export function normalizeProvider(v) {
+  const s = String(v || "").toLowerCase().trim();
+  if (s.includes("flutter")) return "flutterwave";
+  if (s.includes("paystack")) return "paystack";
+  return s || "";
 }
 
 // generic JSON fetch helper (Bearer-token; no cookies)
@@ -178,9 +183,9 @@ function toIso(v) {
   }
 }
 
-/* ============================================================================
+/* =====================================================================
    API-FIRST FLOW (RECOMMENDED)
-   ========================================================================== */
+   ===================================================================== */
 
 export async function getAvailabilityAPI({ listingId, checkIn, checkOut }) {
   const qs = new URLSearchParams({
@@ -208,11 +213,8 @@ export async function createBookingHoldAPI(payload) {
     method: "POST",
     body: JSON.stringify(payload || {}),
     requireAuth: true,
-    // ✅ forceRefresh true helps when auth just refreshed / recently signed in
     forceRefresh: true,
-    // ✅ waitUser true avoids "currentUser null" during hydration
     waitUser: true,
-    // ✅ retry once on 401 with forced refresh
     retryOn401: true,
   });
 
@@ -222,20 +224,68 @@ export async function createBookingHoldAPI(payload) {
 
 /**
  * Get booking from server (recommended for polling after callback).
- * Returns: booking object
+ *
+ * IMPORTANT:
+ * - BookingCompletePage may pass a bookingId OR a gateway reference.
+ * - Your server can choose to support either.
+ *
+ * This client:
+ *  1) tries GET /bookings/:idOrRef
+ *  2) if 404/400, tries optional resolve-style fallbacks (safe if not implemented)
  */
-export async function getBookingStatusAPI(bookingId) {
-  if (!bookingId) throw new Error("Missing booking id");
+export async function getBookingStatusAPI(bookingIdOrRef) {
+  const key = String(bookingIdOrRef || "").trim();
+  if (!key) throw new Error("Missing booking id");
 
-  const data = await fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}`, {
-    method: "GET",
-    requireAuth: true,
-    waitUser: true,
-    retryOn401: true,
-  });
+  // (1) Primary path (recommended)
+  try {
+    const data = await fetchJson(`${API}/bookings/${encodeURIComponent(key)}`, {
+      method: "GET",
+      requireAuth: true,
+      waitUser: true,
+      retryOn401: true,
+    });
 
-  if (data?.ok === false) throw new Error(data?.error || "Failed to fetch booking");
-  return data?.booking ?? data;
+    if (data?.ok === false) throw new Error(data?.error || "Failed to fetch booking");
+    return data?.booking ?? data;
+  } catch (e) {
+    const status = e?.status;
+
+    // Only attempt fallbacks on common "not found / bad param" cases
+    const shouldTryFallback = status === 404 || status === 400;
+
+    if (!shouldTryFallback) throw e;
+
+    // (2) Fallback A: /bookings/resolve?reference=
+    // Safe even if not implemented (will throw and we'll continue)
+    try {
+      const qs = new URLSearchParams({ reference: key }).toString();
+      const data = await fetchJson(`${API}/bookings/resolve?${qs}`, {
+        method: "GET",
+        requireAuth: true,
+        waitUser: true,
+        retryOn401: true,
+      });
+      if (data?.ok === false) throw new Error(data?.error || "Failed to resolve booking");
+      return data?.booking ?? data;
+    } catch {}
+
+    // (3) Fallback B: /bookings/by-reference?ref=
+    try {
+      const qs = new URLSearchParams({ ref: key }).toString();
+      const data = await fetchJson(`${API}/bookings/by-reference?${qs}`, {
+        method: "GET",
+        requireAuth: true,
+        waitUser: true,
+        retryOn401: true,
+      });
+      if (data?.ok === false) throw new Error(data?.error || "Failed to resolve booking");
+      return data?.booking ?? data;
+    } catch {}
+
+    // If no fallback worked, throw original error
+    throw e;
+  }
 }
 
 /**
@@ -243,20 +293,24 @@ export async function getBookingStatusAPI(bookingId) {
  * Webhook is source of truth; this is UX only.
  */
 export async function notifyPaymentReceivedAPI({ bookingId, provider, reference }) {
-  if (!bookingId) throw new Error("Missing booking id");
+  const id = String(bookingId || "").trim();
+  if (!id) throw new Error("Missing booking id");
 
-  return fetchJson(`${API}/bookings/${encodeURIComponent(bookingId)}/payment-received`, {
+  const p = normalizeProvider(provider);
+  const ref = String(reference || "").trim();
+
+  return fetchJson(`${API}/bookings/${encodeURIComponent(id)}/payment-received`, {
     method: "POST",
-    body: JSON.stringify({ provider, reference }),
+    body: JSON.stringify({ provider: p, reference: ref }),
     requireAuth: true,
     waitUser: true,
     retryOn401: true,
   });
 }
 
-/* ============================================================================
+/* =====================================================================
    ADMIN / LEGACY API (kept for compatibility)
-   ========================================================================== */
+   ===================================================================== */
 
 export async function syncBookingToAdminLedger(bookingId, statusOverride) {
   try {
@@ -287,7 +341,7 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
       hostEmail: b.hostEmail || b.ownerEmail || b.hostContactEmail || b.payeeEmail || "",
       nights: Number(b.nights || b.nightsCount || 1),
       totalAmount: amount,
-      provider: b.provider || "paystack",
+      provider: normalizeProvider(b.provider || "paystack"),
       reference: b.reference || b.gatewayRef || "",
       createdAt,
       checkIn,
@@ -328,7 +382,7 @@ export async function createBooking(body) {
     title: body.title,
     nights: Number(body.nights || 1),
     total: Number(body.total || 0),
-    provider: body.provider,
+    provider: normalizeProvider(body.provider),
     reference: body.reference,
   };
   return fetchJson(`${API}/bookings`, {
@@ -346,7 +400,7 @@ export async function createDemoBooking(body = {}) {
     title: body.title || "Demo Booking",
     nights: Number(body.nights || 1),
     total: Number(body.total || 0),
-    provider: body.provider || "paystack",
+    provider: normalizeProvider(body.provider || "paystack"),
     reference: body.reference || `NST_${Date.now()}`,
   };
   return fetchJson(`${API}/bookings`, {
@@ -409,9 +463,9 @@ export async function deleteBooking(id) {
   });
 }
 
-/* ============================================================================
+/* =====================================================================
    FIRESTORE FLOW (FALLBACK / NON-MONEY UPDATES ONLY)
-   ========================================================================== */
+   ===================================================================== */
 
 export async function createPendingBookingFS({
   listing,
@@ -520,10 +574,7 @@ export async function ensurePendingHoldFS({
   return { id, expiresAt };
 }
 
-export async function markBookingConfirmedFS(
-  bookingId,
-  { provider = "paystack", reference = "" } = {}
-) {
+export async function markBookingConfirmedFS(bookingId, { provider = "paystack", reference = "" } = {}) {
   try {
     await notifyPaymentReceivedAPI({ bookingId, provider, reference });
   } catch {}
@@ -585,11 +636,7 @@ export async function expireStaleBookings() {
       const b = d.data();
       if (b.status !== "pending") return;
 
-      const exp = b.expiresAt?.toDate
-        ? b.expiresAt.toDate()
-        : b.expiresAt
-        ? new Date(b.expiresAt)
-        : null;
+      const exp = b.expiresAt?.toDate ? b.expiresAt.toDate() : b.expiresAt ? new Date(b.expiresAt) : null;
 
       if (exp && exp.getTime() < now) {
         ops.push(
@@ -608,9 +655,9 @@ export async function expireStaleBookings() {
   }
 }
 
-/* ============================================================================
+/* =====================================================================
    HOLDS COLLECTION (optional legacy)
-   ========================================================================== */
+   ===================================================================== */
 
 export async function fetchActiveHoldsFS({ guestId, listingId, checkIn, checkOut }) {
   if (!guestId || !listingId) return [];

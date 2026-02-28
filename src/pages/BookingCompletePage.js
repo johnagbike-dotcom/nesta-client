@@ -1,12 +1,14 @@
 // src/pages/BookingCompletePage.js
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { getBookingStatusAPI, notifyPaymentReceivedAPI } from "../api/bookings";
 
 /* ---------- helpers ---------- */
 const safeText = (v) => {
   if (v == null) return "";
-  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean")
-    return String(v);
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+
+  // Firestore Timestamp-like
   if (typeof v === "object" && typeof v.seconds === "number") {
     try {
       return new Date(v.seconds * 1000).toLocaleString();
@@ -17,6 +19,7 @@ const safeText = (v) => {
       return v.toDate().toLocaleString();
     } catch {}
   }
+
   try {
     return JSON.stringify(v);
   } catch {
@@ -24,18 +27,28 @@ const safeText = (v) => {
   }
 };
 
-const fmtDate = (d, fallback = "—") => {
-  if (!d) return fallback;
+const toDateObj = (d) => {
   try {
-    if (typeof d === "object") {
-      if (typeof d.toDate === "function") d = d.toDate();
-      else if (typeof d.seconds === "number") d = new Date(d.seconds * 1000);
+    if (!d) return null;
+    let x = d;
+    if (typeof x === "object") {
+      if (typeof x.toDate === "function") x = x.toDate();
+      else if (typeof x.seconds === "number") x = new Date(x.seconds * 1000);
     }
-    const dt = d instanceof Date ? d : new Date(d);
-    if (isNaN(dt)) return fallback;
-    return dt.toDateString();
+    const dt = x instanceof Date ? x : new Date(x);
+    return Number.isNaN(dt.getTime()) ? null : dt;
   } catch {
-    return fallback;
+    return null;
+  }
+};
+
+const fmtDate = (d, fallback = "—") => {
+  const dt = toDateObj(d);
+  if (!dt) return fallback;
+  try {
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return dt.toDateString();
   }
 };
 
@@ -53,32 +66,81 @@ const ngn = (n) => {
 };
 
 const diffNights = (checkIn, checkOut) => {
-  if (!checkIn || !checkOut) return 0;
-  let inD = checkIn,
-    outD = checkOut;
+  const a = toDateObj(checkIn);
+  const b = toDateObj(checkOut);
+  if (!a || !b) return 0;
 
-  if (typeof inD === "object" && typeof inD.seconds === "number")
-    inD = new Date(inD.seconds * 1000);
-  if (typeof outD === "object" && typeof outD.seconds === "number")
-    outD = new Date(outD.seconds * 1000);
+  const aa = new Date(a);
+  const bb = new Date(b);
 
-  inD = inD instanceof Date ? inD : new Date(inD);
-  outD = outD instanceof Date ? outD : new Date(outD);
+  // midday to avoid DST edge cases
+  aa.setHours(12, 0, 0, 0);
+  bb.setHours(12, 0, 0, 0);
 
-  const ms = outD.setHours(12, 0, 0, 0) - inD.setHours(12, 0, 0, 0);
+  const ms = bb.getTime() - aa.getTime();
   return ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
 };
 
+function normalizeProvider(v) {
+  const s = String(v || "").toLowerCase();
+  if (s.includes("flutter")) return "flutterwave";
+  if (s.includes("paystack")) return "paystack";
+  return s || "";
+}
+
+/**
+ * Payment truth for UI:
+ * - paymentStatus is the gateway truth
+ * - status is your internal lifecycle truth
+ *
+ * Your webhook currently sets:
+ *  - status: "paid_pending_release"
+ *  - paymentStatus: "paid"
+ */
 function isPaidOrConfirmed(statusRaw, paymentStatusRaw) {
   const s = String(statusRaw || "").toLowerCase().trim();
   const p = String(paymentStatusRaw || "").toLowerCase().trim();
-  return (
-    p === "paid" ||
-    s === "confirmed" ||
-    s === "paid" ||
-    s === "paid-pending-confirmation" ||
-    s === "paid-needs-review"
-  );
+
+  const paidishStatus = new Set([
+    "confirmed",
+    "paid",
+    "paid_pending_release",
+    "paid-pending-release",
+    "paid_pending_confirmation",
+    "paid-pending-confirmation",
+    "paid_needs_review",
+    "paid-needs-review",
+    "released",
+    "completed",
+  ]);
+
+  const paidishPay = new Set(["paid", "successful", "completed"]);
+
+  return paidishStatus.has(s) || paidishPay.has(p);
+}
+
+/**
+ * Payout lifecycle (your current backend):
+ * - booking.releaseStatus: "pending" | "released" | ...
+ *
+ * Backward compatible with any older "payoutStatus" field if present.
+ */
+function getReleaseStatus(b) {
+  const s = String(
+    b?.releaseStatus || b?.release_status || b?.payoutStatus || b?.payout_status || ""
+  )
+    .toLowerCase()
+    .trim();
+  return s || "—";
+}
+
+/**
+ * Optional dispute lifecycle (if you add it later):
+ * - disputeStatus: "open" | "resolved"
+ */
+function getDisputeStatus(b) {
+  const s = String(b?.disputeStatus || b?.dispute_status || "").toLowerCase().trim();
+  return s || "";
 }
 
 function resolveHostUidFromBooking(b) {
@@ -90,6 +152,7 @@ function resolveHostUidFromBooking(b) {
     b.partnerId ||
     b.ownerId ||
     b.ownerUid ||
+    b.payoutUid || // ✅ your webhook stores payoutUid
     b.listing?.hostId ||
     b.listing?.hostUid ||
     b.listing?.partnerUid ||
@@ -99,85 +162,131 @@ function resolveHostUidFromBooking(b) {
   );
 }
 
-function getIdToken() {
-  // Adjust to your auth storage strategy if different
-  return (
-    localStorage.getItem("idToken") ||
-    localStorage.getItem("token") ||
-    localStorage.getItem("accessToken") ||
-    ""
-  );
-}
+/* ---------- booking UI state chip ---------- */
+function getUiState(booking) {
+  const b = booking || {};
+  const status = String(b.status || "").toLowerCase().trim();
+  const payStatus = String(b.paymentStatus || "").toLowerCase().trim();
+  const releaseStatus = getReleaseStatus(b);
+  const disputeStatus = getDisputeStatus(b);
 
-async function apiGetJson(url) {
-  const token = getIdToken();
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      "Content-Type": "application/json",
-    },
-  });
-  const json = await res.json().catch(() => null);
-  if (!res.ok) {
-    const err = new Error(json?.error || json?.message || "Request failed");
-    err.status = res.status;
-    err.body = json;
-    throw err;
+  // dispute takes precedence
+  if (disputeStatus === "open") {
+    return {
+      icon: "⚠️",
+      title: "Under review",
+      subtitle: "A dispute has been opened. Our team will review and update you.",
+      chip: "Under review",
+      tone: "warning",
+    };
   }
-  return json;
-}
 
-async function apiPostJson(url, body) {
-  const token = getIdToken();
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body || {}),
-  });
-  const json = await res.json().catch(() => null);
-  if (!res.ok) {
-    const err = new Error(json?.error || json?.message || "Request failed");
-    err.status = res.status;
-    err.body = json;
-    throw err;
+  if (status === "refunded") {
+    return {
+      icon: "↩️",
+      title: "Refunded",
+      subtitle: "This booking has been refunded. If you need help, contact support.",
+      chip: "Refunded",
+      tone: "neutral",
+    };
   }
-  return json;
+
+  if (status === "cancelled" || status === "canceled") {
+    return {
+      icon: "⛔",
+      title: "Cancelled",
+      subtitle: "This booking was cancelled.",
+      chip: "Cancelled",
+      tone: "neutral",
+    };
+  }
+
+  const paidOrConfirmed = isPaidOrConfirmed(status, payStatus);
+
+  if (!paidOrConfirmed) {
+    return {
+      icon: "⏳",
+      title: "Payment processing",
+      subtitle: "We’re confirming your payment. This can take a few seconds.",
+      chip: "Processing",
+      tone: "neutral",
+    };
+  }
+
+  // Paid/confirmed — show release policy (your marketplace model)
+  if (status.includes("paid_pending_release") || releaseStatus === "pending") {
+    return {
+      icon: "✅",
+      title: "Booking confirmed",
+      subtitle: "Payment verified. Host payout is released after check-in.",
+      chip: "Confirmed · Pending release",
+      tone: "success",
+    };
+  }
+
+  if (releaseStatus === "released" || status === "released") {
+    return {
+      icon: "✅",
+      title: "Booking confirmed",
+      subtitle: "Enjoy your stay. You can message the host from your bookings.",
+      chip: "Confirmed · Released",
+      tone: "success",
+    };
+  }
+
+  // Default paid state
+  return {
+    icon: "✅",
+    title: "Booking confirmed",
+    subtitle: "Your payment has been verified.",
+    chip: "Confirmed",
+    tone: "success",
+  };
 }
 
 /* ---------- page ---------- */
 export default function BookingCompletePage() {
-  const { state } = useLocation();
+  const location = useLocation();
   const nav = useNavigate();
+  const state = location.state || {};
 
   const [snapshot, setSnapshot] = useState(null);
   const [serverBooking, setServerBooking] = useState(null);
   const [serverError, setServerError] = useState("");
-  const [verifying, setVerifying] = useState(false);
-  const pollRef = useRef(null);
+  const [notifying, setNotifying] = useState(false);
 
-  // Receipt mode (when you navigate from My Bookings with a full booking object)
+  const pollRef = useRef(null);
+  const nudgedRef = useRef(false);
+
+  // Receipt mode (from My Bookings with full booking object)
   const routeBooking =
     state?.booking &&
-    (state.booking.listingTitle || state.booking.total || state.booking.amountN)
+    (state.booking.listingTitle || state.booking.total || state.booking.amountN || state.booking.id)
       ? state.booking
       : null;
 
-  const entrySourceRibbon = routeBooking
-    ? "My Bookings → Receipt"
-    : "Post-checkout summary";
+  const entrySourceRibbon = routeBooking ? "My Bookings → Receipt" : "Post-checkout summary";
+
+  // Support query params after redirect/callback (optional)
+  const queryParams = useMemo(() => {
+    const sp = new URLSearchParams(location.search || "");
+    return {
+      provider: normalizeProvider(sp.get("provider")),
+      bookingId: safeText(sp.get("bookingId")),
+      reference: safeText(sp.get("reference")),
+    };
+  }, [location.search]);
 
   useEffect(() => {
-    // Receipt mode: we still optionally poll server to ensure latest status
+    // Receipt mode: still poll server for freshest status
     if (routeBooking) {
       setSnapshot({
         mode: "receipt",
-        bookingIdOrRef: routeBooking.id || routeBooking.reference || "",
-        provider: routeBooking.provider || "",
+        bookingIdOrRef: safeText(routeBooking.id || routeBooking.reference || routeBooking.ref || ""),
+        provider: normalizeProvider(routeBooking.provider || routeBooking.gateway || ""),
         when: new Date().toISOString(),
+        pending: null,
+        tx: null,
       });
       return;
     }
@@ -202,10 +311,8 @@ export default function BookingCompletePage() {
 
     try {
       if (!stateTx) {
-        // ✅ support both paystack and flutterwave keys
         const raw =
-          sessionStorage.getItem("flutterwave_tx") ||
-          sessionStorage.getItem("paystack_tx");
+          sessionStorage.getItem("flutterwave_tx") || sessionStorage.getItem("paystack_tx");
         tx = raw ? JSON.parse(raw) : null;
       } else {
         tx = stateTx;
@@ -214,47 +321,51 @@ export default function BookingCompletePage() {
       tx = null;
     }
 
-    // Normalize tx shape (supports Paystack + Flutterwave)
+    // Normalize tx (Paystack + Flutterwave)
     const normalizedTx =
       tx && typeof tx === "object"
         ? {
-            provider: (tx.provider || tx.gateway || tx.type || "").toString(),
-            status: (tx.status || tx.message || tx.data?.status || "").toString(),
+            provider: normalizeProvider(tx.provider || tx.gateway || tx.type || ""),
+            status: safeText(tx.status || tx.message || tx.data?.status || ""),
             reference:
-              tx.reference ||
-              tx.trxref ||
-              tx.data?.reference ||
-              tx.data?.txRef ||
-              tx.data?.tx_ref ||
-              tx.tx_ref ||
-              "",
-            transaction_id:
-              tx.transaction_id ||
-              tx.data?.id ||
-              tx.id ||
-              tx.data?.transaction_id ||
-              "",
+              safeText(
+                tx.reference ||
+                  tx.trxref ||
+                  tx.data?.reference ||
+                  tx.data?.txRef ||
+                  tx.data?.tx_ref ||
+                  tx.tx_ref ||
+                  ""
+              ) || "",
+            transaction_id: safeText(tx.transaction_id || tx.data?.id || tx.id || ""),
             raw: tx,
           }
         : null;
 
-    // Determine bookingIdOrRef
+    // Determine bookingIdOrRef (query can override)
     const bookingIdOrRef =
+      safeText(queryParams.bookingId) ||
       safeText(pending?.bookingId) ||
       safeText(pending?.id) ||
       safeText(pending?.reference) ||
+      safeText(queryParams.reference) ||
       safeText(normalizedTx?.reference) ||
       "";
+
+    const provider = normalizeProvider(
+      queryParams.provider || normalizedTx?.provider || pending?.provider || ""
+    );
 
     setSnapshot({
       mode: "snapshot",
       pending: pending || null,
       tx: normalizedTx,
       bookingIdOrRef,
+      provider,
       when: new Date().toISOString(),
     });
 
-    // clear session copies so we don't re-use stale data
+    // clear session copies
     try {
       sessionStorage.removeItem("booking_pending");
     } catch {}
@@ -264,19 +375,22 @@ export default function BookingCompletePage() {
     try {
       sessionStorage.removeItem("flutterwave_tx");
     } catch {}
-  }, [state, routeBooking]);
+  }, [state, routeBooking, queryParams]);
 
-  // Compute display info from snapshot.pending (for UI only; not proof of payment)
+  // Compute display info from snapshot.pending (UI only; server remains truth)
   const info = useMemo(() => {
     const p = snapshot?.pending;
     if (!p) return null;
 
     const listing = p.listing || {};
     const nightly = Number(listing.pricePerNight ?? listing.price ?? p.pricePerNight ?? 0);
+
     const checkIn = p.checkIn ?? listing.checkIn ?? null;
     const checkOut = p.checkOut ?? listing.checkOut ?? null;
     const nights = diffNights(checkIn, checkOut);
     const guests = Number(p.guests ?? 1) || 1;
+
+    // UI-only fee calc (server should lock amountLockedN / amountN)
     const feePct = Number(p.feePct ?? 5) || 0;
     const subtotal = nightly * nights;
     const fee = Math.round((feePct / 100) * subtotal);
@@ -289,15 +403,6 @@ export default function BookingCompletePage() {
         city: safeText(listing.city),
         area: safeText(listing.area),
       },
-      hostId:
-        safeText(
-          listing.hostId ||
-            listing.hostUid ||
-            listing.partnerUid ||
-            listing.partnerId ||
-            listing.ownerId ||
-            ""
-        ) || "",
       checkIn,
       checkOut,
       guests,
@@ -310,7 +415,7 @@ export default function BookingCompletePage() {
     };
   }, [snapshot]);
 
-  // ✅ Server-truth poller (booking status)
+  // ✅ Server-truth poller
   useEffect(() => {
     if (!snapshot?.bookingIdOrRef) return;
 
@@ -320,19 +425,17 @@ export default function BookingCompletePage() {
 
     async function loadOnce() {
       try {
-        const json = await apiGetJson(`/api/bookings/${encodeURIComponent(snapshot.bookingIdOrRef)}`);
-        if (!cancelled) setServerBooking(json?.booking || null);
+        const booking = await getBookingStatusAPI(snapshot.bookingIdOrRef);
+        if (!cancelled) setServerBooking(booking || null);
       } catch (e) {
         if (!cancelled) setServerError(e?.message || "Could not load booking status.");
       }
     }
 
-    // first load immediately
     loadOnce();
 
-    // poll for a short time (payment + webhook can take a few seconds)
     const started = Date.now();
-    const maxMs = 90_000; // 90s
+    const maxMs = 120_000; // 120s
     const intervalMs = 3000;
 
     pollRef.current = setInterval(async () => {
@@ -353,67 +456,67 @@ export default function BookingCompletePage() {
     };
   }, [snapshot?.bookingIdOrRef]);
 
-  // ✅ If flutterwave info exists, attempt server verify-booking once (optional)
+  // ✅ Optional UX nudge after redirect/callback (Paystack + Flutterwave)
+  // Webhook remains the source of truth.
   useEffect(() => {
     if (!snapshot || routeBooking) return;
-    const provider = (snapshot?.tx?.provider || "").toLowerCase();
-    const hasFlw = provider.includes("flutter") || safeText(snapshot?.tx?.transaction_id);
-    if (!hasFlw) return;
+    if (nudgedRef.current) return;
 
-    const bookingId = safeText(snapshot?.pending?.bookingId) || safeText(snapshot?.bookingIdOrRef);
-    const tx_ref = safeText(snapshot?.tx?.reference);
-    const transaction_id = safeText(snapshot?.tx?.transaction_id);
+    const bookingId =
+      safeText(snapshot?.pending?.bookingId) ||
+      safeText(queryParams.bookingId) ||
+      safeText(snapshot?.bookingIdOrRef);
 
-    if (!bookingId || !tx_ref || !transaction_id) return;
+    const provider = normalizeProvider(snapshot?.provider || queryParams.provider || snapshot?.tx?.provider);
+    const reference =
+      safeText(queryParams.reference) ||
+      safeText(snapshot?.pending?.reference) ||
+      safeText(snapshot?.tx?.reference);
 
-    let didRun = false;
+    if (!bookingId || !provider || !reference) return;
+
+    nudgedRef.current = true;
 
     (async () => {
-      if (didRun) return;
-      didRun = true;
-      setVerifying(true);
+      setNotifying(true);
       try {
-        // If you haven't added this endpoint yet, it will fail silently (and webhook polling still works)
-        await apiPostJson(`/api/flutterwave/verify-booking`, {
-          bookingId,
-          tx_ref,
-          transaction_id,
-        });
+        await notifyPaymentReceivedAPI({ bookingId, provider, reference });
       } catch {
-        // swallow - the polling will still pick up webhook confirmation
+        // swallow; polling + webhook will still update
       } finally {
-        setVerifying(false);
+        setNotifying(false);
       }
     })();
-  }, [snapshot, routeBooking]);
+  }, [snapshot, routeBooking, queryParams]);
 
-  /* ---------- RECEIPT MODE (existing booking) ---------- */
+  /* ---------- RECEIPT MODE ---------- */
   if (routeBooking) {
-    const b = serverBooking || routeBooking; // prefer freshest data
+    const b = serverBooking || routeBooking;
 
     const listingTitle = b.listingTitle || b.listing?.title || b.title || "Listing";
-    const location = b.listingLocation || [b.city, b.area].filter(Boolean).join(", ") || "";
+    const locationLabel =
+      b.listingLocation || [b.city || b.listingCity, b.area || b.listingArea].filter(Boolean).join(", ") || "";
     const ref = b.reference || b.ref || b.id || "";
-    const status = (b.status || "").toLowerCase();
-    const payStatus = (b.paymentStatus || "").toLowerCase();
 
     const nights =
       typeof b.nights === "number" && b.nights > 0 ? b.nights : diffNights(b.checkIn, b.checkOut);
 
     const nightly =
-      b.pricePerNight ||
-      b.listing?.pricePerNight ||
-      (nights > 0 ? (b.total || b.amountN || 0) / nights : 0);
+      Number(b.pricePerNight || b.listing?.pricePerNight || 0) ||
+      (nights > 0 ? Number(b.total || b.amountN || 0) / nights : 0);
 
     const subtotal = b.subtotal ?? (nights > 0 ? nights * Number(nightly || 0) : 0);
     const fee = b.fee ?? (b.total != null ? Math.max(0, Number(b.total) - subtotal) : 0);
     const total = b.total != null ? Number(b.total) : subtotal + fee;
 
-    const confirmed = isPaidOrConfirmed(status, payStatus);
+    const confirmed = isPaidOrConfirmed(b.status, b.paymentStatus);
     const hostUid = resolveHostUidFromBooking(b);
     const listingId = safeText(b.listingId || b.listing?.id || "");
-
     const canChat = !!(confirmed && hostUid && listingId);
+
+    const ui = getUiState(b);
+    const releaseStatus = getReleaseStatus(b);
+    const disputeStatus = getDisputeStatus(b);
 
     return (
       <main className="dash-bg">
@@ -430,42 +533,39 @@ export default function BookingCompletePage() {
                 "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                gap: 18,
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
+            <div style={{ display: "flex", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
               <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
                 <div
                   style={{
                     width: 42,
                     height: 42,
                     borderRadius: 12,
-                    background: confirmed ? "rgba(16,185,129,0.15)" : "rgba(148,163,184,0.12)",
+                    background:
+                      ui.tone === "success"
+                        ? "rgba(16,185,129,0.15)"
+                        : ui.tone === "warning"
+                        ? "rgba(245,158,11,0.15)"
+                        : "rgba(148,163,184,0.12)",
                     display: "grid",
                     placeItems: "center",
-                    border: confirmed
-                      ? "1px solid rgba(16,185,129,0.35)"
-                      : "1px solid rgba(148,163,184,0.35)",
+                    border:
+                      ui.tone === "success"
+                        ? "1px solid rgba(16,185,129,0.35)"
+                        : ui.tone === "warning"
+                        ? "1px solid rgba(245,158,11,0.35)"
+                        : "1px solid rgba(148,163,184,0.35)",
                   }}
                 >
-                  <span style={{ fontSize: 22 }}>{confirmed ? "✅" : "⏳"}</span>
+                  <span style={{ fontSize: 22 }}>{ui.icon}</span>
                 </div>
                 <div>
-                  <h2 style={{ margin: "0 0 6px" }}>
-                    {confirmed ? "Booking confirmed" : "Booking processing"}
-                  </h2>
+                  <h2 style={{ margin: "0 0 6px" }}>{ui.title}</h2>
                   <div className="muted" style={{ fontSize: 13 }}>
                     Ref: {safeText(ref) || "—"}
                   </div>
-                  {!confirmed && (
-                    <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                      We’ll update this receipt once payment is verified.
-                    </div>
-                  )}
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    {ui.subtitle}
+                  </div>
                 </div>
               </div>
 
@@ -496,11 +596,11 @@ export default function BookingCompletePage() {
             >
               <section>
                 <h3 style={{ margin: "0 0 4px", fontSize: 18 }}>{listingTitle}</h3>
-                {location && (
+                {locationLabel ? (
                   <p className="muted" style={{ margin: 0 }}>
-                    {location}
+                    {locationLabel}
                   </p>
-                )}
+                ) : null}
 
                 <div
                   style={{
@@ -550,6 +650,37 @@ export default function BookingCompletePage() {
                       {b.status || "—"} / {b.paymentStatus || "—"}
                     </span>
                   </div>
+
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    Release:{" "}
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(148,163,184,0.6)",
+                        fontSize: 11,
+                        marginRight: 6,
+                      }}
+                    >
+                      {releaseStatus}
+                    </span>
+
+                    {disputeStatus ? (
+                      <>
+                        Dispute:{" "}
+                        <span
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(245,158,11,0.55)",
+                            fontSize: 11,
+                          }}
+                        >
+                          {disputeStatus}
+                        </span>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
 
                 {canChat ? (
@@ -558,10 +689,7 @@ export default function BookingCompletePage() {
                       type="button"
                       onClick={() =>
                         nav("/chat", {
-                          state: {
-                            partnerUid: hostUid,
-                            listing: { id: listingId, title: listingTitle },
-                          },
+                          state: { partnerUid: hostUid, listing: { id: listingId, title: listingTitle } },
                         })
                       }
                       className="btn"
@@ -570,7 +698,7 @@ export default function BookingCompletePage() {
                       Message host
                     </button>
                     <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                      Chat is available for confirmed bookings only.
+                      Chat is available for paid/confirmed bookings only.
                     </div>
                   </div>
                 ) : null}
@@ -678,6 +806,15 @@ export default function BookingCompletePage() {
   const confirmed = b ? isPaidOrConfirmed(b.status, b.paymentStatus) : false;
   const processing = !confirmed;
 
+  const ui = getUiState(b || {});
+  const releaseStatus = b ? getReleaseStatus(b) : "—";
+  const disputeStatus = b ? getDisputeStatus(b) : "";
+
+  // enable chat when server says paid/confirmed and we can resolve a target + listing id
+  const hostUid = b ? resolveHostUidFromBooking(b) : null;
+  const listingId = safeText(b?.listingId || b?.listing?.id || listing?.id || "");
+  const canChat = !!(confirmed && hostUid && listingId);
+
   return (
     <main className="dash-bg">
       <div className="container dash-wrap" style={{ paddingBottom: 64 }}>
@@ -689,38 +826,36 @@ export default function BookingCompletePage() {
             borderRadius: 18,
             padding: 22,
             border: "1px solid rgba(255,255,255,0.10)",
-            background:
-              "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
+            background: "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              gap: 18,
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
+          <div style={{ display: "flex", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
             <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
               <div
                 style={{
                   width: 42,
                   height: 42,
                   borderRadius: 12,
-                  background: confirmed ? "rgba(16,185,129,0.15)" : "rgba(148,163,184,0.12)",
+                  background:
+                    ui.tone === "success"
+                      ? "rgba(16,185,129,0.15)"
+                      : ui.tone === "warning"
+                      ? "rgba(245,158,11,0.15)"
+                      : "rgba(148,163,184,0.12)",
                   display: "grid",
                   placeItems: "center",
-                  border: confirmed
-                    ? "1px solid rgba(16,185,129,0.35)"
-                    : "1px solid rgba(148,163,184,0.35)",
+                  border:
+                    ui.tone === "success"
+                      ? "1px solid rgba(16,185,129,0.35)"
+                      : ui.tone === "warning"
+                      ? "1px solid rgba(245,158,11,0.35)"
+                      : "1px solid rgba(148,163,184,0.35)",
                 }}
               >
-                <span style={{ fontSize: 22 }}>{confirmed ? "✅" : "⏳"}</span>
+                <span style={{ fontSize: 22 }}>{ui.icon}</span>
               </div>
               <div>
-                <h2 style={{ margin: "0 0 6px" }}>
-                  {confirmed ? "Booking confirmed" : "Payment processing"}
-                </h2>
+                <h2 style={{ margin: "0 0 6px" }}>{ui.title}</h2>
                 <div className="muted" style={{ fontSize: 13 }}>
                   {safeText(snapshot?.bookingIdOrRef) ? (
                     <>
@@ -730,15 +865,20 @@ export default function BookingCompletePage() {
                     <>Completed at {fmtDate(snapshot.when)}</>
                   )}
                 </div>
-                {verifying ? (
+
+                {notifying ? (
                   <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    Verifying with Flutterwave…
+                    Notifying server…
                   </div>
                 ) : processing ? (
                   <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
                     We’re confirming your payment. This can take a few seconds.
                   </div>
-                ) : null}
+                ) : (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Payment verified. Host payout releases after check-in.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -781,6 +921,7 @@ export default function BookingCompletePage() {
               <div className="muted">
                 {safeText(listing.city)} • {safeText(listing.area)}
               </div>
+
               <div className="muted" style={{ marginTop: 6 }}>
                 Check-in: <strong>{fmtDate(checkIn)}</strong>
                 <br />
@@ -804,6 +945,37 @@ export default function BookingCompletePage() {
                   >
                     {b.status || "—"} / {b.paymentStatus || "—"}
                   </span>
+
+                  <div style={{ marginTop: 8 }}>
+                    Release:{" "}
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(148,163,184,0.6)",
+                        fontSize: 11,
+                        marginRight: 6,
+                      }}
+                    >
+                      {releaseStatus}
+                    </span>
+
+                    {disputeStatus ? (
+                      <>
+                        Dispute:{" "}
+                        <span
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(245,158,11,0.55)",
+                            fontSize: 11,
+                          }}
+                        >
+                          {disputeStatus}
+                        </span>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
               ) : serverError ? (
                 <div style={{ marginTop: 12, fontSize: 12 }} className="muted">
@@ -814,6 +986,31 @@ export default function BookingCompletePage() {
                   Fetching booking status…
                 </div>
               )}
+
+              {!confirmed ? (
+                <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+                  Don’t worry — your booking will only be confirmed after payment is verified by the server.
+                </div>
+              ) : null}
+
+              {canChat ? (
+                <div style={{ marginTop: 14 }}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      nav("/chat", {
+                        state: { partnerUid: hostUid, listing: { id: listingId, title: listing.title } },
+                      })
+                    }
+                    className="btn"
+                  >
+                    Message host
+                  </button>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    Chat is available for paid/confirmed bookings only.
+                  </div>
+                </div>
+              ) : null}
             </section>
 
             <section
@@ -844,29 +1041,27 @@ export default function BookingCompletePage() {
                 <Link className="btn" to="/bookings">
                   View bookings
                 </Link>
-                {safeText(listing.id) && (
+
+                {safeText(listing.id) ? (
                   <Link className="btn ghost" to={`/listing/${safeText(listing.id)}`}>
                     Open listing
                   </Link>
-                )}
+                ) : null}
+
                 <Link className="btn ghost" to="/explore">
                   Explore more
                 </Link>
+
                 {!confirmed ? (
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={() => nav("/bookings")}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
-                  >
+                  <button type="button" className="btn ghost" onClick={() => nav("/bookings")}>
                     I’ll check later
                   </button>
                 ) : null}
               </div>
 
-              {!confirmed ? (
+              {processing ? (
                 <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-                  Don’t worry — your booking will only be confirmed after payment is verified.
+                  If you don’t see confirmation after a minute, go to <strong>My bookings</strong> and refresh.
                 </div>
               ) : null}
             </section>

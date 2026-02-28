@@ -40,7 +40,7 @@ function deriveModeFromBooking(b) {
   const status = safeLower(b?.status || "");
   const payStatus = safeLower(b?.paymentStatus || "");
   const paid = !!b?.paid || payStatus === "paid" || status === "paid";
-  const mismatch = !!b?.paymentMismatch || status === "paid-needs-review";
+  const mismatch = !!b?.paymentMismatch || status === "paid-needs-review" || payStatus === "payment-review";
 
   // ✅ If mismatch/review flags are present, treat as review (don’t show success)
   if (mismatch) {
@@ -53,7 +53,7 @@ function deriveModeFromBooking(b) {
   }
 
   // Paid is not the final state (still settling / webhook)
-  if (paid || b?.gateway === "success") {
+  if (paid || b?.gateway === "success" || payStatus === "paid-pending-confirmation") {
     return { mode: "confirming", message: "Payment detected ✅ Finalising your booking…" };
   }
 
@@ -63,10 +63,10 @@ function deriveModeFromBooking(b) {
 
 /**
  * Luxury-state machine:
- * - verifying: (optional) verifying payment provider details
- * - confirming: waiting for server booking to become confirmed
+ * - verifying: verifying payment provider details (Flutterwave only)
+ * - confirming: waiting for server booking to become confirmed/released
  * - success: confirmed/completed
- * - review: paid-needs-review / mismatch / attention
+ * - review: mismatch / attention
  * - failed: not found / verification hard-fail / timeout with unpaid
  */
 export default function ReserveSuccessPage() {
@@ -114,6 +114,7 @@ export default function ReserveSuccessPage() {
   const [message, setMessage] = useState("Preparing your confirmation…");
 
   const stopRef = useRef(false);
+  const didVerifyFlwRef = useRef(false);
 
   // Determine provider this page is handling
   const provider = useMemo(() => {
@@ -164,30 +165,125 @@ export default function ReserveSuccessPage() {
   }
 
   /**
-   * Step 0 (truthful):
-   * - For Paystack: DO NOT claim “payment received”
-   * - For Flutterwave: if status is explicitly failed/cancelled, show failed; else continue to confirming.
-   *
-   * We let the webhook/server be the source of truth.
+   * Step 0:
+   * - For Paystack: go straight to confirming (webhook/server is truth)
+   * - For Flutterwave: if explicitly failed/cancelled => fail; otherwise verify-booking once then confirm
    */
   useEffect(() => {
-    // Default: move to confirming and let polling settle it.
     if (provider !== "flutterwave") {
       setMode("confirming");
       setMessage("Processing your payment… Confirming your booking.");
       return;
     }
 
-    // Flutterwave: only hard-fail if explicitly failed/cancelled
     if (flwStatus && ["failed", "cancelled", "canceled", "error"].includes(flwStatus)) {
       setMode("failed");
       setMessage("Payment was not completed. If you were charged, contact support with your reference.");
       return;
     }
 
-    setMode("confirming");
-    setMessage("Confirming your booking…");
+    // Flutterwave path: verify then confirm
+    setMode("verifying");
+    setMessage("Verifying your payment…");
   }, [provider, flwStatus]);
+
+  /**
+   * Step 0.5: Flutterwave strict verify (POST /api/flutterwave/verify-booking)
+   * - Idempotent by design (server-side replay protections)
+   * - Does NOT settle or confirm booking (Option A)
+   * - Helps catch mismatch early and stamp paymentStatus=verified
+   */
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      if (provider !== "flutterwave") return;
+      if (didVerifyFlwRef.current) return;
+
+      // Need the 3 fields for strict verify
+      if (!bookingId || !flwTxRef || !flwTransactionId) {
+        // If we don’t have enough info, skip strict verify and just poll (safe fallback)
+        setMode("confirming");
+        setMessage("Confirming your booking…");
+        return;
+      }
+
+      didVerifyFlwRef.current = true;
+
+      try {
+        const token = await getIdTokenOrNull(false);
+        if (!token) {
+          setMode("confirming");
+          setMessage("Confirming your booking…");
+          return;
+        }
+
+        let res = await fetch(`${API}/flutterwave/verify-booking`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bookingId,
+            tx_ref: flwTxRef,
+            transaction_id: flwTransactionId,
+          }),
+        });
+
+        if (res.status === 401) {
+          const token2 = await getIdTokenOrNull(true);
+          if (token2) {
+            res = await fetch(`${API}/flutterwave/verify-booking`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token2}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                bookingId,
+                tx_ref: flwTxRef,
+                transaction_id: flwTransactionId,
+              }),
+            });
+          }
+        }
+
+        const json = await res.json().catch(() => null);
+
+        // If strict verify flags mismatch / replay, don’t claim success — go to review.
+        if (!res.ok || !json?.ok) {
+          const msg = safeStr(json?.message || "");
+          const lowered = safeLower(msg);
+
+          if (res.status === 409) {
+            // replay protection triggered -> review
+            if (!alive) return;
+            setMode("review");
+            setMessage("Payment received — verifying details. Please check My Bookings shortly.");
+            return;
+          }
+
+          if (lowered.includes("mismatch") || lowered.includes("currency") || lowered.includes("amount")) {
+            if (!alive) return;
+            setMode("review");
+            setMessage("Payment received — reviewing details to confirm your booking.");
+            return;
+          }
+
+          // otherwise continue polling; webhook may still settle
+        }
+
+        if (!alive) return;
+        setMode("confirming");
+        setMessage("Payment detected ✅ Finalising your booking…");
+      } catch {
+        if (!alive) return;
+        // Don’t block UX; proceed to polling
+        setMode("confirming");
+        setMessage("Confirming your booking…");
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, bookingId, flwTxRef, flwTransactionId, API, user]);
 
   /**
    * Step 1: Poll booking until webhook settles it (server is source of truth)
@@ -207,7 +303,7 @@ export default function ReserveSuccessPage() {
     let alive = true;
 
     const POLL_MS = 2000;
-    const MAX_WAIT_MS = 90_000; // 90s window
+    const MAX_WAIT_MS = 90_000;
     const start = Date.now();
 
     async function fetchViaApi() {
@@ -217,7 +313,6 @@ export default function ReserveSuccessPage() {
       let res = await fetch(`${API}/bookings/${encodeURIComponent(idOrRef)}`, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        credentials: "include",
       });
 
       if (res.status === 401) {
@@ -226,7 +321,6 @@ export default function ReserveSuccessPage() {
         res = await fetch(`${API}/bookings/${encodeURIComponent(idOrRef)}`, {
           method: "GET",
           headers: { Authorization: `Bearer ${token2}`, "Content-Type": "application/json" },
-          credentials: "include",
         });
       }
 
@@ -237,7 +331,6 @@ export default function ReserveSuccessPage() {
     }
 
     async function fetchViaFirestore() {
-      // Firestore fallback only if bookingId exists
       if (!bookingId) return { ok: false, reason: "no_bookingId_firestore" };
       try {
         const snap = await getDoc(doc(db, "bookings", bookingId));
@@ -253,7 +346,6 @@ export default function ReserveSuccessPage() {
 
       let result = await fetchViaApi();
 
-      // fallback
       if (!result.ok) {
         const fb = await fetchViaFirestore();
         if (fb.ok) result = fb;
@@ -263,17 +355,14 @@ export default function ReserveSuccessPage() {
         setBooking(result.booking);
 
         const { mode: nextMode, message: nextMsg } = deriveModeFromBooking(result.booking);
-
         setMode(nextMode);
         setMessage(nextMsg);
 
-        // stop conditions
         if (nextMode === "success" || nextMode === "review") {
           stopRef.current = true;
           return;
         }
       } else {
-        // If we cannot fetch booking, keep trying a bit before failing
         if (Date.now() - start > 15_000) {
           setMode("failed");
           setMessage("We could not confirm your booking record. If you paid, contact support with your reference.");
@@ -282,9 +371,7 @@ export default function ReserveSuccessPage() {
         }
       }
 
-      // timeout handling
       if (Date.now() - start > MAX_WAIT_MS) {
-        // If still not confirmed after long wait, go to review (safe)
         setMode("review");
         setMessage("We’re still confirming this booking. Please check My Bookings shortly.");
         stopRef.current = true;
@@ -301,7 +388,7 @@ export default function ReserveSuccessPage() {
       stopRef.current = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookingId, displayReference, provider, API, user]);
+  }, [bookingId, displayReference, API, user]);
 
   const heading = useMemo(() => {
     if (mode === "failed") return "Payment Not Confirmed";
@@ -381,15 +468,13 @@ export default function ReserveSuccessPage() {
         </h1>
 
         <p className="text-gray-300 mt-3 text-sm leading-relaxed">
-          {message ||
-            "We’re confirming your booking. If you were charged, your payment is safe."}
+          {message || "We’re confirming your booking. If you were charged, your payment is safe."}
         </p>
 
         {/* Listing */}
         {listing ? (
           <p className="mt-5 text-sm text-gray-200">
-            Listing:{" "}
-            <span className="font-semibold text-amber-300">{listing.title}</span>
+            Listing: <span className="font-semibold text-amber-300">{listing.title}</span>
             {listing.area || listing.city ? (
               <span className="text-gray-400">
                 {" "}
@@ -403,20 +488,14 @@ export default function ReserveSuccessPage() {
         {/* Amount */}
         {bookingGross > 0 ? (
           <p className="mt-2 text-xs text-gray-400">
-            Amount:{" "}
-            <span className="text-white/80 font-semibold">
-              {formatMoneyNGN(bookingGross)}
-            </span>
+            Amount: <span className="text-white/80 font-semibold">{formatMoneyNGN(bookingGross)}</span>
           </p>
         ) : null}
 
         {/* Booking ID */}
         {booking?.id || bookingId ? (
           <p className="mt-1 text-xs text-gray-400">
-            Booking ID:{" "}
-            <span className="font-mono text-emerald-300">
-              {booking?.id || bookingId}
-            </span>
+            Booking ID: <span className="font-mono text-emerald-300">{booking?.id || bookingId}</span>
           </p>
         ) : null}
 
@@ -474,12 +553,9 @@ export default function ReserveSuccessPage() {
           </button>
         </div>
 
-        <p className="mt-6 text-[11px] text-gray-500 leading-relaxed">
-          {footerCopy}
-        </p>
+        <p className="mt-6 text-[11px] text-gray-500 leading-relaxed">{footerCopy}</p>
 
-        {/* Support hint for review/failed */}
-        {mode === "review" || mode === "failed" ? (
+        {(mode === "review" || mode === "failed") ? (
           <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left">
             <p className="text-xs text-white/80 font-semibold">Need help?</p>
             <p className="mt-1 text-[11px] text-white/60 leading-relaxed">

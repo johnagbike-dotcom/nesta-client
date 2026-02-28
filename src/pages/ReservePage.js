@@ -99,8 +99,11 @@ function isPastYmd(ymd) {
 function safeLower(v) {
   return String(v ?? "").trim().toLowerCase();
 }
+function safeStr(v) {
+  return String(v ?? "").trim();
+}
 
-// Paystack metadata (auditable)
+/* ---------- Paystack metadata (auditable) ---------- */
 function buildPaystackMetadata({
   bookingId,
   reference,
@@ -117,17 +120,24 @@ function buildPaystackMetadata({
   return {
     type: "booking",
     paymentType: "booking",
+
     bookingId: bookingId || "",
     reference: reference || "",
+
     listingId,
     listingTitle,
+
     checkIn: checkIn || "",
     checkOut: checkOut || "",
+
     guests: Number(guests || 1),
     nights: Number(nights || 1),
+
     amountN: Number(amountN || 0),
+
     brand: "NestaNg",
     channel: "web",
+    // You can add: env, version, etc.
   };
 }
 
@@ -203,7 +213,7 @@ export default function ReservePage() {
   const [checkOut, setCheckOut] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // holdInfo: { id, reference, expiresAt }
+  // holdInfo: { id, reference, expiresAt, provider }
   const [holdInfo, setHoldInfo] = useState(null);
 
   // availability state
@@ -273,10 +283,18 @@ export default function ReservePage() {
     !isPastYmd(checkOut) &&
     new Date(checkOut) > new Date(checkIn);
 
+  /**
+   * Pricing:
+   * NOTE: Many stays price per night per reservation (not per guest).
+   * If you want Airbnb-like behaviour, remove "* guests" below.
+   * Keeping your current logic for now to avoid breaking your existing assumptions.
+   */
   const total = useMemo(() => {
     if (!listing) return 0;
     const perNight = Number(listing.pricePerNight || 0);
-    return Math.max(perNight * nights * Number(guests || 0), 0);
+    const g = Math.max(1, Number(guests || 1));
+    const n = Math.max(0, Number(nights || 0));
+    return Math.max(perNight * n * g, 0);
   }, [listing, nights, guests]);
 
   const canGoToStep2 = Boolean(
@@ -287,9 +305,8 @@ export default function ReservePage() {
     user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail
   );
 
-  // Success/verify page route (must render BookingCompletePage)
+  // Navigate to success/verify page (BookingCompletePage)
   function goToVerifyPage({ bookingId, reference, provider, tx = null }) {
-    // Store tx for BookingCompletePage to read (optional)
     if (provider === "flutterwave") {
       storeProviderTx("flutterwave_tx", {
         provider: "flutterwave",
@@ -378,7 +395,7 @@ export default function ReservePage() {
     [listing?.id]
   );
 
-  // re-check availability when dates change
+  // Re-check availability when dates change
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -405,28 +422,31 @@ export default function ReservePage() {
     };
   }, [checkIn, checkOut, listing?.id, checkAvailability]);
 
-  // SERVER creates hold + reference
-  async function ensureHoldViaServer() {
+  /**
+   * SERVER creates hold + reference
+   * Best practice:
+   * - hold is created right before starting checkout
+   * - hold is tied to one provider for traceability
+   * - sessionStorage caches pending booking so success page can recover even after redirect
+   */
+  async function ensureHoldViaServer(providerWanted = "flutterwave") {
+    const provider = safeLower(providerWanted || "flutterwave") || "flutterwave";
+
     if (!user) {
       toast("Please log in first.", "warning");
       nav("/login", { state: { from: location.pathname } });
       return null;
     }
 
-    if (!listing) return null;
+    if (!listing?.id) return null;
 
     if (!checkIn || !checkOut) {
       toast("Please select check-in and check-out dates.", "warning");
       return null;
     }
 
-    if (isPastYmd(checkIn)) {
-      toast("Check-in cannot be in the past.", "warning");
-      return null;
-    }
-
-    if (isPastYmd(checkOut)) {
-      toast("Check-out cannot be in the past.", "warning");
+    if (isPastYmd(checkIn) || isPastYmd(checkOut)) {
+      toast("Past dates are not allowed.", "warning");
       return null;
     }
 
@@ -443,28 +463,55 @@ export default function ReservePage() {
       return null;
     }
 
+    // If we already created a hold (same dates + same provider), reuse it
+    // (Avoid creating multiple holds when user clicks twice)
+    if (
+      holdInfo?.id &&
+      safeLower(holdInfo?.provider) === provider &&
+      safeStr(holdInfo?.checkIn || "") === safeStr(checkIn) &&
+      safeStr(holdInfo?.checkOut || "") === safeStr(checkOut)
+    ) {
+      return { bookingId: holdInfo.id, reference: holdInfo.reference };
+    }
+
     try {
       setBusy(true);
 
       const payload = {
         listingId: listing.id,
-        guests,
-        nights,
-        amountN: total,
+        guests: Math.max(1, Number(guests || 1)),
+        nights: Math.max(1, Number(nights || 1)),
+
+        // client computed (server should still treat its own locked amount as source of truth)
+        amountN: Math.round(Number(total || 0)),
+
         checkIn,
         checkOut,
         ttlMinutes: 90,
+
+        // ✅ optional audit hints (won’t break your server even if ignored)
+        pricingHint: {
+          pricePerNightN: Math.round(Number(listing.pricePerNight || 0)),
+          guests: Math.max(1, Number(guests || 1)),
+          nights: Math.max(1, Number(nights || 1)),
+          computedTotalN: Math.round(Number(total || 0)),
+        },
+        providerHint: provider,
       };
 
       const data = await createBookingHoldAPI(payload);
 
-      setHoldInfo({
+      const nextHold = {
         id: data.bookingId,
         reference: data.reference,
         expiresAt: data.expiresAt || null,
-      });
+        provider,
+        checkIn,
+        checkOut,
+      };
+      setHoldInfo(nextHold);
 
-      // ✅ critical: stage pending record before payment starts
+      // ✅ stage pending record before payment starts
       storeBookingPending({
         bookingId: data.bookingId,
         reference: data.reference,
@@ -474,7 +521,7 @@ export default function ReservePage() {
         guests,
         nights,
         total,
-        provider: payProvider,
+        provider,
       });
 
       return { bookingId: data.bookingId, reference: data.reference };
@@ -494,14 +541,18 @@ export default function ReservePage() {
   }
 
   async function onPaystack() {
-    const hold = await ensureHoldViaServer();
+    const hold = await ensureHoldViaServer("paystack");
     if (!hold) return;
 
     const { bookingId, reference } = hold;
 
     const key = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY;
-    if (!window.PaystackPop || !key) {
-      toast("Paystack script/key missing.", "error");
+    if (!key) {
+      toast("Paystack public key is missing (REACT_APP_PAYSTACK_PUBLIC_KEY).", "error");
+      return;
+    }
+    if (!window.PaystackPop || typeof window.PaystackPop.setup !== "function") {
+      toast("Paystack script not loaded. Check your index.html Paystack inline script.", "error");
       return;
     }
 
@@ -532,7 +583,6 @@ export default function ReservePage() {
       callback: function (resp) {
         setBusy(false);
 
-        // Store a lightweight tx snapshot for the verify page
         storeProviderTx("paystack_tx", {
           provider: "paystack",
           status: "callback_received",
@@ -553,9 +603,9 @@ export default function ReservePage() {
 
       onClose: function () {
         setBusy(false);
-        toast("Payment was closed. No booking confirmation yet.", "info");
+        toast("Payment was closed. Booking is not confirmed yet.", "info");
 
-        // Optionally still route to verify page so user can see pending status
+        // Still route to verify page so user can see pending/unpaid status
         goToVerifyPage({
           bookingId,
           reference,
@@ -566,10 +616,11 @@ export default function ReservePage() {
     });
 
     if (handler?.openIframe) handler.openIframe();
+    else setBusy(false);
   }
 
   async function onFlutterwave() {
-    const hold = await ensureHoldViaServer();
+    const hold = await ensureHoldViaServer("flutterwave");
     if (!hold) return;
 
     const { bookingId, reference } = hold;
@@ -577,7 +628,6 @@ export default function ReservePage() {
     try {
       setBusy(true);
 
-      // ✅ Stage a "flutterwave initiated" tx before redirect
       storeProviderTx("flutterwave_tx", {
         provider: "flutterwave",
         status: "initiated",
@@ -606,7 +656,11 @@ export default function ReservePage() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ type: "booking", bookingId, redirectUrl }),
+          body: JSON.stringify({
+            type: "booking",
+            bookingId,
+            redirectUrl,
+          }),
         });
       };
 
@@ -626,7 +680,6 @@ export default function ReservePage() {
         return;
       }
 
-      // ✅ Redirect to Flutterwave checkout
       window.location.href = data.link;
     } catch (e) {
       console.error(e);
@@ -832,7 +885,8 @@ export default function ReservePage() {
                   <div className="rounded-2xl bg-black/20 border border-white/10 p-4 text-sm text-white/80">
                     <p className="text-white/90 font-semibold">Privacy & security</p>
                     <p className="text-xs text-white/60 mt-1 leading-relaxed">
-                      Contact details stay private. <strong>ID check opens 24hrs before arrival</strong> to unlock check-in details.
+                      Contact details stay private. <strong>ID check opens 24hrs before arrival</strong> to unlock
+                      check-in details.
                     </p>
                   </div>
 

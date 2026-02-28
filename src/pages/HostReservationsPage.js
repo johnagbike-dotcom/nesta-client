@@ -48,6 +48,15 @@ const isPast = (checkOut) => {
   return d < today;
 };
 
+const isTodayOrPast = (d) => {
+  const dt = toDateObj(d);
+  if (!dt) return false;
+  const now = new Date();
+  dt.setHours(0, 0, 0, 0);
+  now.setHours(0, 0, 0, 0);
+  return dt <= now;
+};
+
 // ✅ Normalized “needs attention”
 const isAttentionStatus = (statusRaw, row = {}) => {
   const s = String(statusRaw || "").toLowerCase();
@@ -100,11 +109,38 @@ const normalizeBooking = (docSnap) => {
     checkOut: data.checkOut ?? data.checkout ?? data.endDate ?? data.to,
     createdAt: data.createdAt ?? data.created ?? data.created_on,
 
-    // for chat convenience (tolerate different shapes)
     listingId: data.listingId ?? data.listing?.id ?? data.listingID ?? null,
     guestUid: data.guestUid ?? data.userId ?? data.guestId ?? data.uid ?? null,
   };
 };
+
+async function apiPost(path, token, body = undefined) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  let payload = null;
+  try {
+    payload = await res.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!res.ok) {
+    const msg = payload?.error || payload?.message || `Request failed (${res.status})`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.payload = payload;
+    throw err;
+  }
+
+  return payload || { ok: true };
+}
 
 export default function HostReservationsPage({
   ownerField = "hostId",
@@ -124,7 +160,6 @@ export default function HostReservationsPage({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [busy, setBusy] = useState({}); // per-row action state
 
-  // ✅ Allow preselecting tab via query (?tab=attention)
   useEffect(() => {
     const sp = new URLSearchParams(location.search || "");
     const t = String(sp.get("tab") || "").toLowerCase();
@@ -185,8 +220,9 @@ export default function HostReservationsPage({
       const s = String(r.status || "").toLowerCase();
       gross += r.amount || 0;
 
-      if (["confirmed", "paid", "completed"].includes(s)) confirmed += 1;
-      else if (["pending", "hold", "reserved_unpaid", "awaiting_payment"].includes(s)) pending += 1;
+      // ✅ Confirmed bucket includes paid_pending_release and released
+      if (["confirmed", "paid", "completed", "paid_pending_release", "released"].includes(s)) confirmed += 1;
+      else if (["pending", "hold", "reserved_unpaid", "awaiting_payment", "pending_payment"].includes(s)) pending += 1;
       else if (["cancelled", "canceled"].includes(s)) cancelled += 1;
       else if (s === "refunded") refunded += 1;
 
@@ -208,7 +244,6 @@ export default function HostReservationsPage({
 
   const markBusy = (id, flag) => setBusy((prev) => ({ ...prev, [id]: flag }));
 
-  // ✅ redirect helper (preserves tab)
   const redirectToDashboardRefresh = useCallback(
     async (fromTab = "all", actionLabel = "") => {
       const qp = new URLSearchParams();
@@ -226,19 +261,22 @@ export default function HostReservationsPage({
     [nav]
   );
 
-  // Host-side actions
+  // ✅ Server-confirm endpoint (instead of writing Firestore status directly)
   const handleConfirm = async (row) => {
     if (!row?.id) return;
     if (!window.confirm("Confirm this booking for the guest?")) return;
 
     markBusy(row.id, true);
     try {
-      await updateDoc(doc(db, "bookings", row.id), {
-        status: "confirmed",
-        cancelRequested: false,
-        cancellationRequested: false,
-        updatedAt: new Date(),
-      });
+      let token = "";
+      try {
+        token = user ? await user.getIdToken() : "";
+      } catch {
+        token = "";
+      }
+
+      // If it's paid_pending_release or released, confirm is just a stamp; server handles safety
+      await apiPost(`/bookings/${row.id}/confirm`, token, {});
 
       closeDrawer();
       await reload();
@@ -247,12 +285,14 @@ export default function HostReservationsPage({
       await redirectToDashboardRefresh(tab, "confirmed");
     } catch (e) {
       console.error("[HostReservations] confirm failed:", e);
-      toast("Could not confirm booking. Please try again.", "error");
+      toast(e?.message || "Could not confirm booking. Please try again.", "error");
     } finally {
       markBusy(row.id, false);
     }
   };
 
+  // (kept) Cancel: still direct Firestore update for now.
+  // If you want, we can harden later with server-side cancellation rules/refunds.
   const handleCancel = async (row) => {
     if (!row?.id) return;
     if (!window.confirm("Cancel this booking?")) return;
@@ -306,6 +346,47 @@ export default function HostReservationsPage({
     }
   };
 
+  // ✅ NEW: check-in + release payout (server-side)
+  const handleCheckinRelease = async (row) => {
+    if (!row?.id) return;
+
+    const s = String(row.status || "").toLowerCase();
+    const eligible =
+      s === "paid_pending_release" &&
+      (String(row.paymentStatus || "").toLowerCase() === "paid" || row.paid === true) &&
+      isTodayOrPast(row.checkIn);
+
+    if (!eligible) {
+      toast("Not eligible for release yet (must be paid & check-in date reached).", "info");
+      return;
+    }
+
+    if (!window.confirm("Confirm guest check-in and RELEASE payout now?")) return;
+
+    markBusy(row.id, true);
+    try {
+      let token = "";
+      try {
+        token = user ? await user.getIdToken() : "";
+      } catch {
+        token = "";
+      }
+
+      await apiPost(`/bookings/${row.id}/checkin`, token, {});
+
+      closeDrawer();
+      await reload();
+
+      toast("Check-in confirmed & payout released ✅", "success");
+      await redirectToDashboardRefresh(tab, "released");
+    } catch (e) {
+      console.error("[HostReservations] checkin release failed:", e);
+      toast(e?.message || "Could not release payout. Please try again.", "error");
+    } finally {
+      markBusy(row.id, false);
+    }
+  };
+
   // ✅ FIX: ChatPage expects state.partnerUid + state.listing
   const handleMessage = (row) => {
     if (!row?.id) return;
@@ -340,7 +421,7 @@ export default function HostReservationsPage({
               {pageTitle || "Host reservations"}
             </h1>
             <p className="text-sm text-white/70 mt-1">
-              Review guest bookings, confirm or decline stays, and open receipts and check-in guides from one place.
+              Review guest bookings, confirm or decline stays, and manage check-in & payout release from one place.
             </p>
           </div>
           <button
@@ -462,6 +543,8 @@ export default function HostReservationsPage({
         onCancel={selected ? () => handleCancel(selected) : undefined}
         onRefund={selected ? () => handleRefund(selected) : undefined}
         onMessage={selected ? () => handleMessage(selected) : undefined}
+        onCheckinRelease={selected ? () => handleCheckinRelease(selected) : undefined}
+        busy={selected?.id ? !!busy[selected.id] : false}
       />
     </main>
   );
@@ -496,7 +579,10 @@ function StatusChip({ status, row }) {
   const attention = isAttentionStatus(s, row);
 
   let classes = "border-slate-400/50 text-slate-200 bg-slate-500/10";
-  if (["confirmed", "paid", "completed"].includes(s)) {
+
+  if (["paid_pending_release"].includes(s)) {
+    classes = "border-amber-400/60 text-amber-200 bg-amber-500/10";
+  } else if (["released", "confirmed", "paid", "completed"].includes(s)) {
     classes = "border-emerald-400/60 text-emerald-200 bg-emerald-500/10";
   } else if (["cancelled", "canceled"].includes(s)) {
     classes = "border-rose-400/60 text-rose-200 bg-rose-500/10";
@@ -515,7 +601,17 @@ function StatusChip({ status, row }) {
 
 /* ---------- Booking detail drawer ---------- */
 
-function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRefund, onMessage }) {
+function BookingDetailDrawer({
+  open,
+  booking,
+  onClose,
+  onConfirm,
+  onCancel,
+  onRefund,
+  onMessage,
+  onCheckinRelease,
+  busy,
+}) {
   const nav = useNavigate();
   const { user } = useAuth();
 
@@ -534,10 +630,18 @@ function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRe
   if (!open || !booking) return null;
 
   const s = String(booking.status || "").toLowerCase();
+  const payStatus = String(booking.paymentStatus || "").toLowerCase();
 
-  const isConfirmable = ["pending", "hold", "reserved_unpaid", "awaiting_payment"].includes(s);
-  const isRefundable = s === "confirmed" || s === "paid";
-  const isCancelable = ["pending", "hold", "reserved_unpaid", "confirmed", "paid"].includes(s);
+  const isConfirmable = ["pending", "hold", "reserved_unpaid", "awaiting_payment", "pending_payment"].includes(s);
+
+  // ✅ paid & pending release -> eligible for release on/after check-in date
+  const canRelease =
+    s === "paid_pending_release" &&
+    (payStatus === "paid" || booking.paid === true) &&
+    isTodayOrPast(booking.checkIn);
+
+  const isRefundable = ["confirmed", "paid", "released", "paid_pending_release"].includes(s);
+  const isCancelable = ["pending", "hold", "reserved_unpaid", "confirmed", "paid", "paid_pending_release"].includes(s);
 
   const goReceipt = () => nav("/booking-complete", { state: { booking } });
   const goCheckin = () => booking.id && nav(`/checkin/${booking.id}`, { state: { booking } });
@@ -661,9 +765,15 @@ function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRe
                   Cancellation requested
                 </span>
               ) : null}
+              {s === "paid_pending_release" ? (
+                <span className="px-2 py-1 rounded-md border border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-200">
+                  Paid — release after check-in
+                </span>
+              ) : null}
             </div>
           </div>
 
+          {/* Contact */}
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -716,13 +826,13 @@ function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRe
         <div className="px-4 py-3 border-t border-white/10 flex flex-wrap items-center gap-3">
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={goReceipt}
+              onClick={() => nav("/booking-complete", { state: { booking } })}
               className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/15 text-xs hover:bg-white/10"
             >
               Open receipt
             </button>
             <button
-              onClick={goCheckin}
+              onClick={() => booking.id && nav(`/checkin/${booking.id}`, { state: { booking } })}
               className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/15 text-xs hover:bg-white/10"
             >
               Check-in guide
@@ -730,30 +840,57 @@ function BookingDetailDrawer({ open, booking, onClose, onConfirm, onCancel, onRe
           </div>
 
           <div className="flex flex-wrap gap-2 ml-auto">
+            {canRelease && onCheckinRelease && (
+              <button
+                onClick={onCheckinRelease}
+                disabled={busy}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+                  busy
+                    ? "bg-white/5 border-white/10 text-white/40 cursor-not-allowed"
+                    : "bg-amber-500 text-black border-amber-400 hover:brightness-110"
+                }`}
+                title="Confirm check-in and release payout"
+              >
+                {busy ? "Releasing…" : "Check-in & Release payout"}
+              </button>
+            )}
+
             {isConfirmable && onConfirm && (
               <button
                 onClick={onConfirm}
-                className="px-3 py-1.5 rounded-xl bg-emerald-600 text-xs font-semibold text-black hover:bg-emerald-500"
+                disabled={busy}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
+                  busy ? "bg-emerald-600/40 text-black/60 cursor-not-allowed" : "bg-emerald-600 text-black hover:bg-emerald-500"
+                }`}
               >
                 Confirm
               </button>
             )}
+
             {isCancelable && onCancel && (
               <button
                 onClick={onCancel}
-                className="px-3 py-1.5 rounded-xl bg-slate-800 text-xs border border-white/20 hover:bg-slate-700"
+                disabled={busy}
+                className={`px-3 py-1.5 rounded-xl text-xs border transition ${
+                  busy ? "bg-slate-800/40 border-white/10 text-white/40 cursor-not-allowed" : "bg-slate-800 border-white/20 hover:bg-slate-700"
+                }`}
               >
                 Cancel
               </button>
             )}
+
             {isRefundable && onRefund && (
               <button
                 onClick={onRefund}
-                className="px-3 py-1.5 rounded-xl bg-red-700/80 text-xs text-red-50 border border-red-400/60 hover:bg-red-700"
+                disabled={busy}
+                className={`px-3 py-1.5 rounded-xl text-xs border transition ${
+                  busy ? "bg-red-700/30 border-red-400/30 text-red-50/60 cursor-not-allowed" : "bg-red-700/80 text-red-50 border-red-400/60 hover:bg-red-700"
+                }`}
               >
                 Refund
               </button>
             )}
+
             {onMessage && (
               <button
                 onClick={onMessage}
