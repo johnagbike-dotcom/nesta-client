@@ -6,7 +6,6 @@ import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
 
 /* ---------- page constants ---------- */
-
 // Hero image – local file in /public
 const HERO_BG = "/hero.jpg";
 const HERO_BG_FALLBACK = HERO_BG;
@@ -42,7 +41,6 @@ const section = (mt = 28) => ({
 });
 
 /* ---------- helpers ---------- */
-
 function normalizeRole(raw) {
   const r = String(raw || "").toLowerCase();
   if (r === "verified_host") return "host";
@@ -64,13 +62,12 @@ function normalizeKey(s) {
 }
 
 /**
- * If the user types an AREA (Ikoyi/Lekki/Wuse/etc) we should NOT set ?city=
- * because SearchBrowse uses exact city matching.
- * We only set ?city= for known city intents.
- */
+* If the user types an AREA (Ikoyi/Lekki/Wuse/etc) we should NOT set ?city=
+* because SearchBrowse uses exact city matching.
+* We only set ?city= for known city intents.
+*/
 function isKnownCityIntent(input) {
   const k = normalizeKey(input);
-
   // Add more cities here as you expand inventory
   const known = new Set([
     "lagos",
@@ -83,14 +80,12 @@ function isKnownCityIntent(input) {
     "port-harcourt",
     "portharcourt",
   ]);
-
   return known.has(k);
 }
 
 /* ---------- component ---------- */
 export default function HomePage() {
   const nav = useNavigate();
-
   const [loc, setLoc] = useState("");
   const [minN, setMinN] = useState("");
   const [maxN, setMaxN] = useState("");
@@ -118,7 +113,6 @@ export default function HomePage() {
 
   function buildSearchQueryString({ text, min, max, forceCity = false } = {}) {
     const qs = new URLSearchParams();
-
     const t = String(text || "").trim();
     const minV = digitsOnly(min).trim();
     const maxV = digitsOnly(max).trim();
@@ -126,34 +120,28 @@ export default function HomePage() {
     if (t) {
       // Always include q so SearchBrowse can match title/area/city client-side
       qs.set("q", t);
-
       // Only include exact city filter when it is truly a city
       if (forceCity || isKnownCityIntent(t)) {
         qs.set("city", t);
       }
     }
-
     if (minV) qs.set("min", minV);
     if (maxV) qs.set("max", maxV);
-
     return qs.toString();
   }
 
   function handleSearch(e) {
     e?.preventDefault?.();
-
     const queryString = buildSearchQueryString({
       text: loc,
       min: minN,
       max: maxN,
     });
-
     nav(`/search${queryString ? `?${queryString}` : ""}`);
   }
 
   function goToDestination(d) {
     const city = String(d?.query || "").trim();
-
     // Destinations are always cities → force city filter
     const queryString = buildSearchQueryString({
       text: city,
@@ -161,7 +149,6 @@ export default function HomePage() {
       max: "",
       forceCity: true,
     });
-
     nav(`/search${queryString ? `?${queryString}` : ""}`);
   }
 
@@ -190,23 +177,19 @@ export default function HomePage() {
           backdrop-filter: blur(1px);
           z-index: -1;
         }
-
         .container {
           max-width: 1180px;
           margin: 0 auto;
           padding: 0 18px;
         }
-
         @keyframes heroFadeIn {
           from { opacity: 0; transform: translateY(10px); }
           to { opacity: 1; transform: translateY(0); }
         }
-
         @keyframes softRise {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }
         }
-
         .hero-wrap {
           position: relative;
           overflow: hidden;
@@ -233,7 +216,6 @@ export default function HomePage() {
             radial-gradient(1100px 520px at 15% 15%, rgba(9,12,20,.30), rgba(3,5,10,.60)),
             linear-gradient(135deg, rgba(3,5,10,.45) 0%, rgba(3,5,10,.70) 60%, rgba(3,5,10,.80) 100%);
         }
-
         .hero-body {
           position: relative;
           z-index: 2;
@@ -269,7 +251,6 @@ export default function HomePage() {
           line-height: 1.6;
           animation: softRise .6s ease-out .14s both;
         }
-
         .cta-row {
           display: flex;
           justify-content: center;
@@ -328,7 +309,6 @@ export default function HomePage() {
           border-color: rgba(255,255,255,.34);
         }
         .btn-ghost:active { transform: translateY(1px); }
-
         .search-shell {
           margin-top: 4px;
           padding: 10px 10px 12px;
@@ -356,7 +336,6 @@ export default function HomePage() {
           font-size: 14px;
         }
         .pill::placeholder { color: #96a0b4; }
-
         .section-title {
           font-family: 'Playfair Display', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif;
           font-size: 22px;
@@ -369,7 +348,6 @@ export default function HomePage() {
           font-size: 14px;
           margin: 0 0 18px;
         }
-
         .dest-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -423,7 +401,6 @@ export default function HomePage() {
           margin-bottom: 4px;
         }
         .dest-tagline { font-size: 13px; color: #d3d9e9; }
-
         .host-cta {
           display: grid;
           grid-template-columns: 1.1fr .9fr;
@@ -448,7 +425,6 @@ export default function HomePage() {
           object-fit: cover;
           border-radius: 16px;
         }
-
         @media (max-width: 900px) {
           .hero-body { padding: 40px 18px 26px; }
           .hero-title { font-size: 30px; }
@@ -458,7 +434,6 @@ export default function HomePage() {
           .host-cta { grid-template-columns: 1fr; }
           .host-img { height: 220px; }
         }
-
         @media (max-width: 640px) {
           .hero-body { padding: 32px 16px 22px; }
           .hero-title { font-size: 26px; line-height: 1.15; }
@@ -483,13 +458,11 @@ export default function HomePage() {
             <div className="hero-scrim" />
             <div className="hero-body">
               <div className="hero-kicker">NESTA • SIGNATURE STAYS</div>
-
               <h1 className="hero-title">
                 Premium stays. Trusted homes.
                 <br />
                 Across Nigeria.
               </h1>
-
               <p className="hero-sub">
                 Thoughtfully curated apartments, villas and city homes in Nigeria’s most desirable
                 neighbourhoods — with verified hosts, secure local payments and concierge-style support.
@@ -565,20 +538,36 @@ export default function HomePage() {
         <section className="container" style={section(32)}>
           <h2 className="section-title">Featured stays</h2>
           <p className="section-sub">
-            Sponsored homes that highlight the Nesta standard — design-led, professionally cleaned and ready when you arrive.
+            Sponsored homes that highlight the Nesta standard — design-led, professionally cleaned and
+            ready when you arrive.
           </p>
-          <FeaturedCarousel />
+
+          {/*
+            IMPORTANT: Homepage should never look empty.
+            FeaturedCarousel will:
+              - show featured if available
+              - otherwise fallback to a curated/latest set
+              - never render "No featured stays yet" on homepage
+          */}
+          <FeaturedCarousel fallbackMode="latest" limit={8} hideEmptyState />
         </section>
 
         {/* ───────── Signature destinations ───────── */}
         <section className="container" style={section(28)}>
           <h2 className="section-title">Signature destinations</h2>
           <p className="section-sub">
-            Business trips, relocations or weekend escapes — start with Nigeria’s most requested neighbourhoods.
+            Business trips, relocations or weekend escapes — start with Nigeria’s most requested
+            neighbourhoods.
           </p>
+
           <div className="dest-grid">
             {destinations.map((d) => (
-              <button key={d.id} type="button" className="dest-card" onClick={() => goToDestination(d)}>
+              <button
+                key={d.id}
+                type="button"
+                className="dest-card"
+                onClick={() => goToDestination(d)}
+              >
                 <img src={d.img} alt={d.name} className="dest-img" />
                 <div className="dest-overlay" />
                 <div className="dest-body">
@@ -606,7 +595,8 @@ export default function HomePage() {
                 Start your hosting journey
               </h3>
               <p style={{ color: "#c9d2e3", marginTop: 8, fontSize: 14 }}>
-                Turn your space into a premium stay with verified guests, pro photography and dedicated Nesta host support.
+                Turn your space into a premium stay with verified guests, pro photography and dedicated
+                Nesta host support.
               </p>
 
               {isHost ? (
@@ -644,7 +634,8 @@ export default function HomePage() {
                 Scale as a Verified Partner
               </h3>
               <p style={{ color: "#c9d2e3", marginTop: 8, fontSize: 14 }}>
-                Grow premium portfolios with unified commission tracking, payouts and performance analytics — all in one calm Nesta dashboard.
+                Grow premium portfolios with unified commission tracking, payouts and performance
+                analytics — all in one calm Nesta dashboard.
               </p>
 
               {isPartner ? (

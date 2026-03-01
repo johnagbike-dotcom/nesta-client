@@ -1,5 +1,5 @@
 // src/pages/ReservePage.js
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../firebase";
@@ -137,7 +137,6 @@ function buildPaystackMetadata({
 
     brand: "NestaNg",
     channel: "web",
-    // You can add: env, version, etc.
   };
 }
 
@@ -230,6 +229,17 @@ export default function ReservePage() {
     return todayMin;
   }, [checkIn, todayMin]);
 
+  // ✅ Availability performance controls
+  const AVAIL_DEBOUNCE_MS = 550;
+  const AVAIL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+  const availCacheRef = useRef(new Map()); // key -> { ok, msg, ts }
+  const availTimerRef = useRef(null);
+  const availReqIdRef = useRef(0);
+
+  function availKey(listingId, ci, co) {
+    return `l:${listingId || ""}::${ci || ""}..${co || ""}`;
+  }
+
   // load listing if needed
   useEffect(() => {
     let alive = true;
@@ -287,7 +297,6 @@ export default function ReservePage() {
    * Pricing:
    * NOTE: Many stays price per night per reservation (not per guest).
    * If you want Airbnb-like behaviour, remove "* guests" below.
-   * Keeping your current logic for now to avoid breaking your existing assumptions.
    */
   const total = useMemo(() => {
     if (!listing) return 0;
@@ -357,7 +366,7 @@ export default function ReservePage() {
     return `${origin}/reserve/success?${qp.toString()}`;
   }
 
-  // Availability via API helper
+  // Availability via API helper (pure function: no state changes inside)
   const checkAvailability = useCallback(
     async (ci, co) => {
       if (!listing?.id) return { ok: true, msg: "" };
@@ -365,10 +374,6 @@ export default function ReservePage() {
 
       if (isPastYmd(ci)) return { ok: false, msg: "Check-in cannot be in the past." };
       if (isPastYmd(co)) return { ok: false, msg: "Check-out cannot be in the past." };
-
-      setCheckingAvail(true);
-      setAvailMsg("");
-      setAvailOk(true);
 
       try {
         const data = await getAvailabilityAPI({
@@ -386,39 +391,78 @@ export default function ReservePage() {
         console.error("[ReservePage] availability check failed:", e);
         return {
           ok: true,
-          msg: "Availability could not be verified right now. If payment fails, try again.",
+          msg: "Checking availability is taking longer than usual. You can continue; we’ll verify again before payment.",
         };
-      } finally {
-        setCheckingAvail(false);
       }
     },
     [listing?.id]
   );
 
-  // Re-check availability when dates change
+  // ✅ Debounced + cached availability check (fast UX, fewer API calls)
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      if (!checkIn || !checkOut || !listing?.id) {
-        setAvailOk(true);
-        setAvailMsg("");
-        return;
-      }
+    // clear any pending timer
+    if (availTimerRef.current) {
+      clearTimeout(availTimerRef.current);
+      availTimerRef.current = null;
+    }
 
-      if (isPastYmd(checkIn) || isPastYmd(checkOut)) {
-        setAvailOk(false);
-        setAvailMsg("Past dates are not allowed.");
-        return;
-      }
+    if (!checkIn || !checkOut || !listing?.id) {
+      setCheckingAvail(false);
+      setAvailOk(true);
+      setAvailMsg("");
+      return;
+    }
 
+    if (isPastYmd(checkIn) || isPastYmd(checkOut)) {
+      setCheckingAvail(false);
+      setAvailOk(false);
+      setAvailMsg("Past dates are not allowed.");
+      return;
+    }
+
+    // quick local validation
+    if (new Date(checkOut) <= new Date(checkIn)) {
+      setCheckingAvail(false);
+      setAvailOk(false);
+      setAvailMsg("Check-out must be after check-in.");
+      return;
+    }
+
+    const key = availKey(listing.id, checkIn, checkOut);
+    const cached = availCacheRef.current.get(key);
+    const now = Date.now();
+
+    if (cached && now - (cached.ts || 0) < AVAIL_CACHE_TTL_MS) {
+      setCheckingAvail(false);
+      setAvailOk(!!cached.ok);
+      setAvailMsg(cached.msg || "");
+      return;
+    }
+
+    // show smooth "Checking…" state immediately, but delay actual call
+    setCheckingAvail(true);
+    setAvailMsg("Checking availability…");
+    setAvailOk(true);
+
+    const reqId = ++availReqIdRef.current;
+
+    availTimerRef.current = setTimeout(async () => {
       const res = await checkAvailability(checkIn, checkOut);
-      if (!alive) return;
+
+      // ignore stale results
+      if (reqId !== availReqIdRef.current) return;
+
+      availCacheRef.current.set(key, { ...res, ts: Date.now() });
+      setCheckingAvail(false);
       setAvailOk(res.ok);
       setAvailMsg(res.msg || "");
-    })();
+    }, AVAIL_DEBOUNCE_MS);
 
     return () => {
-      alive = false;
+      if (availTimerRef.current) {
+        clearTimeout(availTimerRef.current);
+        availTimerRef.current = null;
+      }
     };
   }, [checkIn, checkOut, listing?.id, checkAvailability]);
 
@@ -455,16 +499,22 @@ export default function ReservePage() {
       return null;
     }
 
+    // ✅ Re-verify right before creating hold (server-side truth)
+    setCheckingAvail(true);
+    setAvailMsg("Final availability check…");
+    setAvailOk(true);
+
     const res = await checkAvailability(checkIn, checkOut);
+    setCheckingAvail(false);
+    setAvailOk(res.ok);
+    setAvailMsg(res.msg || "");
+
     if (!res.ok) {
-      setAvailOk(false);
-      setAvailMsg(res.msg || "These dates are not available.");
       toast(res.msg || "Selected dates are not available.", "warning");
       return null;
     }
 
     // If we already created a hold (same dates + same provider), reuse it
-    // (Avoid creating multiple holds when user clicks twice)
     if (
       holdInfo?.id &&
       safeLower(holdInfo?.provider) === provider &&
@@ -481,15 +531,11 @@ export default function ReservePage() {
         listingId: listing.id,
         guests: Math.max(1, Number(guests || 1)),
         nights: Math.max(1, Number(nights || 1)),
-
-        // client computed (server should still treat its own locked amount as source of truth)
         amountN: Math.round(Number(total || 0)),
-
         checkIn,
         checkOut,
         ttlMinutes: 90,
 
-        // ✅ optional audit hints (won’t break your server even if ignored)
         pricingHint: {
           pricePerNightN: Math.round(Number(listing.pricePerNight || 0)),
           guests: Math.max(1, Number(guests || 1)),
@@ -784,11 +830,16 @@ export default function ReservePage() {
                       : "border-red-400/25 bg-red-500/10 text-red-100"
                   }`}
                 >
-                  {checkingAvail
-                    ? "Checking availability…"
-                    : availOk
-                    ? availMsg
-                    : availMsg || "These dates are not available."}
+                  {checkingAvail ? (
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block h-2 w-2 rounded-full bg-amber-300 animate-pulse" />
+                      <span>{availMsg || "Checking availability…"}</span>
+                    </div>
+                  ) : availOk ? (
+                    availMsg
+                  ) : (
+                    availMsg || "These dates are not available."
+                  )}
                 </div>
               )}
 
