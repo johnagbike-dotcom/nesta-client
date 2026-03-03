@@ -11,8 +11,11 @@ import useUserProfile from "../../hooks/useUserProfile";
 import { getAuth } from "firebase/auth";
 
 /* ───────────────── axios ───────────────── */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   timeout: 15000,
 });
 
@@ -522,6 +525,7 @@ export default function ManageUsers() {
       host: 0,
       partner: 0,
       admin: 0,
+      operations: 0,
       active: 0,
       disabled: 0,
       verified: 0,
@@ -813,6 +817,16 @@ export default function ManageUsers() {
           active={roleTab === "admin"}
           onClick={() => {
             setRoleTab("admin");
+            setStatusTab("any");
+            setVerifyTab("any");
+            setPage(1);
+          }}
+        />
+        <TabBtn
+          label={`Operations ${counts.operations}`}
+          active={roleTab === "operations"}
+          onClick={() => {
+            setRoleTab("operations");
             setStatusTab("any");
             setVerifyTab("any");
             setPage(1);

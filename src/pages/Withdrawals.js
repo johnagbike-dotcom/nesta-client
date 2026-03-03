@@ -1,10 +1,10 @@
 // src/pages/Withdrawals.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import axios from "axios";
-import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import { getAuth } from "firebase/auth";
 import { useAuth } from "../auth/AuthContext";
+import { useToast } from "../context/ToastContext";
 import Button from "../components/Button";
 
 /* ===================== API ===================== */
@@ -42,9 +42,56 @@ function isKycApprovedStatus(s) {
   return ["approved", "verified", "complete"].includes(v);
 }
 
+function toInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function shortId(id) {
+  const s = String(id || "");
+  return s.length > 10 ? `${s.slice(0, 6)}…${s.slice(-4)}` : s || "—";
+}
+
+function statusTone(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "paid") return "border-emerald-400/50 bg-emerald-500/10 text-emerald-200";
+  if (s === "processing") return "border-sky-400/50 bg-sky-500/10 text-sky-200";
+  if (s === "failed") return "border-rose-400/50 bg-rose-500/10 text-rose-200";
+  return "border-white/15 bg-white/5 text-white/75"; // pending/default
+}
+
 export default function Withdrawals() {
   const { user } = useAuth() || {};
+  const { showToast } = useToast();
   const nav = useNavigate();
+
+  const notify = useCallback(
+    (msg, type = "info") => {
+      try {
+        showToast?.(msg, type);
+      } catch {
+        // no-op
+      }
+    },
+    [showToast]
+  );
 
   const [wallet, setWallet] = useState({
     available: 0,
@@ -66,13 +113,20 @@ export default function Withdrawals() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  // ✅ history
+  const [reqLoading, setReqLoading] = useState(false);
+  const [requests, setRequests] = useState([]);
+
+  // Investor-mode micro: pulse on wallet changes
+  const prevRef = useRef({ available: 0, pending: 0 });
+  const [pulse, setPulse] = useState({ available: "", pending: "" });
+
   const amountN = useMemo(() => {
     const v = Math.round(Number(String(amount || "").replace(/[^\d.]/g, "")));
     return Number.isFinite(v) ? v : 0;
   }, [amount]);
 
   const minWithdrawal = Number(wallet.minWithdrawal || MIN_WITHDRAWAL_N_FALLBACK);
-
   const payoutVerified = String(wallet.payoutStatus || "").toUpperCase() === "VERIFIED";
 
   const needsKyc = !isKycApprovedStatus(wallet.kycStatus);
@@ -82,8 +136,8 @@ export default function Withdrawals() {
   // Server policy is the source-of-truth
   const withdrawalsLockedByPolicy = wallet.canWithdraw === false;
 
-  // UI gating (luxury UX: disable amount input when user cannot proceed)
-  const canProceedToSubmit =
+  // Allow typing even if invalid; only block submission
+  const canSubmit =
     !!user?.uid &&
     !loading &&
     !submitting &&
@@ -91,13 +145,13 @@ export default function Withdrawals() {
     amountN >= minWithdrawal &&
     amountN <= Number(wallet.available || 0);
 
-  const fetchWallet = async () => {
+  const fetchWallet = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/payouts/me/wallet");
 
       if (data?.ok) {
-        setWallet({
+        const next = {
           available: Number(data.wallet?.available || 0),
           pending: Number(data.wallet?.pending || 0),
           currency: data.wallet?.currency || "NGN",
@@ -112,22 +166,56 @@ export default function Withdrawals() {
           payoutPreview: data.payoutPreview || null,
 
           minWithdrawal: Number(data.minWithdrawal || MIN_WITHDRAWAL_N_FALLBACK),
-        });
+        };
+
+        // pulse logic (subtle)
+        const prev = prevRef.current || { available: 0, pending: 0 };
+        const nextAvail = Number(next.available || 0);
+        const nextPend = Number(next.pending || 0);
+
+        if (nextAvail !== Number(prev.available || 0)) {
+          setPulse((p) => ({ ...p, available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft" }));
+          setTimeout(() => setPulse((p) => ({ ...p, available: "" })), 520);
+        }
+        if (nextPend !== Number(prev.pending || 0)) {
+          setPulse((p) => ({ ...p, pending: "pulseAmber" }));
+          setTimeout(() => setPulse((p) => ({ ...p, pending: "" })), 520);
+        }
+
+        prevRef.current = { available: nextAvail, pending: nextPend };
+        setWallet(next);
       } else {
-        toast.error(data?.error || "Failed to load wallet.");
+        notify(data?.error || "Failed to load wallet.", "error");
       }
     } catch (err) {
       console.error("Failed to fetch wallet data", err);
       const msg = err?.response?.data?.error || "Failed to fetch wallet.";
-      toast.error(msg);
+      notify(msg, "error");
     } finally {
       setLoading(false);
     }
-  };
+  }, [notify]);
+
+  const fetchRequests = useCallback(async () => {
+    if (!user?.uid) return;
+    setReqLoading(true);
+    try {
+      const { data } = await api.get("/payouts/me/requests", { params: { limit: 20 } });
+      if (data?.ok) setRequests(Array.isArray(data.rows) ? data.rows : []);
+      else setRequests([]);
+    } catch (e) {
+      console.error("Failed to fetch payout requests", e);
+      setRequests([]);
+    } finally {
+      setReqLoading(false);
+    }
+  }, [user?.uid]);
 
   useEffect(() => {
-    if (user?.uid) fetchWallet();
-    else {
+    if (user?.uid) {
+      fetchWallet();
+      fetchRequests();
+    } else {
       setWallet((w) => ({
         ...w,
         available: 0,
@@ -135,6 +223,7 @@ export default function Withdrawals() {
         canWithdraw: false,
         reason: "Please sign in.",
       }));
+      setRequests([]);
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,27 +233,17 @@ export default function Withdrawals() {
     if (submitting) return { label: "Submitting…", action: null, disabled: true };
     if (loading) return { label: "Loading…", action: null, disabled: true };
 
-    if (!user?.uid) {
-      return { label: "Sign in to continue", action: () => nav("/login"), disabled: false };
-    }
+    if (!user?.uid) return { label: "Sign in to continue", action: () => nav("/login"), disabled: false };
 
-    if (needsKyc) {
-      return { label: "Complete KYC to withdraw", action: () => nav("/onboarding/kyc/gate"), disabled: false };
-    }
+    if (needsKyc) return { label: "Complete KYC to withdraw", action: () => nav("/onboarding/kyc/gate"), disabled: false };
 
-    if (needsPayoutSetup) {
-      return { label: "Set up payout method", action: () => nav("/payout-setup"), disabled: false };
-    }
+    if (needsPayoutSetup) return { label: "Set up payout method", action: () => nav("/payout-setup"), disabled: false };
 
-    if (needsPayoutVerify) {
-      return { label: "Payout under review", action: () => nav("/payout-setup"), disabled: false };
-    }
+    if (needsPayoutVerify) return { label: "Payout under review", action: () => nav("/payout-setup"), disabled: false };
 
-    if (Number(wallet.available || 0) <= 0) {
-      return { label: "No withdrawable balance", action: null, disabled: true };
-    }
+    if (Number(wallet.available || 0) <= 0) return { label: "No withdrawable balance", action: null, disabled: true };
 
-    return { label: "Request Withdrawal", action: null, disabled: !canProceedToSubmit };
+    return { label: "Request Withdrawal", action: null, disabled: !canSubmit };
   }, [
     submitting,
     loading,
@@ -174,56 +253,87 @@ export default function Withdrawals() {
     needsPayoutVerify,
     wallet.available,
     nav,
-    canProceedToSubmit,
+    canSubmit,
   ]);
 
   const handleWithdraw = async () => {
-    if (!user?.uid) return toast.info("Please log in to request a withdrawal.");
+    if (!user?.uid) return notify("Please log in to request a withdrawal.", "info");
 
-    if (wallet?.canWithdraw === false) {
-      return toast.error(wallet?.reason || "Withdrawals are currently locked.");
+    if (withdrawalsLockedByPolicy) {
+      return notify(wallet?.reason || "Withdrawals are currently locked.", "warning");
     }
 
     if (amountN < minWithdrawal) {
-      return toast.error(`Minimum withdrawal is ${money(minWithdrawal)}.`);
+      return notify(`Minimum withdrawal is ${money(minWithdrawal)}.`, "warning");
     }
 
     if (amountN > Number(wallet.available || 0)) {
-      return toast.error("Insufficient available balance.");
+      return notify("Insufficient withdrawable balance. Only Available funds can be withdrawn.", "error");
     }
 
     setSubmitting(true);
     try {
-      // ✅ amount-only (bank details pulled from VERIFIED payout method in users/{uid}.payout)
       const { data } = await api.post("/payouts/request", { amount: amountN });
 
       if (data?.ok) {
-        toast.success("Payout request submitted.");
+        notify("Withdrawal request submitted.", "success");
 
-        // refresh wallet
+        // refresh wallet immediately
         if (data.wallet) {
+          const nextAvail = Number(data.wallet.available || 0);
+          const nextPend = Number(data.wallet.pending || 0);
+
+          // pulse
+          const prev = prevRef.current || { available: 0, pending: 0 };
+          if (nextAvail !== Number(prev.available || 0)) {
+            setPulse((p) => ({ ...p, available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft" }));
+            setTimeout(() => setPulse((p) => ({ ...p, available: "" })), 520);
+          }
+          if (nextPend !== Number(prev.pending || 0)) {
+            setPulse((p) => ({ ...p, pending: "pulseAmber" }));
+            setTimeout(() => setPulse((p) => ({ ...p, pending: "" })), 520);
+          }
+          prevRef.current = { available: nextAvail, pending: nextPend };
+
           setWallet((w) => ({
             ...w,
-            available: Number(data.wallet.available || 0),
-            pending: Number(data.wallet.pending || 0),
+            available: nextAvail,
+            pending: nextPend,
           }));
         } else {
           await fetchWallet();
         }
 
-        nav(-1);
+        // refresh history
+        await fetchRequests();
+
+        setAmount("");
       } else {
-        toast.error(data?.error || "Error submitting payout request.");
+        notify(data?.error || "Error submitting withdrawal request.", "error");
       }
     } catch (err) {
       console.error("Error processing payout request:", err);
-      const msg = err?.response?.data?.error || "Error processing payout request.";
-      toast.error(msg);
+
+      const code = err?.response?.data?.code || "";
+      const serverMsg = err?.response?.data?.error;
+
+      if (code === "insufficient_available") {
+        notify("Only Available funds can be withdrawn. Pending funds unlock after check-in.", "warning");
+      } else if (code === "min_withdrawal") {
+        notify(serverMsg || `Minimum withdrawal is ${money(minWithdrawal)}.`, "warning");
+      } else if (code === "withdrawals_locked") {
+        notify(serverMsg || "Withdrawals are currently locked.", "warning");
+      } else if (code === "invalid_amount") {
+        notify(serverMsg || "Invalid amount.", "error");
+      } else {
+        notify(serverMsg || "Error processing withdrawal request.", "error");
+      }
     } finally {
       setSubmitting(false);
     }
   };
 
+  // Only disable input when user truly cannot progress (policy/kyc/setup) — not because the amount is invalid
   const amountInputDisabled =
     loading ||
     submitting ||
@@ -231,16 +341,40 @@ export default function Withdrawals() {
     needsKyc ||
     needsPayoutSetup ||
     needsPayoutVerify ||
-    withdrawalsLockedByPolicy ||
-    Number(wallet.available || 0) <= 0;
+    withdrawalsLockedByPolicy;
+
+  const availableN = toInt(wallet.available || 0);
+  const pendingN = toInt(wallet.pending || 0);
 
   return (
     <main className="min-h-screen bg-[#05070a] pt-24 pb-16 px-4 text-white">
       <div className="max-w-xl mx-auto">
+        {/* micro keyframes (local, no global CSS dependency) */}
+        <style>{`
+          @keyframes pulseGold {
+            0% { box-shadow: 0 0 0 rgba(245, 158, 11, 0); transform: translateY(0); }
+            30% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14); transform: translateY(-1px); }
+            100% { box-shadow: 0 0 0 rgba(245, 158, 11, 0); transform: translateY(0); }
+          }
+          @keyframes pulseAmber {
+            0% { box-shadow: 0 0 0 rgba(245, 158, 11, 0); }
+            35% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.12); }
+            100% { box-shadow: 0 0 0 rgba(245, 158, 11, 0); }
+          }
+          @keyframes pulseSoft {
+            0% { box-shadow: 0 0 0 rgba(255,255,255,0); }
+            35% { box-shadow: 0 0 0 4px rgba(255,255,255,0.08); }
+            100% { box-shadow: 0 0 0 rgba(255,255,255,0); }
+          }
+          .pulseGold { animation: pulseGold 520ms ease-out; border-radius: 16px; }
+          .pulseAmber { animation: pulseAmber 520ms ease-out; border-radius: 16px; }
+          .pulseSoft { animation: pulseSoft 520ms ease-out; border-radius: 16px; }
+        `}</style>
+
         <div className="flex items-center justify-between mb-6">
           <button
             onClick={() => nav(-1)}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold"
+            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
           >
             ← Back
           </button>
@@ -260,8 +394,7 @@ export default function Withdrawals() {
             <div className="flex items-center justify-between gap-3">
               <div className="font-semibold">Payout destination</div>
               <span className="text-[11px] text-white/50">
-                Status:{" "}
-                <span className="text-white/80 font-semibold">{String(wallet.payoutStatus || "—")}</span>
+                Status: <span className="text-white/80 font-semibold">{String(wallet.payoutStatus || "—")}</span>
               </span>
             </div>
 
@@ -283,7 +416,6 @@ export default function Withdrawals() {
               </div>
             ) : null}
 
-            {/* luxury UX: always provide a clear route */}
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 onClick={() => nav("/payout-setup")}
@@ -306,36 +438,72 @@ export default function Withdrawals() {
 
         <section className="mt-6 rounded-3xl border border-white/10 bg-[#0a0e14] p-6 shadow-[0_20px_80px_rgba(0,0,0,0.55)]">
           <div className="space-y-2 text-sm">
-            <div className="flex justify-between text-white/80">
-              <span>Available</span>
-              <span className="font-bold text-white">{money(wallet.available)}</span>
+            <div className={`flex justify-between text-white/80 ${pulse.available}`}>
+              <span>Available (Withdrawable)</span>
+              <span className="font-bold text-white">{money(availableN)}</span>
             </div>
-            <div className="flex justify-between text-white/70">
-              <span>Pending</span>
-              <span className="font-semibold">{money(wallet.pending)}</span>
+
+            <div className={`flex justify-between text-white/70 ${pulse.pending}`}>
+              <span className="flex items-center gap-2">
+                Pending (Not withdrawable yet)
+                <span
+                  className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-white/10 bg-white/5 text-[11px] text-white/70"
+                  title="Pending funds are released after guest check-in (release)."
+                >
+                  i
+                </span>
+              </span>
+              <span className="font-semibold">{money(pendingN)}</span>
             </div>
           </div>
+
+          {/* Clear premium explanation */}
+          {pendingN > 0 ? (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70 leading-relaxed">
+              <div className="font-semibold text-white/80">About Pending funds</div>
+              <div className="mt-1">
+                Pending funds are marketplace-protected and become withdrawable after guest check-in (release).
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-6 space-y-4">
             <div>
               <label className="block text-sm text-white/80 mb-1">Amount (₦)</label>
-              <input
-                type="number"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                disabled={amountInputDisabled}
-                className={`w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ${
-                  amountInputDisabled ? "opacity-60 cursor-not-allowed" : ""
-                }`}
-                placeholder={amountInputDisabled ? "Complete the steps above to withdraw" : "e.g. 5000"}
-              />
+
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  disabled={amountInputDisabled}
+                  className={`w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ${
+                    amountInputDisabled ? "opacity-60 cursor-not-allowed" : ""
+                  }`}
+                  placeholder={amountInputDisabled ? "Complete the steps above to withdraw" : "e.g. 5000"}
+                />
+
+                <button
+                  type="button"
+                  disabled={amountInputDisabled || availableN <= 0}
+                  onClick={() => setAmount(String(availableN))}
+                  className={`shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-xs font-semibold hover:bg-white/10 ${
+                    amountInputDisabled || availableN <= 0 ? "opacity-60 cursor-not-allowed" : ""
+                  }`}
+                  title="Set to maximum withdrawable amount"
+                >
+                  Max
+                </button>
+              </div>
 
               {amountN > 0 && amountN < minWithdrawal ? (
                 <p className="mt-1 text-xs text-amber-200/80">Minimum withdrawal is {money(minWithdrawal)}.</p>
               ) : null}
 
-              {amountN > Number(wallet.available || 0) ? (
-                <p className="mt-1 text-xs text-red-300">Amount exceeds available balance.</p>
+              {amountN > availableN ? (
+                <p className="mt-1 text-xs text-red-300">
+                  Amount exceeds withdrawable balance (Available). Pending funds cannot be withdrawn yet.
+                </p>
               ) : null}
             </div>
 
@@ -343,14 +511,28 @@ export default function Withdrawals() {
               <div className="font-semibold text-white mb-1">Premium withdrawal policy</div>
               <ul className="list-disc pl-5 space-y-1 text-white/70">
                 <li>Withdrawals are only released to a <b>verified payout method</b> on file.</li>
-                <li>BVN + bank details are collected once in <b>Payout Setup</b> and reviewed.</li>
+                <li>
+                  <b>Available</b> is withdrawable; <b>Pending</b> unlocks after check-in (release).
+                </li>
                 <li>This protects guests, hosts, and the Nesta brand.</li>
               </ul>
             </div>
           </div>
 
           <div className="mt-6 flex items-center justify-end gap-2 flex-wrap">
-            {/* secondary: always give a safe path */}
+            <button
+              onClick={async () => {
+                await fetchWallet();
+                await fetchRequests();
+                notify("Wallet refreshed.", "info");
+              }}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+              type="button"
+              disabled={loading || submitting}
+            >
+              Refresh
+            </button>
+
             <button
               onClick={() => nav("/payout-setup")}
               className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
@@ -359,12 +541,81 @@ export default function Withdrawals() {
               Payout Setup
             </button>
 
-            <Button
-              onClick={primaryCta.action ? primaryCta.action : handleWithdraw}
-              disabled={primaryCta.disabled}
-            >
+            <Button onClick={primaryCta.action ? primaryCta.action : handleWithdraw} disabled={primaryCta.disabled}>
               {primaryCta.label}
             </Button>
+          </div>
+        </section>
+
+        {/* ✅ History */}
+        <section className="mt-6 rounded-3xl border border-white/10 bg-[#090c12] overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
+            <div>
+              <h2 className="text-base font-semibold text-white">Recent withdrawal requests</h2>
+              <p className="text-xs text-white/50 mt-1">Track your requests: pending → processing → paid (or failed).</p>
+            </div>
+
+            <button
+              onClick={() => {
+                fetchRequests();
+                notify("Withdrawal history refreshed.", "info");
+              }}
+              disabled={reqLoading || !user?.uid}
+              className={`rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold hover:bg-white/10 ${
+                reqLoading || !user?.uid ? "opacity-60 cursor-not-allowed" : ""
+              }`}
+            >
+              {reqLoading ? "Refreshing…" : "Refresh list"}
+            </button>
+          </div>
+
+          <div className="px-5 py-4">
+            {reqLoading ? (
+              <div className="text-sm text-white/70">Loading requests…</div>
+            ) : !user?.uid ? (
+              <div className="text-sm text-white/70">Sign in to view your requests.</div>
+            ) : requests.length === 0 ? (
+              <div className="text-sm text-white/70">No withdrawal requests yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {requests.map((r) => (
+                  <div
+                    key={r.id}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold">{money(r.amount || 0)}</span>
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize border ${statusTone(
+                            r.status
+                          )}`}
+                        >
+                          {String(r.status || "pending")}
+                        </span>
+                      </div>
+
+                      <div className="mt-1 text-xs text-white/50">
+                        {fmtDateTime(r.createdAt)} · Ref <span className="font-mono">{shortId(r.id)}</span>
+                      </div>
+
+                      {r.note ? <div className="mt-1 text-[11px] text-white/55 truncate">{r.note}</div> : null}
+                    </div>
+
+                    <div className="text-right text-xs text-white/50">
+                      {r.bankName || r.accountNumberMasked ? (
+                        <>
+                          <div className="text-white/70 font-semibold">{r.bankName || "Bank"}</div>
+                          <div className="font-mono">{r.accountNumberMasked || "—"}</div>
+                        </>
+                      ) : (
+                        <div>—</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
       </div>

@@ -50,7 +50,7 @@ function BrandButton({ onClick }) {
   );
 }
 
-function NavItem({ to, children, end }) {
+function NavItem({ to, children, end, title }) {
   const base = "px-3 py-2 rounded-md text-sm font-medium transition-colors";
   const active = "text-[#f5b301]";
   const idle = "text-gray-200/80 hover:text-white";
@@ -58,6 +58,7 @@ function NavItem({ to, children, end }) {
     <NavLink
       to={to}
       end={end}
+      title={title}
       className={({ isActive }) => `${base} ${isActive ? active : idle}`}
     >
       {children}
@@ -114,7 +115,10 @@ export default function Header() {
   const nav = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
-  const { profile } = useUserProfile(user?.uid);
+
+  // ✅ FIX: your hook takes NO args (it listens to auth internally)
+  const { profile } = useUserProfile();
+
   const unread = useUnreadCount(user?.uid);
 
   const [open, setOpen] = useState(false);
@@ -178,7 +182,6 @@ export default function Header() {
       return [
         { to: "/explore", label: "Browse", end: true },
         { to: "/about", label: "About" },
-        // ✅ FIX: align with homepage CTA
         { to: LIST_YOUR_HOME_ROUTE, label: "List your home" },
       ];
     }
@@ -196,6 +199,11 @@ export default function Header() {
       return [
         { to: "/host", label: "Host dashboard", end: true },
         { to: "/host-reservations", label: "Reservations", attention: true },
+        {
+          to: "/withdrawals",
+          label: "Wallet",
+          title: "Withdrawals & payout history",
+        },
         { to: "/host-listings", label: "Manage listings" },
         { to: "/inbox", label: inboxLabel },
       ];
@@ -206,6 +214,11 @@ export default function Header() {
       return [
         { to: "/partner", label: "Partner dashboard", end: true },
         { to: "/reservations", label: "Reservations", attention: true },
+        {
+          to: "/withdrawals",
+          label: "Wallet",
+          title: "Withdrawals & payout history",
+        },
         { to: "/partner-listings", label: "My portfolio" },
         { to: "/inbox", label: inboxLabel },
       ];
@@ -215,7 +228,6 @@ export default function Header() {
     return [
       { to: "/explore", label: "Browse", end: true },
       { to: "/bookings", label: "Bookings" },
-      // ✅ FIX: align with homepage CTA
       { to: LIST_YOUR_HOME_ROUTE, label: "List your home" },
       { to: "/inbox", label: inboxLabel },
     ];
@@ -240,7 +252,7 @@ export default function Header() {
                 uid={user?.uid}
               />
             ) : (
-              <NavItem key={l.to} to={l.to} end={l.end}>
+              <NavItem key={l.to} to={l.to} end={l.end} title={l.title}>
                 {l.label}
               </NavItem>
             )
@@ -297,7 +309,7 @@ export default function Header() {
                     label={l.label}
                   />
                 ) : (
-                  <NavItem key={l.to} to={l.to} end={l.end}>
+                  <NavItem key={l.to} to={l.to} end={l.end} title={l.title}>
                     {l.label}
                   </NavItem>
                 )

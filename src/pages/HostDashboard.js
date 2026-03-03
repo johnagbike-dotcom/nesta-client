@@ -21,8 +21,13 @@ import VerifiedRoleBadge from "../components/VerifiedRoleBadge";
 import SubscriptionBanner from "../components/SubscriptionBanner";
 import { useToast } from "../context/ToastContext";
 
+/* ===================== Format helpers ===================== */
 const nf = new Intl.NumberFormat("en-NG");
 const ngn = (n) => `₦${nf.format(Math.round(Number(n || 0)))}`;
+
+function safeLower(v) {
+  return String(v || "").toLowerCase();
+}
 
 function formatDateTime(v) {
   if (!v) return "—";
@@ -46,12 +51,62 @@ function formatDateTime(v) {
   }
 }
 
-/* ---------- API (server wallet source of truth) ---------- */
+function toMillis(ts) {
+  try {
+    if (!ts) return 0;
+    if (typeof ts?.toDate === "function") return ts.toDate().getTime();
+    const d = ts instanceof Date ? ts : new Date(ts);
+    return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+  } catch {
+    return 0;
+  }
+}
+
+function isPaidOrConfirmed(status) {
+  const s = safeLower(status);
+  return (
+    s === "paid" ||
+    s === "confirmed" ||
+    s === "completed" ||
+    s === "paid_pending_release" ||
+    s === "released"
+  );
+}
+
+function isPendingLike(status) {
+  const s = safeLower(status);
+  return (
+    s === "pending" ||
+    s === "awaiting" ||
+    s === "hold" ||
+    s === "reserved_unpaid" ||
+    s === "initialized" ||
+    s === "awaiting_payment" ||
+    s === "pending_payment"
+  );
+}
+
+function isCancelledLike(status) {
+  const s = safeLower(status);
+  return s === "cancelled" || s === "canceled";
+}
+
+function isRefundedLike(status) {
+  const s = safeLower(status);
+  return s === "refunded" || s === "refund";
+}
+
+const sleep = (ms = 350) => new Promise((r) => setTimeout(r, ms));
+
+/* ===================== API (normalized base) ===================== */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(
+  /\/+$/,
+  ""
+);
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
-    /\/$/,
-    ""
-  ),
+  baseURL: API_BASE,
   timeout: 20000,
   withCredentials: false,
 });
@@ -66,64 +121,63 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
-/* ---------- Small reusable UI ---------- */
+/* ===================== UI bits ===================== */
 
-function CardStat({
-  label,
-  value,
-  helper,
-  currency = false,
-  tone,
+function Card({
+  title,
+  children,
+  right,
+  tone = "default",
+  className = "",
   onClick,
   disabled = false,
-  highlight = false,
 }) {
-  const safeValue = typeof value === "number" ? value : Number(value || 0) || 0;
-  const formatted = currency ? ngn(safeValue) : safeValue.toLocaleString("en-NG");
-
-  const toneClasses =
+  const toneCls =
     tone === "amber"
-      ? "border-amber-400/40 bg-amber-500/10"
+      ? "border-amber-400/30 bg-amber-500/10"
       : tone === "emerald"
-      ? "border-emerald-400/40 bg-emerald-500/10"
+      ? "border-emerald-400/30 bg-emerald-500/10"
       : tone === "rose"
-      ? "border-rose-400/40 bg-rose-500/10"
+      ? "border-rose-400/30 bg-rose-500/10"
       : "border-white/10 bg-white/5";
 
   const clickable = !!onClick && !disabled;
 
-  const highlightRing = highlight
-    ? "ring-2 ring-amber-300/70 shadow-[0_0_0_4px_rgba(245,158,11,0.14)]"
-    : "";
-
   return (
     <div
       onClick={clickable ? onClick : undefined}
-      className={`rounded-2xl px-4 py-3 border ${toneClasses} ${highlightRing} flex flex-col justify-between min-h-[84px] transition-all ${
-        clickable
-          ? "cursor-pointer hover:bg-white/10 hover:border-amber-300/60"
-          : disabled
-          ? "opacity-55 cursor-not-allowed"
-          : ""
-      }`}
-      title={
-        disabled
-          ? "Withdrawal is locked"
-          : clickable
-          ? `View ${label.toLowerCase()}`
-          : undefined
-      }
+      className={`rounded-3xl border ${toneCls} p-5 shadow-[0_18px_70px_rgba(0,0,0,0.55)] transition-all ${
+        clickable ? "cursor-pointer hover:bg-white/10 hover:border-amber-300/50" : ""
+      } ${disabled ? "opacity-60 cursor-not-allowed" : ""} ${className}`}
       aria-disabled={disabled ? "true" : "false"}
     >
-      <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
-        {label}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
+            {title}
+          </div>
+        </div>
+        {right ? <div className="shrink-0">{right}</div> : null}
       </div>
-      <div className="mt-1 text-2xl font-semibold">
-        {Number.isNaN(safeValue) ? (currency ? "₦0" : "0") : formatted}
-      </div>
-      {helper && (
-        <div className="mt-1 text-[11px] text-white/55 truncate">{helper}</div>
-      )}
+      <div className="mt-3">{children}</div>
+    </div>
+  );
+}
+
+function MiniKpi({ label, value, tone = "default" }) {
+  const toneCls =
+    tone === "amber"
+      ? "border-amber-400/30 bg-amber-500/10 text-amber-100"
+      : tone === "emerald"
+      ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+      : tone === "rose"
+      ? "border-rose-400/30 bg-rose-500/10 text-rose-100"
+      : "border-white/10 bg-white/5 text-white/80";
+
+  return (
+    <div className={`rounded-2xl border ${toneCls} px-4 py-3`}>
+      <div className="text-[11px] uppercase tracking-[0.16em] opacity-80">{label}</div>
+      <div className="mt-1 text-xl font-semibold">{value}</div>
     </div>
   );
 }
@@ -152,14 +206,12 @@ const Select = (props) => (
 
 function EmptyState() {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-10 text-center">
-      <h3 className="text-xl font-bold text-white mb-2">
-        No listings yet for this host
-      </h3>
+    <div className="rounded-3xl border border-white/10 bg-white/5 px-6 py-12 text-center shadow-[0_18px_70px_rgba(0,0,0,0.55)]">
+      <h3 className="text-2xl font-bold text-white mb-2">No listings yet</h3>
       <p className="text-white/70">Add your first Nesta stay to start earning.</p>
       <Link
         to="/post/new"
-        className="inline-block mt-4 px-5 py-3 rounded-xl bg-amber-500 text-black font-semibold hover:bg-amber-400"
+        className="inline-block mt-5 px-6 py-3 rounded-2xl bg-amber-500 text-black font-semibold hover:bg-amber-400"
       >
         + New listing
       </Link>
@@ -167,88 +219,52 @@ function EmptyState() {
   );
 }
 
-/* ---------- helpers ---------- */
-
-function safeLower(v) {
-  return String(v || "").toLowerCase();
-}
-
-function isPaidOrConfirmed(status) {
-  const s = safeLower(status);
-  return s === "paid" || s === "confirmed" || s === "completed";
-}
-
-function isPendingLike(status) {
-  const s = safeLower(status);
-  return (
-    s === "pending" ||
-    s === "awaiting" ||
-    s === "hold" ||
-    s === "reserved_unpaid" ||
-    s === "initialized" ||
-    s === "awaiting_payment"
-  );
-}
-
-function isCancelledLike(status) {
-  const s = safeLower(status);
-  return s === "cancelled" || s === "canceled";
-}
-
-function isRefundedLike(status) {
-  const s = safeLower(status);
-  return s === "refunded" || s === "refund";
-}
-
-function toMillis(ts) {
-  try {
-    if (!ts) return 0;
-    if (typeof ts?.toDate === "function") return ts.toDate().getTime();
-    const d = ts instanceof Date ? ts : new Date(ts);
-    return Number.isNaN(d.getTime()) ? 0 : d.getTime();
-  } catch {
-    return 0;
-  }
-}
-
-const sleep = (ms = 350) => new Promise((r) => setTimeout(r, ms));
-
-/* ---------- Main component ---------- */
-
+/* ===================== Main ===================== */
 export default function HostDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const { showToast: toast } = useToast();
-  const { profile } = useUserProfile(user?.uid);
+  const { showToast } = useToast();
 
-  // --- KYC status (UI hint only; server policy remains truth) ---
+  const notify = useCallback(
+    (msg, type = "info") => {
+      try {
+        showToast?.(msg, type);
+      } catch {
+        // no-op
+      }
+    },
+    [showToast]
+  );
+
+  // ✅ hook has NO args; it subscribes to auth internally
+  const { profile } = useUserProfile();
+
+  // UI hint only; server policy is truth (withdrawals page uses /payouts/me/wallet)
   const kycStatusRaw =
     profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
-  const kycStatus = String(kycStatusRaw).toLowerCase();
-  const isKycApproved =
-    kycStatus === "approved" ||
-    kycStatus === "verified" ||
-    kycStatus === "complete";
+  const kycStatus = String(kycStatusRaw || "").toLowerCase();
+  const isKycApproved = ["approved", "verified", "complete"].includes(kycStatus);
 
-  const [rows, setRows] = useState([]); // host listings
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  // filters
+  // Filters
   const [q, setQ] = useState("");
   const [min, setMin] = useState("");
   const [max, setMax] = useState("");
   const [status, setStatus] = useState("all");
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // subscription (Host Pro)
+  // Subscription
   const [subInfo, setSubInfo] = useState({
     active: false,
     expiresAt: null,
     loading: true,
   });
 
-  // wallet (server truth via /api/payouts/me/wallet)
+  // Wallet (server truth)
   const [wallet, setWallet] = useState({
     loading: true,
     availableN: 0,
@@ -261,12 +277,7 @@ export default function HostDashboard() {
     minWithdrawal: 1000,
   });
 
-  /**
-   * Revenue decision:
-   * - grossLifetime: sum of CONFIRMED/PAID/COMPLETED bookings
-   * - gross30d: rolling last 30 days of confirmed bookings
-   * - netLifetimeTracked: sum of hostPayoutN/pricingSnapshot.netPayoutN (if present)
-   */
+  // Revenue + booking stats
   const [rev, setRev] = useState({
     grossLifetime: 0,
     gross30d: 0,
@@ -282,7 +293,8 @@ export default function HostDashboard() {
   });
 
   const [hostBookings, setHostBookings] = useState([]);
-  const [highlightKey, setHighlightKey] = useState("");
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [recentOpen, setRecentOpen] = useState(false);
 
   const now = Date.now();
   const isSubscribed =
@@ -291,7 +303,6 @@ export default function HostDashboard() {
 
   const recentBookings = useMemo(() => hostBookings.slice(0, 5), [hostBookings]);
 
-  const goManageListings = () => navigate("/manage-listings");
   const goReservationsTab = (tab = "all") => {
     const t = String(tab || "all").toLowerCase();
     navigate(`/host-reservations?tab=${encodeURIComponent(t)}`);
@@ -299,9 +310,6 @@ export default function HostDashboard() {
 
   const walletAvailable = Number(wallet.availableN || 0);
   const walletPending = Number(wallet.pendingN || 0);
-
-  // Lifetime earned shown = tracked net (more accurate than old user fields)
-  const walletLifetime = Number(rev.netLifetimeTracked || 0);
 
   const canWithdraw = wallet.canWithdraw === true && walletAvailable > 0;
 
@@ -327,7 +335,7 @@ export default function HostDashboard() {
     };
   }, [location.search, location.state]);
 
-  /* ---------- Load host listings ---------- */
+  /* ---------- load listings ---------- */
   const loadListings = useCallback(async () => {
     try {
       setLoading(true);
@@ -385,7 +393,7 @@ export default function HostDashboard() {
     };
   }, [loadListings]);
 
-  /* ---------- Subscription info (Host Pro) ---------- */
+  /* ---------- load subscription ---------- */
   const loadSubscription = useCallback(async () => {
     if (!user?.uid) {
       setSubInfo((p) => ({ ...p, loading: false }));
@@ -420,7 +428,7 @@ export default function HostDashboard() {
     };
   }, [loadSubscription]);
 
-  /* ---------- Wallet info (SERVER truth) ---------- */
+  /* ---------- load wallet (server truth) ---------- */
   const loadWallet = useCallback(async () => {
     if (!user?.uid) {
       setWallet((w) => ({ ...w, loading: false }));
@@ -428,7 +436,6 @@ export default function HostDashboard() {
     }
     try {
       setWallet((w) => ({ ...w, loading: true }));
-
       const { data } = await api.get("/payouts/me/wallet");
       if (!data?.ok) {
         setWallet((w) => ({
@@ -474,7 +481,7 @@ export default function HostDashboard() {
     };
   }, [loadWallet]);
 
-  /* ---------- Revenue + bookings for this host ---------- */
+  /* ---------- load revenue + recent bookings ---------- */
   const loadRevenueAndBookings = useCallback(async () => {
     async function runQuery(field, uid) {
       try {
@@ -486,10 +493,7 @@ export default function HostDashboard() {
         );
         return await getDocs(qref);
       } catch (e) {
-        console.warn(
-          `[host dashboard] bookings query failed for ${field}:`,
-          e?.message || e
-        );
+        console.warn(`[HostDashboard] bookings query failed for ${field}:`, e);
         return null;
       }
     }
@@ -506,7 +510,6 @@ export default function HostDashboard() {
 
       const seen = new Set();
       const docs = [];
-
       for (const s of snaps) {
         if (!s) continue;
         for (const d of s.docs) {
@@ -516,11 +519,7 @@ export default function HostDashboard() {
         }
       }
 
-      docs.sort((a, b) => {
-        const at = toMillis(a.data()?.createdAt);
-        const bt = toMillis(b.data()?.createdAt);
-        return bt - at;
-      });
+      docs.sort((a, b) => toMillis(b.data()?.createdAt) - toMillis(a.data()?.createdAt));
 
       const nowMs = Date.now();
       const cutoff30d = nowMs - 30 * 24 * 60 * 60 * 1000;
@@ -547,16 +546,16 @@ export default function HostDashboard() {
         const createdAtMs = toMillis(d.createdAt);
         const in30d = createdAtMs >= cutoff30d;
 
-        const gross = Number(d.amountLockedN ?? d.amountN ?? d.total ?? 0) || 0;
+        const gross = Number(d.amountLockedN ?? d.amountN ?? d.total ?? d.totalAmount ?? 0) || 0;
+
         const hostNetTracked =
-          Number(d.hostPayoutN ?? d.pricingSnapshot?.netPayoutN ?? 0) || 0;
+          Number(d.hostPayoutN ?? d.pricingSnapshot?.netPayoutN ?? d.pricingSnapshot?.hostPayoutN ?? 0) || 0;
 
         if (d.paymentMismatch) mismatchCount++;
         if (safeLower(d.status || "") === "paid-needs-review") reviewCount++;
 
         if (isPaidOrConfirmed(s)) {
           bookingsConfirmed++;
-
           grossLifetime += gross;
           if (in30d) gross30d += gross;
 
@@ -572,8 +571,7 @@ export default function HostDashboard() {
 
         list.push({
           id: docu.id,
-          listingTitle:
-            d.listingTitle || d.listing?.title || d.title || "Listing",
+          listingTitle: d.listingTitle || d.listing?.title || d.title || "Listing",
           status: d.status || "pending",
           amount: gross,
           createdAt: d.createdAt || null,
@@ -582,11 +580,7 @@ export default function HostDashboard() {
       }
 
       const needsAttention =
-        bookingsPending +
-        cancelledCount +
-        refundedCount +
-        mismatchCount +
-        reviewCount;
+        bookingsPending + cancelledCount + refundedCount + mismatchCount + reviewCount;
 
       setRev({
         grossLifetime,
@@ -604,7 +598,7 @@ export default function HostDashboard() {
 
       setHostBookings(list);
     } catch (e) {
-      console.error("Error loading host revenue:", e);
+      console.error("[HostDashboard] Error loading revenue:", e);
     }
   }, [user?.uid]);
 
@@ -619,12 +613,13 @@ export default function HostDashboard() {
     };
   }, [loadRevenueAndBookings]);
 
-  // post-action refresh + toast + highlight + URL cleanup
+  /* ---------- post-action refresh (from reservations page) ---------- */
   useEffect(() => {
     let alive = true;
 
     (async () => {
       if (!refreshMeta.should || !user?.uid) return;
+
       try {
         if (!alive) return;
 
@@ -636,26 +631,11 @@ export default function HostDashboard() {
         ]);
 
         const action = safeLower(refreshMeta.action);
-        if (action) {
-          if (action === "cancelled") {
-            toast?.("Booking cancelled ✅", "info");
-            setHighlightKey("needsAttention");
-          } else if (action === "confirmed") {
-            toast?.("Booking confirmed ✅", "success");
-            setHighlightKey("confirmed");
-          } else if (action === "refunded") {
-            toast?.("Marked as refunded ✅", "success");
-            setHighlightKey("refunded");
-          } else {
-            toast?.("Dashboard refreshed ✅", "success");
-          }
-        } else {
-          toast?.("Dashboard refreshed ✅", "success");
-        }
-
-        setTimeout(() => {
-          if (alive) setHighlightKey("");
-        }, 2200);
+        if (action === "cancelled") notify("Booking cancelled ✅", "info");
+        else if (action === "confirmed") notify("Booking confirmed ✅", "success");
+        else if (action === "refunded") notify("Marked as refunded ✅", "success");
+        else if (action === "released") notify("Payout released ✅", "success");
+        else notify("Dashboard refreshed ✅", "success");
 
         await sleep(250);
         const sp = new URLSearchParams(location.search || "");
@@ -664,10 +644,7 @@ export default function HostDashboard() {
         sp.delete("fromTab");
 
         navigate(
-          {
-            pathname: location.pathname,
-            search: sp.toString() ? `?${sp.toString()}` : "",
-          },
+          { pathname: location.pathname, search: sp.toString() ? `?${sp.toString()}` : "" },
           { replace: true, state: {} }
         );
       } catch {
@@ -689,13 +666,13 @@ export default function HostDashboard() {
     location.pathname,
     location.search,
     navigate,
-    toast,
+    notify,
   ]);
 
-  /* ---------- Filters / derived stats ---------- */
+  /* ---------- derived ---------- */
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
-    return rows.filter((r) => {
+    return (Array.isArray(rows) ? rows : []).filter((r) => {
       const matchQ =
         !kw ||
         (r.title || "").toLowerCase().includes(kw) ||
@@ -731,31 +708,50 @@ export default function HostDashboard() {
     setStatus("all");
   };
 
+  const payoutLabel = wallet.payoutPreview?.bankName
+    ? `${wallet.payoutPreview.bankName} ${wallet.payoutPreview.accountNumberMasked || ""}`.trim()
+    : "No payout method yet";
+
+  /* ===================== JSX (calmer layout) ===================== */
   return (
     <main className="min-h-screen bg-[#05070a] pt-20 pb-12 px-4 text-white">
       <div className="max-w-6xl mx-auto space-y-6">
-        <button
-          className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
-          onClick={() => navigate(-1)}
-        >
-          ← Back
-        </button>
+        {/* Top bar */}
+        <div className="flex items-center justify-between gap-3">
+          <button
+            className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
+            onClick={() => navigate(-1)}
+          >
+            ← Back
+          </button>
 
-        <div className="text-[11px] text-white/45">
-          Loaded listings:{" "}
-          <span className="text-white/70 font-semibold">{rows.length}</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                await Promise.all([loadListings(), loadWallet(), loadSubscription(), loadRevenueAndBookings()]);
+                notify("Dashboard refreshed ✅", "success");
+              }}
+              className="rounded-full px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-semibold"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
 
-        <header className="mt-2 flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        {/* Header */}
+        <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
           <div>
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-amber-300">
               Host Dashboard
             </h1>
             <p className="text-white/70 mt-2 max-w-2xl text-sm md:text-base">
-              Manage your Nesta stay, see your bookings and{" "}
-              <span className="font-semibold">what you’ve earned</span> — all in
-              one calm, luxury view.
+              A calm view of your portfolio, bookings, and earnings — designed for premium trust.
             </p>
+            <div className="mt-2 text-[11px] text-white/45">
+              Portfolio:{" "}
+              <span className="text-white/70 font-semibold">{rows.length}</span>{" "}
+              listing(s)
+            </div>
           </div>
 
           <div className="flex flex-col items-end gap-2">
@@ -772,243 +768,267 @@ export default function HostDashboard() {
           </div>
         </header>
 
+        {/* KYC Gate Banner */}
         {!isKycApproved && (
-          <section className="rounded-2xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-50 flex items-center justify-between gap-3">
-            <p>
-              <span className="font-semibold">Finish your KYC</span> to unlock
-              full visibility, payouts, and trust indicators on Nesta.
+          <section className="rounded-3xl border border-amber-400/30 bg-amber-500/10 px-5 py-4 text-sm text-amber-50 flex items-center justify-between gap-3">
+            <p className="max-w-3xl">
+              <span className="font-semibold">Finish your KYC</span> to unlock payouts, trust indicators, and full host features.
             </p>
             <button
               onClick={() => navigate("/onboarding/kyc/gate")}
-              className="px-4 py-1.5 rounded-xl bg-amber-400 text-black text-xs font-semibold hover:bg-amber-300"
+              className="px-4 py-2 rounded-2xl bg-amber-400 text-black text-xs font-semibold hover:bg-amber-300"
             >
-              Continue KYC
+              Continue KYC →
             </button>
           </section>
         )}
 
         {err && (
-          <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-100">
+          <div className="rounded-3xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
             {err}
           </div>
         )}
 
-        {/* KPI GRID 1 */}
-        <section className="grid gap-3 md:gap-4 md:grid-cols-3 lg:grid-cols-6">
-          <CardStat
-            label="Active listing(s)"
-            value={kpis.active}
-            helper="Live stays on Nesta"
-            onClick={() => navigate("/manage-listings")}
-            highlight={highlightKey === "listings"}
-          />
+        {/* Above the fold: only decision KPIs */}
+        <section className="grid gap-4 md:grid-cols-3">
+          <Card title="Portfolio">
+            <div className="grid grid-cols-2 gap-3">
+              <MiniKpi label="Active listings" value={kpis.active.toLocaleString("en-NG")} />
+              <MiniKpi
+                label="Nightly portfolio"
+                value={ngn(nightlyPortfolio)}
+                tone="default"
+              />
+            </div>
+            <div className="mt-4 flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => navigate("/manage-listings")}
+                className="px-4 py-2 rounded-2xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+              >
+                Manage listings
+              </button>
+              <Link
+                to="/post/new"
+                className="px-4 py-2 rounded-2xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
+              >
+                + New listing
+              </Link>
+            </div>
+          </Card>
 
-          <CardStat
-            label="Confirmed bookings"
-            value={rev.bookingsConfirmed}
-            helper="Paid / confirmed"
-            tone="emerald"
-            onClick={() => goReservationsTab("all")}
-            highlight={highlightKey === "confirmed"}
-          />
+          <Card title="Bookings overview" right={<span className="text-[11px] text-white/50">Last 30 days</span>}>
+            <div className="grid grid-cols-2 gap-3">
+              <MiniKpi
+                label="Confirmed"
+                value={rev.bookingsConfirmed.toLocaleString("en-NG")}
+                tone="emerald"
+              />
+              <MiniKpi
+                label="Pending / upcoming"
+                value={rev.bookingsPending.toLocaleString("en-NG")}
+                tone="amber"
+              />
+            </div>
+            <div className="mt-4 flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => goReservationsTab("all")}
+                className="px-4 py-2 rounded-2xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+              >
+                Open reservations →
+              </button>
+              <button
+                type="button"
+                onClick={() => goReservationsTab("attention")}
+                className="px-4 py-2 rounded-2xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+              >
+                Needs attention ({rev.needsAttention})
+              </button>
+            </div>
+          </Card>
 
-          <CardStat
-            label="Pending / upcoming"
-            value={rev.bookingsPending}
-            helper="Awaiting payment / arrival"
-            tone="amber"
-            onClick={() => goReservationsTab("upcoming")}
-            highlight={highlightKey === "pending"}
-          />
-
-          <CardStat
-            label="Nightly portfolio"
-            currency
-            value={nightlyPortfolio}
-            helper="Across active listings"
-            onClick={() => navigate("/manage-listings")}
-          />
-
-          <CardStat
-            label="Gross revenue (lifetime)"
-            currency
-            value={rev.grossLifetime}
-            helper="Confirmed only • before fees"
-          />
-
-          <CardStat
-            label="Gross revenue (30 days)"
-            currency
-            value={rev.gross30d}
-            helper="Rolling • momentum"
-          />
-        </section>
-
-        {/* HOST WALLET */}
-        <section className="grid gap-3 md:gap-4 md:grid-cols-3">
-          <CardStat
-            label="Wallet available"
-            currency
-            value={walletAvailable}
-            helper={walletPrimaryHelper}
-            tone="amber"
-            onClick={() => navigate("/withdrawals")}
-            disabled={!canWithdraw}
-          />
-
-          <CardStat
-            label="Pending"
-            currency
-            value={walletPending}
-            helper={
-              wallet.loading
-                ? "Loading…"
-                : walletPending > 0
-                ? "Clearing payout window"
-                : "No pending balance"
-            }
-            onClick={() => navigate("/withdrawals")}
-            disabled={wallet.canWithdraw === false}
-          />
-
-          <CardStat
-            label="Lifetime earned"
-            currency
-            value={walletLifetime}
-            helper={wallet.loading ? "Loading…" : "Tracked net earnings"}
-            onClick={() => navigate("/withdrawals")}
-            disabled={wallet.canWithdraw === false}
-          />
-        </section>
-
-        {/* KPI GRID 2 */}
-        <section className="grid gap-3 md:gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <CardStat
-            label="Needs attention"
-            value={rev.needsAttention}
-            helper="Pending / cancelled / refunded / review"
-            tone="amber"
-            onClick={() => goReservationsTab("attention")}
-            highlight={highlightKey === "needsAttention"}
-          />
-
-          <CardStat
-            label="Cancelled"
-            value={rev.cancelled}
-            tone="rose"
-            onClick={() => goReservationsTab("past")}
-            highlight={highlightKey === "cancelled"}
-          />
-
-          <CardStat
-            label="Refunded"
-            value={rev.refunded}
-            tone="rose"
-            onClick={() => goReservationsTab("past")}
-            highlight={highlightKey === "refunded"}
-          />
-
-          <CardStat
-            label="Payment issues"
-            value={rev.mismatchCount + rev.reviewCount}
-            helper={rev.reviewCount > 0 ? "Includes paid-needs-review" : "—"}
-            onClick={() => goReservationsTab("attention")}
-          />
-        </section>
-
-        {/* ACTION BAR */}
-        <section className="flex flex-wrap gap-3 items-center mt-1">
-          <button
-            type="button"
-            onClick={() => navigate("/manage-listings")}
-            className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
-          >
-            Manage your listing
-          </button>
-
-          <button
-            type="button"
-            onClick={() => goReservationsTab("all")}
-            className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
-          >
-            Open reservations
-          </button>
-
-          <Link
-            to="/post/new"
-            className="px-4 py-2 rounded-xl bg-amber-500 text-black font-semibold text-sm hover:bg-amber-400"
-          >
-            + New listing
-          </Link>
-
-          <button
-            type="button"
-            disabled={!canWithdraw}
-            onClick={() => navigate("/withdrawals")}
-            className={`ml-auto px-4 py-2 rounded-xl text-sm font-semibold transition ${
-              canWithdraw
-                ? "bg-amber-500 text-black hover:bg-amber-400"
-                : "bg-white/10 text-white/40 cursor-not-allowed"
-            }`}
-            title={
-              wallet.loading
-                ? "Loading wallet…"
-                : wallet.canWithdraw === false
-                ? wallet.reason || "Withdrawals locked"
-                : "No withdrawable balance yet"
+          <Card
+            title="Wallet & payouts"
+            tone={canWithdraw ? "emerald" : "amber"}
+            right={
+              <span className="text-[11px] text-white/50">
+                Status:{" "}
+                <span className="text-white/80 font-semibold">
+                  {String(wallet.payoutStatus || "—")}
+                </span>
+              </span>
             }
           >
-            Withdraw earnings
+            <div className="space-y-2">
+              <div className="flex items-baseline justify-between">
+                <div className="text-white/70 text-sm">Available (withdrawable)</div>
+                <div className="text-2xl font-semibold">{wallet.loading ? "—" : ngn(walletAvailable)}</div>
+              </div>
+
+              <div className="flex items-baseline justify-between">
+                <div className="text-white/60 text-xs">
+                  Pending (releases after check-in)
+                </div>
+                <div className="text-sm text-white/70">{wallet.loading ? "—" : ngn(walletPending)}</div>
+              </div>
+
+              <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70">
+                <div className="font-semibold text-white/80">Payout destination</div>
+                <div className="mt-1">{payoutLabel}</div>
+                <div className="mt-2 text-white/60">{walletPrimaryHelper}</div>
+              </div>
+
+              <div className="mt-4 flex gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => navigate("/payout-setup")}
+                  className="px-4 py-2 rounded-2xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+                >
+                  Payout setup
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!canWithdraw}
+                  onClick={() => navigate("/withdrawals")}
+                  className={`px-4 py-2 rounded-2xl text-sm font-semibold transition ${
+                    canWithdraw
+                      ? "bg-amber-500 text-black hover:bg-amber-400"
+                      : "bg-white/10 text-white/40 cursor-not-allowed"
+                  }`}
+                  title={
+                    wallet.loading
+                      ? "Loading wallet…"
+                      : wallet.canWithdraw === false
+                      ? wallet.reason || "Withdrawals locked"
+                      : "No withdrawable balance yet"
+                  }
+                >
+                  Withdraw
+                </button>
+              </div>
+            </div>
+          </Card>
+        </section>
+
+        {/* Insights accordion: all secondary KPIs moved out of sight */}
+        <section className="rounded-3xl border border-white/10 bg-[#090c12] overflow-hidden">
+          <button
+            onClick={() => setInsightsOpen((v) => !v)}
+            className="w-full px-5 py-4 flex items-center justify-between text-left"
+          >
+            <div>
+              <div className="text-sm font-semibold text-white">Insights</div>
+              <div className="text-xs text-white/50 mt-1">
+                Revenue, cancellations, refunds, and payment flags — kept tidy.
+              </div>
+            </div>
+            <div className="text-white/70 text-sm">{insightsOpen ? "Hide" : "Show"} ▾</div>
           </button>
+
+          {insightsOpen ? (
+            <div className="px-5 pb-5">
+              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                <MiniKpi label="Gross revenue (lifetime)" value={ngn(rev.grossLifetime)} />
+                <MiniKpi label="Gross revenue (30 days)" value={ngn(rev.gross30d)} />
+                <MiniKpi label="Lifetime earned (net tracked)" value={ngn(rev.netLifetimeTracked)} tone="emerald" />
+                <MiniKpi label="Net (30 days tracked)" value={ngn(rev.net30dTracked)} tone="emerald" />
+
+                <MiniKpi label="Cancelled" value={rev.cancelled.toLocaleString("en-NG")} tone="rose" />
+                <MiniKpi label="Refunded" value={rev.refunded.toLocaleString("en-NG")} tone="rose" />
+                <MiniKpi
+                  label="Payment issues"
+                  value={(rev.mismatchCount + rev.reviewCount).toLocaleString("en-NG")}
+                  tone="amber"
+                />
+                <MiniKpi label="Paid-needs-review" value={rev.reviewCount.toLocaleString("en-NG")} tone="amber" />
+              </div>
+
+              <div className="mt-4 flex gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => goReservationsTab("attention")}
+                  className="px-4 py-2 rounded-2xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+                >
+                  Open attention queue →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => goReservationsTab("past")}
+                  className="px-4 py-2 rounded-2xl bg-white/5 border border-white/15 text-sm font-semibold hover:bg-white/10"
+                >
+                  Past bookings →
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
 
-        {/* FILTERS */}
-        <section className="rounded-3xl bg-[#090c12] border border-white/5 p-4 md:p-5 space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto] gap-3">
-            <Field>
-              <Input
-                placeholder="Search (title, city, area)…"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
-            </Field>
-            <Field>
-              <Input
-                type="number"
-                min={0}
-                placeholder="Min ₦/night"
-                value={min}
-                onChange={(e) => setMin(e.target.value)}
-              />
-            </Field>
-            <Field>
-              <Input
-                type="number"
-                min={0}
-                placeholder="Max ₦/night"
-                value={max}
-                onChange={(e) => setMax(e.target.value)}
-              />
-            </Field>
-            <Field>
-              <Select value={status} onChange={(e) => setStatus(e.target.value)}>
-                <option value="all">Any status</option>
-                <option value="active">active</option>
-                <option value="inactive">inactive</option>
-                <option value="review">under review</option>
-              </Select>
-            </Field>
-            <button
-              type="button"
-              onClick={resetFilters}
-              className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm hover:bg-white/10"
-            >
-              Reset
-            </button>
-          </div>
+        {/* Filters (collapsed by default) */}
+        <section className="rounded-3xl bg-[#090c12] border border-white/5 overflow-hidden">
+          <button
+            onClick={() => setFiltersOpen((v) => !v)}
+            className="w-full px-5 py-4 flex items-center justify-between text-left"
+          >
+            <div>
+              <div className="text-sm font-semibold text-white">Filters</div>
+              <div className="text-xs text-white/50 mt-1">
+                Search & pricing filters (optional).
+              </div>
+            </div>
+            <div className="text-white/70 text-sm">{filtersOpen ? "Hide" : "Show"} ▾</div>
+          </button>
+
+          {filtersOpen ? (
+            <div className="px-5 pb-5">
+              <div className="grid grid-cols-1 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto] gap-3">
+                <Field>
+                  <Input
+                    placeholder="Search (title, city, area)…"
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder="Min ₦/night"
+                    value={min}
+                    onChange={(e) => setMin(e.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder="Max ₦/night"
+                    value={max}
+                    onChange={(e) => setMax(e.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <Select value={status} onChange={(e) => setStatus(e.target.value)}>
+                    <option value="all">Any status</option>
+                    <option value="active">active</option>
+                    <option value="inactive">inactive</option>
+                    <option value="review">under review</option>
+                  </Select>
+                </Field>
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm hover:bg-white/10"
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
 
-        {/* PORTFOLIO CARDS */}
+        {/* Listings */}
         <section>
           {loading ? (
             <p className="text-white/70 text-sm">Loading…</p>
@@ -1019,9 +1039,9 @@ export default function HostDashboard() {
               {filtered.map((l) => (
                 <article
                   key={l.id}
-                  className="rounded-2xl border border-white/10 bg-[#0f1419] overflow-hidden hover:border-amber-300/60 hover:-translate-y-1 transition-all duration-200 shadow-[0_14px_40px_rgba(0,0,0,0.45)]"
+                  className="rounded-3xl border border-white/10 bg-[#0f1419] overflow-hidden hover:border-amber-300/50 hover:-translate-y-1 transition-all duration-200 shadow-[0_16px_50px_rgba(0,0,0,0.55)]"
                 >
-                  <div className="h-36 bg-gradient-to-br from-[#202736] via-[#151924] to-black/90 border-b border-white/10 overflow-hidden">
+                  <div className="h-40 bg-gradient-to-br from-[#202736] via-[#151924] to-black/90 border-b border-white/10 overflow-hidden">
                     {Array.isArray(l.imageUrls) && l.imageUrls[0] ? (
                       <img
                         src={l.imageUrls[0]}
@@ -1038,7 +1058,8 @@ export default function HostDashboard() {
                       />
                     ) : null}
                   </div>
-                  <div className="p-4">
+
+                  <div className="p-5">
                     <div className="flex items-center gap-2">
                       <h3 className="font-bold text-white text-lg flex-1 truncate">
                         {l.title || "Untitled"}
@@ -1047,21 +1068,22 @@ export default function HostDashboard() {
                         {l.status || "active"}
                       </span>
                     </div>
-                    <div className="text-white/70 mt-1 text-sm">
+
+                    <div className="text-white/70 mt-2 text-sm">
                       {ngn(l.pricePerNight || 0)}/night • {l.area || "—"}
-                      <br />
-                      {l.city || "—"}
+                      <div className="text-white/50">{l.city || "—"}</div>
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
+
+                    <div className="mt-4 grid grid-cols-2 gap-2">
                       <Link
                         to={`/listing/${l.id}`}
-                        className="px-4 py-2 rounded-xl bg-white/10 border border-white/10 text-center text-sm hover:bg-white/15"
+                        className="px-4 py-2 rounded-2xl bg-white/10 border border-white/10 text-center text-sm hover:bg-white/15"
                       >
                         View
                       </Link>
                       <Link
                         to={`/listing/${l.id}/edit`}
-                        className="px-4 py-2 rounded-xl bg-amber-500 text-black font-semibold text-center text-sm hover:bg-amber-400"
+                        className="px-4 py-2 rounded-2xl bg-amber-500 text-black font-semibold text-center text-sm hover:bg-amber-400"
                       >
                         Edit
                       </Link>
@@ -1073,59 +1095,76 @@ export default function HostDashboard() {
           )}
         </section>
 
-        {/* RECENT BOOKINGS STRIP */}
-        <section className="mt-6 rounded-3xl bg-[#090c12] border border-white/5 overflow-hidden">
-          <div className="flex items-center justify-between px-4 md:px-5 py-3">
-            <h2 className="text-sm md:text-base font-semibold">Recent bookings</h2>
-            <button
-              onClick={() => goReservationsTab("all")}
-              className="text-xs md:text-sm text-white/60 hover:text-white"
-            >
-              Open reservations →
-            </button>
-          </div>
-
-          {recentBookings.length === 0 ? (
-            <div className="px-4 md:px-5 pb-4 text-xs text-white/45">
-              No bookings yet for this host account.
+        {/* Recent bookings (collapsed) */}
+        <section className="rounded-3xl bg-[#090c12] border border-white/5 overflow-hidden">
+          <button
+            onClick={() => setRecentOpen((v) => !v)}
+            className="w-full px-5 py-4 flex items-center justify-between text-left"
+          >
+            <div>
+              <div className="text-sm font-semibold text-white">Recent bookings</div>
+              <div className="text-xs text-white/50 mt-1">
+                Quick glance — open only when needed.
+              </div>
             </div>
-          ) : (
-            <ul className="divide-y divide-white/5 text-xs md:text-sm">
-              {recentBookings.map((b) => (
-                <li
-                  key={b.id}
-                  className="px-4 md:px-5 py-3 flex items-center justify-between gap-3"
-                >
-                  <div className="min-w-0">
-                    <p className="font-medium truncate">{b.listingTitle || "Listing"}</p>
-                    <p className="text-[11px] text-white/45">
-                      {formatDateTime(b.createdAt)}
-                    </p>
-                    {b.paymentMismatch ? (
-                      <p className="mt-1 text-[11px] text-amber-200/80">
-                        ⚠ payment mismatch (review)
-                      </p>
-                    ) : null}
-                  </div>
+            <div className="text-white/70 text-sm">{recentOpen ? "Hide" : "Show"} ▾</div>
+          </button>
 
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="font-semibold text-[13px]">{ngn(b.amount)}</span>
-                    <span
-                      className={`px-2 py-1 rounded-full text-[10px] font-semibold capitalize ${
-                        isPaidOrConfirmed(b.status)
-                          ? "bg-emerald-600/15 text-emerald-200 border border-emerald-500/30"
-                          : isCancelledLike(b.status) || isRefundedLike(b.status)
-                          ? "bg-rose-600/15 text-rose-200 border border-rose-500/30"
-                          : "bg-slate-500/15 text-slate-200 border border-slate-500/30"
-                      }`}
+          {recentOpen ? (
+            <>
+              <div className="px-5 pb-2 flex items-center justify-between">
+                <div className="text-[11px] text-white/45">
+                  Showing {recentBookings.length} of {hostBookings.length}
+                </div>
+                <button
+                  onClick={() => goReservationsTab("all")}
+                  className="text-xs text-white/60 hover:text-white"
+                >
+                  Open reservations →
+                </button>
+              </div>
+
+              {recentBookings.length === 0 ? (
+                <div className="px-5 pb-5 text-xs text-white/45">
+                  No bookings yet for this host account.
+                </div>
+              ) : (
+                <ul className="divide-y divide-white/5 text-xs md:text-sm">
+                  {recentBookings.map((b) => (
+                    <li
+                      key={b.id}
+                      className="px-5 py-4 flex items-center justify-between gap-3"
                     >
-                      {safeLower(b.status || "pending")}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                      <div className="min-w-0">
+                        <p className="font-medium truncate">{b.listingTitle || "Listing"}</p>
+                        <p className="text-[11px] text-white/45">{formatDateTime(b.createdAt)}</p>
+                        {b.paymentMismatch ? (
+                          <p className="mt-1 text-[11px] text-amber-200/80">
+                            ⚠ payment mismatch (review)
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="font-semibold text-[13px]">{ngn(b.amount)}</span>
+                        <span
+                          className={`px-2 py-1 rounded-full text-[10px] font-semibold capitalize border ${
+                            isPaidOrConfirmed(b.status)
+                              ? "bg-emerald-600/15 text-emerald-200 border-emerald-500/30"
+                              : isCancelledLike(b.status) || isRefundedLike(b.status)
+                              ? "bg-rose-600/15 text-rose-200 border-rose-500/30"
+                              : "bg-slate-500/15 text-slate-200 border-slate-500/30"
+                          }`}
+                        >
+                          {safeLower(b.status || "pending")}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : null}
         </section>
       </div>
     </main>

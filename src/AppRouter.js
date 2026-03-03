@@ -298,11 +298,13 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
+
+              {/* ✅ Canonical booking chat deep-link → ChatStart (bootstraps and redirects into /chat) */}
               <Route
                 path="/booking/:bookingId/chat"
                 element={
                   <RequireAuth>
-                    <ChatPage />
+                    <ChatStart />
                   </RequireAuth>
                 }
               />
@@ -324,14 +326,7 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-              <Route
-  path="/booking/:bookingId/chat"
-  element={
-    <RequireAuth>
-      <ChatStart />
-    </RequireAuth>
-  }
-/>
+
               {/* ✅ Favourites / Wishlist (aliases) */}
               <Route
                 path="/favourites"

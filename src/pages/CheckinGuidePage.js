@@ -1,22 +1,59 @@
 // src/pages/CheckinGuidePage.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
-import { db } from "../firebase";
-import { useAuth } from "../auth/AuthContext";
+import { getAuth } from "firebase/auth";
 import useUserProfile from "../hooks/useUserProfile";
+import { useAuth } from "../auth/AuthContext";
 import "../styles/polish.css";
 import "../styles/motion.css";
 
-function allowedStatus(status) {
-  const s = String(status || "").toLowerCase();
-  return s === "confirmed" || s === "paid" || s === "completed";
+/* ===================== API base ===================== */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
+function safeStr(v) {
+  return String(v ?? "").trim();
+}
+function lower(v) {
+  return safeStr(v).toLowerCase();
 }
 
+async function getBearerToken() {
+  try {
+    const auth = getAuth();
+    return auth.currentUser ? await auth.currentUser.getIdToken() : "";
+  } catch {
+    return "";
+  }
+}
+
+/* ===================== Policy helpers ===================== */
+
+function allowedStatus(status) {
+  const s = lower(status);
+  return (
+    s === "confirmed" ||
+    s === "paid" ||
+    s === "completed" ||
+    s === "paid_pending_release" ||
+    s === "released"
+  );
+}
+
+function bookingBelongsToUser(booking, uid) {
+  if (!booking || !uid) return false;
+
+  const guestUid =
+    safeStr(booking.guestUid || booking.guestId || booking.userId || booking.userUid || "");
+
+  return guestUid && guestUid === String(uid);
+}
+
+/* ===================== Date helpers ===================== */
 function toDateObj(v) {
   if (!v) return null;
   if (v instanceof Date) return v;
-  if (typeof v?.toDate === "function") return v.toDate(); // Firestore Timestamp
+  if (typeof v?.toDate === "function") return v.toDate(); // Firestore Timestamp-style
   if (typeof v?.seconds === "number") return new Date(v.seconds * 1000);
   if (typeof v === "string" || typeof v === "number") return new Date(v);
   return null;
@@ -24,7 +61,7 @@ function toDateObj(v) {
 
 function fmtDateTime(v, fallback = "—") {
   const d = toDateObj(v);
-  if (!d || isNaN(d.getTime())) return fallback;
+  if (!d || Number.isNaN(d.getTime())) return fallback;
   return d.toLocaleString(undefined, {
     year: "numeric",
     month: "short",
@@ -34,6 +71,7 @@ function fmtDateTime(v, fallback = "—") {
   });
 }
 
+/* ===================== UI bits ===================== */
 function InfoBlock({ label, children }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
@@ -58,44 +96,65 @@ export default function CheckinGuidePage() {
   const [loading, setLoading] = useState(!state?.booking);
   const [error, setError] = useState("");
 
-  const isGuest = useMemo(() => {
-    const r = String(profile?.role || "").toLowerCase();
-    return !r || r === "guest";
-  }, [profile?.role]);
+  const role = useMemo(() => lower(profile?.role || profile?.type || ""), [profile?.role, profile?.type]);
+  const isGuestRole = useMemo(() => !role || role === "guest", [role]);
+
+  const loadBooking = useCallback(async () => {
+    const bid = safeStr(id || "");
+    if (!bid) {
+      setError("Missing bookingId.");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+
+      const token = await getBearerToken();
+      const res = await fetch(`${API}/bookings/${encodeURIComponent(bid)}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        credentials: "include",
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const json = await res.json();
+      const b = json?.booking || json?.data || json || {};
+      const normalized = { id: b.id || bid, ...b };
+
+      setBooking(normalized);
+    } catch (e) {
+      console.error("[CheckinGuidePage] load error:", e);
+      setError("Unable to load check-in guide.");
+      setBooking(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
 
   useEffect(() => {
     let alive = true;
-
-    async function load() {
-      if (!id || booking) return;
-
-      try {
-        setLoading(true);
-        const snap = await getDoc(doc(db, "bookings", id));
-        if (!snap.exists()) {
-          setError("Booking not found.");
-          return;
-        }
-
-        const data = { id: snap.id, ...snap.data() };
-        if (alive) setBooking(data);
-      } catch (e) {
-        console.error(e);
-        if (alive) setError("Unable to load check-in guide.");
-      } finally {
-        if (alive) setLoading(false);
-      }
-    }
-
-    load();
+    (async () => {
+      if (!alive) return;
+      if (!user?.uid) return;
+      if (booking) return; // state already provided
+      await loadBooking();
+    })();
     return () => {
       alive = false;
     };
-  }, [id, booking]);
+  }, [user?.uid, booking, loadBooking]);
+
+  /* ===================== Guards ===================== */
 
   if (!user) {
     return (
-      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 py-10">
+      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 pt-[calc(var(--topbar-h,88px)+24px)] pb-10">
         <div className="max-w-3xl mx-auto">
           <p>Please sign in to view this page.</p>
           <button
@@ -111,7 +170,7 @@ export default function CheckinGuidePage() {
 
   if (loading) {
     return (
-      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 py-10">
+      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 pt-[calc(var(--topbar-h,88px)+24px)] pb-10">
         <div className="max-w-3xl mx-auto rounded-2xl bg-white/5 border border-white/10 p-6">
           Loading check-in guide…
         </div>
@@ -121,7 +180,7 @@ export default function CheckinGuidePage() {
 
   if (error || !booking) {
     return (
-      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 py-10">
+      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 pt-[calc(var(--topbar-h,88px)+24px)] pb-10">
         <div className="max-w-3xl mx-auto rounded-2xl bg-red-500/10 border border-red-400/30 p-6">
           {error || "Unable to display guide."}
           <button
@@ -135,13 +194,17 @@ export default function CheckinGuidePage() {
     );
   }
 
-  if (!isGuest || !allowedStatus(booking.status)) {
+  // ✅ MUST belong to current user
+  const isOwnerGuest = bookingBelongsToUser(booking, user.uid);
+
+  // Page policy: only guests viewing their own confirmed+ bookings
+  if (!isGuestRole || !isOwnerGuest || !allowedStatus(booking.status)) {
     return (
-      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 py-10">
+      <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 pt-[calc(var(--topbar-h,88px)+24px)] pb-10">
         <div className="max-w-3xl mx-auto rounded-2xl bg-white/5 border border-white/10 p-6">
           <h2 className="text-xl font-bold mb-2">Check-in guide unavailable</h2>
           <p className="text-white/70 text-sm">
-            This guide becomes available once your booking is confirmed.
+            This guide is visible only to the confirmed guest on this booking.
           </p>
           <button
             onClick={() => nav(-1)}
@@ -154,6 +217,8 @@ export default function CheckinGuidePage() {
     );
   }
 
+  /* ===================== Render ===================== */
+
   const {
     title,
     listingTitle,
@@ -165,12 +230,12 @@ export default function CheckinGuidePage() {
   } = booking;
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white px-4 py-10 motion-fade-in">
+    <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white px-4 pt-[calc(var(--topbar-h,88px)+24px)] pb-10 motion-fade-in">
       <div className="max-w-4xl mx-auto">
         <header className="mb-8 motion-slide-up">
           <h1 className="text-3xl font-extrabold tracking-tight">Check-in Guide</h1>
           <p className="text-white/60 mt-2">
-            {title || listingTitle || "Your stay"} • {listingLocation || ""}
+            {title || listingTitle || "Your stay"} {listingLocation ? `• ${listingLocation}` : ""}
           </p>
         </header>
 
@@ -220,7 +285,7 @@ export default function CheckinGuidePage() {
           </button>
 
           <button
-            onClick={() => nav(`/booking/${booking.id}/chat`, { state: { booking } })}
+            onClick={() => nav(`/booking/${booking.id}/chat`, { state: { bookingId: booking.id } })}
             className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-semibold"
           >
             Chat with host / partner
@@ -228,7 +293,7 @@ export default function CheckinGuidePage() {
         </div>
 
         <div className="mt-6 text-xs text-white/40">
-          This information is private and visible only to confirmed guests.
+          This information is private and visible only to the confirmed guest on this booking.
         </div>
       </div>
     </main>

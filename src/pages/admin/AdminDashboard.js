@@ -4,12 +4,22 @@ import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import dayjs from "dayjs";
 import { getAuth } from "firebase/auth";
-import { collection, getDocs, limit, orderBy, query } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  getCountFromServer,
+  limit,
+  orderBy,
+  query,
+} from "firebase/firestore";
 import { db } from "../../firebase";
 
-/* ------------------------------ axios base ------------------------------ */
+/* ------------------------------ axios base (normalized) ------------------------------ */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   timeout: 20000,
   withCredentials: false,
 });
@@ -111,28 +121,36 @@ const isAttentionRow = (row = {}) => {
 // Normalise a booking document into a single shape we can render
 const normaliseBooking = (docSnap) => {
   const data = docSnap?.data ? docSnap.data() : docSnap || {};
-  const createdAt = safeDateLoose(data.createdAt || data.created_at || data.date || data.timestamp);
+  const createdAt = safeDateLoose(
+    data.createdAt || data.created_at || data.date || data.timestamp
+  );
 
   // ✅ backend truth first
-  const amount = Number(
-    data.amountLockedN ??
-      data.amountN ??
-      data.totalAmount ??
-      data.total ??
-      data.amount ??
-      0
-  ) || 0;
+  const amount =
+    Number(
+      data.amountLockedN ??
+        data.amountN ??
+        data.totalAmount ??
+        data.total ??
+        data.amount ??
+        0
+    ) || 0;
 
   return {
     id: docSnap?.id || data.id,
-    listingTitle: data.listingTitle || data.listing?.title || data.listing || data.title || data.property || "—",
+    listingTitle:
+      data.listingTitle ||
+      data.listing?.title ||
+      data.listing ||
+      data.title ||
+      data.property ||
+      "—",
     guestEmail: data.email || data.guestEmail || data.guest || "—",
     status: data.status || "pending",
     amount,
     nights: Number(data.nights ?? data.night ?? 0) || 0,
     createdAt,
     reference: data.reference || data.ref || "",
-    // ✅ bring these through so attention logic works
     paymentMismatch: !!data.paymentMismatch,
     cancelRequested: !!data.cancelRequested,
     cancellationRequested: !!data.cancellationRequested,
@@ -186,27 +204,49 @@ export default function AdminDashboard() {
 
       setUpdatedAt(new Date().toISOString());
     } catch (e) {
-      console.warn("[AdminDashboard] /admin/overview failed, falling back to Firestore:", e?.response?.data || e?.message);
+      console.warn(
+        "[AdminDashboard] /admin/overview failed, falling back to Firestore:",
+        e?.response?.data || e?.message
+      );
       setServerOverview(null);
       setError("Admin overview is temporarily unavailable. Showing fallback stats.");
       overviewHasUsersCount = false;
     }
 
-    // 2) Latest bookings (Firestore)
+    // 2) Latest bookings (Firestore) — index-safe
     try {
       const bookingsRef = collection(db, "bookings");
-      const qBookings = query(bookingsRef, orderBy("createdAt", "desc"), limit(200));
-      const snap = await getDocs(qBookings);
-      const loaded = snap.docs.map((d) => normaliseBooking(d));
+
+      let snap = null;
+      try {
+        const qBookings = query(bookingsRef, orderBy("createdAt", "desc"), limit(200));
+        snap = await getDocs(qBookings);
+      } catch (e1) {
+        console.warn("[AdminDashboard] bookings orderBy failed, fallback:", e1?.message || e1);
+        const qBookingsNoOrder = query(bookingsRef, limit(200));
+        snap = await getDocs(qBookingsNoOrder);
+      }
+
+      const loaded = (snap?.docs || []).map((d) => normaliseBooking(d));
+      // If fallback query had no ordering, sort client-side safely
+      loaded.sort((a, b) => {
+        const am = a?.createdAt instanceof Date ? a.createdAt.getTime() : 0;
+        const bm = b?.createdAt instanceof Date ? b.createdAt.getTime() : 0;
+        return bm - am;
+      });
+
       setBookings(loaded);
 
-      // ✅ Fallback users count if API didn't supply it
+      // ✅ Fast users count fallback (aggregation)
       if (!overviewHasUsersCount) {
         try {
-          const usersSnap = await getDocs(collection(db, "users"));
-          setUsersCount(usersSnap.size || 0);
+          const usersRef = collection(db, "users");
+          const countSnap = await getCountFromServer(usersRef);
+          const c = Number(countSnap?.data()?.count ?? 0);
+          setUsersCount(Number.isFinite(c) ? c : 0);
         } catch (e2) {
-          console.warn("[AdminDashboard] users count fallback failed:", e2?.message || e2);
+          console.warn("[AdminDashboard] users count aggregation failed:", e2?.message || e2);
+          // last resort: keep existing number, do NOT download all user docs
         }
       }
 
@@ -232,7 +272,6 @@ export default function AdminDashboard() {
       if (!shouldForceRefresh) return;
       await load();
 
-      // clean URL + clear state
       if (!alive) return;
       const sp = new URLSearchParams(location.search || "");
       if (sp.get("refresh") === "1") {
@@ -257,8 +296,8 @@ export default function AdminDashboard() {
     let needsAttention = 0;
 
     bookings.forEach((b) => {
-      totalRevenue += b.amount || 0;
-      totalNights += b.nights || 0;
+      totalRevenue += Number(b.amount || 0);
+      totalNights += Number(b.nights || 0);
       if (isAttentionRow(b)) needsAttention += 1;
     });
 
@@ -291,7 +330,11 @@ export default function AdminDashboard() {
         </button>
 
         <div className="flex items-center gap-3">
-          {updatedLabel ? <div className="hidden md:block text-xs text-white/40">Last updated: {updatedLabel}</div> : null}
+          {updatedLabel ? (
+            <div className="hidden md:block text-xs text-white/40">
+              Last updated: {updatedLabel}
+            </div>
+          ) : null}
 
           <button
             onClick={load}
@@ -319,13 +362,17 @@ export default function AdminDashboard() {
       {/* Heading */}
       <div className="px-6 mt-4 mb-3">
         <h1 className="text-3xl font-black tracking-tight">Admin control centre</h1>
-        <p className="text-white/50 text-sm mt-1">Platform health, bookings, users and admin tools at a glance.</p>
+        <p className="text-white/50 text-sm mt-1">
+          Platform health, bookings, users and admin tools at a glance.
+        </p>
       </div>
 
       {/* KPI row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6">
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#f5b800] to-[#ff7b1b] px-5 py-5 shadow-lg">
-          <p className="uppercase tracking-[0.25em] text-xs text-black/70 font-bold">TOTAL BOOKINGS</p>
+          <p className="uppercase tracking-[0.25em] text-xs text-black/70 font-bold">
+            TOTAL BOOKINGS
+          </p>
           <p className="mt-2 leading-none font-black text-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(stats.totalBookings)}
           </p>
@@ -333,8 +380,13 @@ export default function AdminDashboard() {
         </div>
 
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#00735f] to-[#008c86] px-5 py-5 shadow-lg overflow-hidden">
-          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">REVENUE (RAW)</p>
-          <p className="mt-2 leading-none font-black whitespace-nowrap text-[clamp(1.45rem,4.9vw,2.85rem)]" title={money(stats.totalRevenue)}>
+          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
+            REVENUE (RAW)
+          </p>
+          <p
+            className="mt-2 leading-none font-black whitespace-nowrap text-[clamp(1.45rem,4.9vw,2.85rem)]"
+            title={money(stats.totalRevenue)}
+          >
             <span className="hidden md:inline">{money(stats.totalRevenue)}</span>
             <span className="md:hidden">{shortMoney(stats.totalRevenue)}</span>
           </p>
@@ -342,7 +394,9 @@ export default function AdminDashboard() {
         </div>
 
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#b5131d] to-[#a10b38] px-5 py-5 shadow-lg">
-          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">ITEMS NEEDING ATTENTION</p>
+          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
+            ITEMS NEEDING ATTENTION
+          </p>
           <p className="mt-2 leading-none font-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(stats.needsAttention)}
           </p>
@@ -350,12 +404,14 @@ export default function AdminDashboard() {
         </div>
 
         <div className="min-w-0 rounded-3xl bg-gradient-to-br from-[#0b65c7] to-[#002e6f] px-5 py-5 shadow-lg">
-          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">USERS (APPROX.)</p>
+          <p className="uppercase tracking-[0.25em] text-xs text-white/60 font-bold">
+            USERS
+          </p>
           <p className="mt-2 leading-none font-black break-words text-[clamp(2.0rem,6vw,3.0rem)]">
             {softNum(usersCount)}
           </p>
           <p className="text-white/60 text-sm mt-3">
-            {serverOverview ? "API overview + Firestore fallback" : "Fallback: Firestore users collection"}
+            {serverOverview ? "API overview + Firestore count fallback" : "Fallback: Firestore users count"}
           </p>
         </div>
       </div>
@@ -403,9 +459,9 @@ export default function AdminDashboard() {
 
                 return (
                   <div key={b.id} className="px-5 py-3 flex items-center justify-between">
-                    <div>
-                      <p className="text-white font-semibold">{b.listingTitle}</p>
-                      <p className="text-xs text-white/35 mt-0.5">
+                    <div className="min-w-0">
+                      <p className="text-white font-semibold truncate">{b.listingTitle}</p>
+                      <p className="text-xs text-white/35 mt-0.5 truncate">
                         guest: {b.guestEmail} • ref: {String(b.reference || b.id || "—").slice(0, 22)}
                         {b.createdAt ? (
                           <>
@@ -418,7 +474,7 @@ export default function AdminDashboard() {
                         <p className="mt-1 text-[11px] text-amber-200/80">⚠ needs review</p>
                       ) : null}
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 shrink-0">
                       <p className="text-white font-bold">{money(b.amount)}</p>
                       <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${chip}`}>
                         {s}

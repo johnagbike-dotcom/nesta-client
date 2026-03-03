@@ -19,14 +19,22 @@ function kycOk(status) {
   return s === "approved" || s === "verified" || s === "complete";
 }
 
+function buildNext(loc) {
+  return encodeURIComponent((loc?.pathname || "/") + (loc?.search || ""));
+}
+
 /* ---------- base hook ---------- */
 
 function useAuthPlus() {
   const { user, loading, profile: ctxProfile } = useAuth();
 
-  // Only hit Firestore if we actually have a user id
-  const fetched = useUserProfile(user?.uid);
+  // ✅ Your hook takes NO args and listens to auth itself
+  const fetched = useUserProfile();
+
+  // Prefer AuthContext profile if present; fallback to fetched
   const profile = ctxProfile ?? (user ? fetched.profile : null);
+
+  // Avoid rendering protected pages while profile is loading
   const profileLoading = user ? !!fetched.loading : false;
 
   return { user, loading: loading || profileLoading, profile };
@@ -42,7 +50,7 @@ export function RequireAuth({ children }) {
   if (loading) return null;
 
   if (!user) {
-    const next = encodeURIComponent(loc.pathname + loc.search);
+    const next = buildNext(loc);
     return <Navigate to={`/login?next=${next}`} replace />;
   }
 
@@ -57,25 +65,35 @@ export function RedirectIfAuthed({ children, to = "/" }) {
   return children;
 }
 
-// Must have KYC approved
+// Must have KYC approved (preserve return path)
 export function RequireKycApproved({ children }) {
   const { user, loading, profile } = useAuthPlus();
+  const loc = useLocation();
+
   if (loading) return null;
-  if (!user) return <Navigate to="/login" replace />;
+
+  if (!user) {
+    return <Navigate to={`/login?next=${buildNext(loc)}`} replace />;
+  }
 
   if (!kycOk(profile?.kycStatus)) {
-    // Always push them into the KYC wizard first
-    return <Navigate to="/onboarding/kyc/start" replace />;
+    const next = buildNext(loc);
+    return <Navigate to={`/onboarding/kyc/start?next=${next}`} replace />;
   }
 
   return children;
 }
 
-// Must have one of the roles
+// Must have one of the roles (preserve return path)
 export function RequireRole({ roles = [], children }) {
   const { user, loading, profile } = useAuthPlus();
+  const loc = useLocation();
+
   if (loading) return null;
-  if (!user) return <Navigate to="/login" replace />;
+
+  if (!user) {
+    return <Navigate to={`/login?next=${buildNext(loc)}`} replace />;
+  }
 
   const role = normalizeRole(profile?.role || profile?.type);
   const isAdmin = profile?.isAdmin === true || role === "admin";
@@ -84,9 +102,10 @@ export function RequireRole({ roles = [], children }) {
   if (isAdmin) return children;
 
   if (!needed.includes(role)) {
-    // If they don’t yet have the role, send them into the right onboarding
-    if (needed.includes("host")) return <Navigate to="/onboarding/host" replace />;
-    if (needed.includes("partner")) return <Navigate to="/onboarding/partner" replace />;
+    const next = buildNext(loc);
+
+    if (needed.includes("host")) return <Navigate to={`/onboarding/host?next=${next}`} replace />;
+    if (needed.includes("partner")) return <Navigate to={`/onboarding/partner?next=${next}`} replace />;
     return <Navigate to="/" replace />;
   }
 
@@ -96,8 +115,13 @@ export function RequireRole({ roles = [], children }) {
 // Admin only
 export function RequireAdmin({ children }) {
   const { user, loading, profile } = useAuthPlus();
+  const loc = useLocation();
+
   if (loading) return null;
-  if (!user) return <Navigate to="/login" replace />;
+
+  if (!user) {
+    return <Navigate to={`/login?next=${buildNext(loc)}`} replace />;
+  }
 
   const role = normalizeRole(profile?.role || profile?.type);
   const isAdmin = profile?.isAdmin === true || role === "admin";
@@ -108,51 +132,32 @@ export function RequireAdmin({ children }) {
 /**
  * Onboarding gate
  *
- * - If NOT signed in → send to login with `next=/onboarding/<role>`
- * - If wantRole is host/partner and KYC is NOT ok → send to KYC wizard
- * - If user already has that role (or admin) → send to `alreadyHasRoleTo`
- * - Otherwise → render onboarding component children
+ * - If NOT signed in → send to login with next
+ * - If user already has that role (or admin) → send to alreadyHasRoleTo
+ * - Otherwise → render onboarding component
+ *
+ * NOTE:
+ * We allow host/partner application first (no forced KYC here).
+ * KYC gating happens at RequireKycApproved for protected routes.
  */
 export function OnboardingGate({ wantRole, alreadyHasRoleTo = "/", children }) {
   const { user, loading, profile } = useAuthPlus();
+  const loc = useLocation();
   const target = normalizeRole(wantRole);
 
   if (loading) return null;
 
-  // 1. If not logged in → go to login with next
   if (!user) {
-    const next = encodeURIComponent(`/onboarding/${target}`);
+    const next = encodeURIComponent(`/onboarding/${target}?next=${buildNext(loc)}`);
     return <Navigate to={`/login?next=${next}`} replace />;
   }
 
   const role = normalizeRole(profile?.role || profile?.type);
   const isAdmin = profile?.isAdmin === true || role === "admin";
 
-  // 2. Already has the role → redirect
   if (isAdmin || role === target) {
     return <Navigate to={alreadyHasRoleTo} replace />;
   }
 
-  // 3. IMPORTANT CHANGE:
-  // Allow host/partner application first. Do NOT force KYC yet.
-  if (target === "host" || target === "partner") {
-    return children; // show application form first
-  }
-
-  // 4. Only require KYC for actual KYC route
-  if (target === "kyc") {
-    return children;
-  }
-
   return children;
 }
-
-
-export default {
-  RequireAuth,
-  RedirectIfAuthed,
-  RequireKycApproved,
-  RequireRole,
-  RequireAdmin,
-  OnboardingGate,
-};

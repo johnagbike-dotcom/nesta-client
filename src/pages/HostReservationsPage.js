@@ -57,6 +57,10 @@ const isTodayOrPast = (d) => {
   return dt <= now;
 };
 
+function safeLower(v) {
+  return String(v || "").toLowerCase();
+}
+
 // ✅ Normalized “needs attention”
 const isAttentionStatus = (statusRaw, row = {}) => {
   const s = String(statusRaw || "").toLowerCase();
@@ -69,6 +73,7 @@ const isAttentionStatus = (statusRaw, row = {}) => {
     s === "date-change" ||
     s === "change-request" ||
     s === "paid-needs-review" ||
+    s === "payment-review" ||
     !!row?.paymentMismatch;
 
   if (flags) return true;
@@ -79,12 +84,15 @@ const isAttentionStatus = (statusRaw, row = {}) => {
     "hold-pending",
     "awaiting_payment",
     "reserved_unpaid",
+    "pending_payment",
+    "initialized",
     "change-request",
     "date-change",
     "cancel-request",
     "cancel_request",
     "refund_requested",
     "paid-needs-review",
+    "payment-review",
   ].includes(s);
 };
 
@@ -214,22 +222,20 @@ export default function HostReservationsPage({
     let cancelled = 0;
     let refunded = 0;
     let attention = 0;
-    let gross = 0;
 
     rows.forEach((r) => {
-      const s = String(r.status || "").toLowerCase();
-      gross += r.amount || 0;
+      const s = safeLower(r.status || "");
 
-      // ✅ Confirmed bucket includes paid_pending_release and released
+      // ✅ Confirmed bucket includes the new lifecycle
       if (["confirmed", "paid", "completed", "paid_pending_release", "released"].includes(s)) confirmed += 1;
-      else if (["pending", "hold", "reserved_unpaid", "awaiting_payment", "pending_payment"].includes(s)) pending += 1;
+      else if (["pending", "hold", "reserved_unpaid", "awaiting_payment", "pending_payment", "initialized"].includes(s)) pending += 1;
       else if (["cancelled", "canceled"].includes(s)) cancelled += 1;
       else if (s === "refunded") refunded += 1;
 
       if (isAttentionStatus(s, r)) attention += 1;
     });
 
-    return { confirmed, pending, cancelled, refunded, attention, gross, total: rows.length };
+    return { confirmed, pending, cancelled, refunded, attention, total: rows.length };
   }, [rows]);
 
   const openDrawerFor = (row) => {
@@ -261,10 +267,29 @@ export default function HostReservationsPage({
     [nav]
   );
 
-  // ✅ Server-confirm endpoint (instead of writing Firestore status directly)
+  /**
+   * ✅ Confirm/Stamp endpoint should ONLY be offered after payment is paid.
+   * In your model, webhooks set status=paid_pending_release, so confirm is optional “stamp”.
+   */
   const handleConfirm = async (row) => {
     if (!row?.id) return;
-    if (!window.confirm("Confirm this booking for the guest?")) return;
+
+    const s = safeLower(row.status || "");
+    const payStatus = safeLower(row.paymentStatus || "");
+    const isPaid = payStatus === "paid" || row.paid === true;
+
+    if (!isPaid) {
+      toast("Payment is not verified as paid yet. Confirmation is blocked.", "info");
+      return;
+    }
+
+    // We only allow this stamp in sensible states (prevents confusion)
+    if (!["paid_pending_release", "paid", "confirmed", "released", "completed"].includes(s)) {
+      toast("This booking is not in a confirmable state.", "info");
+      return;
+    }
+
+    if (!window.confirm("Stamp this booking as confirmed (audit stamp)?")) return;
 
     markBusy(row.id, true);
     try {
@@ -275,7 +300,6 @@ export default function HostReservationsPage({
         token = "";
       }
 
-      // If it's paid_pending_release or released, confirm is just a stamp; server handles safety
       await apiPost(`/bookings/${row.id}/confirm`, token, {});
 
       closeDrawer();
@@ -292,7 +316,6 @@ export default function HostReservationsPage({
   };
 
   // (kept) Cancel: still direct Firestore update for now.
-  // If you want, we can harden later with server-side cancellation rules/refunds.
   const handleCancel = async (row) => {
     if (!row?.id) return;
     if (!window.confirm("Cancel this booking?")) return;
@@ -346,14 +369,15 @@ export default function HostReservationsPage({
     }
   };
 
-  // ✅ NEW: check-in + release payout (server-side)
+  // ✅ check-in + release payout (server-side)
   const handleCheckinRelease = async (row) => {
     if (!row?.id) return;
 
-    const s = String(row.status || "").toLowerCase();
+    const s = safeLower(row.status || "");
+    const payStatus = safeLower(row.paymentStatus || "");
     const eligible =
       s === "paid_pending_release" &&
-      (String(row.paymentStatus || "").toLowerCase() === "paid" || row.paid === true) &&
+      (payStatus === "paid" || row.paid === true) &&
       isTodayOrPast(row.checkIn);
 
     if (!eligible) {
@@ -387,7 +411,7 @@ export default function HostReservationsPage({
     }
   };
 
-  // ✅ FIX: ChatPage expects state.partnerUid + state.listing
+  // ✅ ChatPage expects state.partnerUid + state.listing
   const handleMessage = (row) => {
     if (!row?.id) return;
 
@@ -421,7 +445,7 @@ export default function HostReservationsPage({
               {pageTitle || "Host reservations"}
             </h1>
             <p className="text-sm text-white/70 mt-1">
-              Review guest bookings, confirm or decline stays, and manage check-in & payout release from one place.
+              Review guest bookings, manage check-in & payout release, and handle exceptions from one place.
             </p>
           </div>
           <button
@@ -488,7 +512,7 @@ export default function HostReservationsPage({
         {!loading && !err && filtered.length > 0 && (
           <section className="space-y-3">
             {filtered.map((row) => {
-              const s = String(row.status || "").toLowerCase();
+              const s = safeLower(row.status || "");
               const showAttentionBadge = isAttentionStatus(s, row);
               const id = row.id;
 
@@ -545,6 +569,7 @@ export default function HostReservationsPage({
         onMessage={selected ? () => handleMessage(selected) : undefined}
         onCheckinRelease={selected ? () => handleCheckinRelease(selected) : undefined}
         busy={selected?.id ? !!busy[selected.id] : false}
+        apiBase={API_BASE}
       />
     </main>
   );
@@ -580,7 +605,7 @@ function StatusChip({ status, row }) {
 
   let classes = "border-slate-400/50 text-slate-200 bg-slate-500/10";
 
-  if (["paid_pending_release"].includes(s)) {
+  if (s === "paid_pending_release") {
     classes = "border-amber-400/60 text-amber-200 bg-amber-500/10";
   } else if (["released", "confirmed", "paid", "completed"].includes(s)) {
     classes = "border-emerald-400/60 text-emerald-200 bg-emerald-500/10";
@@ -611,6 +636,7 @@ function BookingDetailDrawer({
   onMessage,
   onCheckinRelease,
   busy,
+  apiBase,
 }) {
   const nav = useNavigate();
   const { user } = useAuth();
@@ -629,22 +655,20 @@ function BookingDetailDrawer({
 
   if (!open || !booking) return null;
 
-  const s = String(booking.status || "").toLowerCase();
-  const payStatus = String(booking.paymentStatus || "").toLowerCase();
+  const s = safeLower(booking.status || "");
+  const payStatus = safeLower(booking.paymentStatus || "");
+  const isPaid = payStatus === "paid" || booking.paid === true;
 
-  const isConfirmable = ["pending", "hold", "reserved_unpaid", "awaiting_payment", "pending_payment"].includes(s);
+  // ✅ confirm stamp only if paid
+  const canStampConfirm =
+    isPaid && ["paid_pending_release", "paid", "confirmed", "released", "completed"].includes(s);
 
-  // ✅ paid & pending release -> eligible for release on/after check-in date
+  // ✅ eligible for release on/after check-in date
   const canRelease =
-    s === "paid_pending_release" &&
-    (payStatus === "paid" || booking.paid === true) &&
-    isTodayOrPast(booking.checkIn);
+    s === "paid_pending_release" && isPaid && isTodayOrPast(booking.checkIn);
 
   const isRefundable = ["confirmed", "paid", "released", "paid_pending_release"].includes(s);
   const isCancelable = ["pending", "hold", "reserved_unpaid", "confirmed", "paid", "paid_pending_release"].includes(s);
-
-  const goReceipt = () => nav("/booking-complete", { state: { booking } });
-  const goCheckin = () => booking.id && nav(`/checkin/${booking.id}`, { state: { booking } });
 
   const datesLabel = () => {
     const ci = toDateObj(booking.checkIn);
@@ -654,7 +678,7 @@ function BookingDetailDrawer({
     return `${fmt(ci)} → ${fmt(co)}`;
   };
 
-  const amount = booking.amountN || booking.total || booking.amount || 0;
+  const amount = booking.amountN || booking.total || booking.amount || booking.amountLockedN || 0;
 
   const fetchContact = async () => {
     if (!booking?.id) return;
@@ -669,7 +693,7 @@ function BookingDetailDrawer({
         token = "";
       }
 
-      const res = await fetch(`${API_BASE}/bookings/${booking.id}/contact`, {
+      const res = await fetch(`${apiBase}/bookings/${booking.id}/contact`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -697,7 +721,6 @@ function BookingDetailDrawer({
       }
 
       setContact({ phone: payload?.phone || null, email: payload?.email || null });
-
       if (!payload?.phone && !payload?.email) setContactErr("No contact details found for this booking.");
     } catch (e) {
       console.error("fetchContact failed:", e);
@@ -735,7 +758,6 @@ function BookingDetailDrawer({
           </button>
         </div>
 
-        {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 text-sm">
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
             <div className="text-xs text-white/60">Dates</div>
@@ -757,14 +779,6 @@ function BookingDetailDrawer({
             <div className="text-xs text-white/60">Status</div>
             <div className="mt-1 inline-flex items-center gap-2">
               <StatusChip status={s} row={booking} />
-              {booking.cancelRequested ||
-              booking.cancellationRequested ||
-              s === "cancel_request" ||
-              s === "refund_requested" ? (
-                <span className="px-2 py-1 rounded-md border border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-200">
-                  Cancellation requested
-                </span>
-              ) : null}
               {s === "paid_pending_release" ? (
                 <span className="px-2 py-1 rounded-md border border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-200">
                   Paid — release after check-in
@@ -773,7 +787,6 @@ function BookingDetailDrawer({
             </div>
           </div>
 
-          {/* Contact */}
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -822,7 +835,6 @@ function BookingDetailDrawer({
           </div>
         </div>
 
-        {/* Footer actions */}
         <div className="px-4 py-3 border-t border-white/10 flex flex-wrap items-center gap-3">
           <div className="flex flex-wrap gap-2">
             <button
@@ -849,21 +861,23 @@ function BookingDetailDrawer({
                     ? "bg-white/5 border-white/10 text-white/40 cursor-not-allowed"
                     : "bg-amber-500 text-black border-amber-400 hover:brightness-110"
                 }`}
-                title="Confirm check-in and release payout"
               >
                 {busy ? "Releasing…" : "Check-in & Release payout"}
               </button>
             )}
 
-            {isConfirmable && onConfirm && (
+            {canStampConfirm && onConfirm && (
               <button
                 onClick={onConfirm}
                 disabled={busy}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
-                  busy ? "bg-emerald-600/40 text-black/60 cursor-not-allowed" : "bg-emerald-600 text-black hover:bg-emerald-500"
+                  busy
+                    ? "bg-emerald-600/40 text-black/60 cursor-not-allowed"
+                    : "bg-emerald-600 text-black hover:bg-emerald-500"
                 }`}
+                title="Audit stamp (optional). Webhook already confirms payment."
               >
-                Confirm
+                Stamp confirmed
               </button>
             )}
 
@@ -872,7 +886,9 @@ function BookingDetailDrawer({
                 onClick={onCancel}
                 disabled={busy}
                 className={`px-3 py-1.5 rounded-xl text-xs border transition ${
-                  busy ? "bg-slate-800/40 border-white/10 text-white/40 cursor-not-allowed" : "bg-slate-800 border-white/20 hover:bg-slate-700"
+                  busy
+                    ? "bg-slate-800/40 border-white/10 text-white/40 cursor-not-allowed"
+                    : "bg-slate-800 border-white/20 hover:bg-slate-700"
                 }`}
               >
                 Cancel
@@ -884,7 +900,9 @@ function BookingDetailDrawer({
                 onClick={onRefund}
                 disabled={busy}
                 className={`px-3 py-1.5 rounded-xl text-xs border transition ${
-                  busy ? "bg-red-700/30 border-red-400/30 text-red-50/60 cursor-not-allowed" : "bg-red-700/80 text-red-50 border-red-400/60 hover:bg-red-700"
+                  busy
+                    ? "bg-red-700/30 border-red-400/30 text-red-50/60 cursor-not-allowed"
+                    : "bg-red-700/80 text-red-50 border-red-400/60 hover:bg-red-700"
                 }`}
               >
                 Refund

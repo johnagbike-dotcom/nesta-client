@@ -67,7 +67,27 @@ function deriveModeFromBooking(b) {
     payStatus === "payment-review" ||
     status === "payment-review";
 
-  // ✅ If mismatch/review flags are present, treat as review (don’t show success)
+  // ❌ HARD FAIL STATES
+  if (
+    status === "cancelled" ||
+    status === "failed" ||
+    status === "payment_failed"
+  ) {
+    return {
+      mode: "failed",
+      message: "Payment was not completed. Please try again.",
+    };
+  }
+
+  // ❌ Pending but not paid (user closed gateway)
+  if (status === "pending_payment" && !paid) {
+    return {
+      mode: "failed",
+      message: "Payment was not completed. Please try again.",
+    };
+  }
+
+  // ⚠ Review / mismatch
   if (mismatch) {
     return {
       mode: "review",
@@ -75,10 +95,7 @@ function deriveModeFromBooking(b) {
     };
   }
 
-  // ✅ SUCCESS states (UX “confirmed”)
-  // - confirmed/completed: legacy
-  // - paid_pending_release/released: new settlement lifecycle
-  // - paymentStatus=paid: server truth
+  // ✅ SUCCESS STATES
   if (
     status === "confirmed" ||
     status === "completed" ||
@@ -92,13 +109,24 @@ function deriveModeFromBooking(b) {
     };
   }
 
-  // Paid is detected but not yet in a final state (still settling / webhook)
-  if (paid || b?.gateway === "success" || payStatus === "paid-pending-confirmation" || payStatus === "verified") {
-    return { mode: "confirming", message: "Payment detected ✅ Finalising your booking…" };
+  // ⏳ Paid detected but still settling
+  if (
+    paid ||
+    b?.gateway === "success" ||
+    payStatus === "paid-pending-confirmation" ||
+    payStatus === "verified"
+  ) {
+    return {
+      mode: "confirming",
+      message: "Payment detected ✅ Finalising your booking…",
+    };
   }
 
-  // Otherwise still waiting
-  return { mode: "confirming", message: "Confirming your booking…" };
+  // Default fallback
+  return {
+    mode: "confirming",
+    message: "Confirming your booking…",
+  };
 }
 
 /**
