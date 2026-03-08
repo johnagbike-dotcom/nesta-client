@@ -1,18 +1,9 @@
 // src/pages/admin/AdminPage.js
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { getAuth } from "firebase/auth";
 
-api.interceptors.request.use(async (config) => {
-  const u = getAuth().currentUser;
-  if (u) {
-    const token = await u.getIdToken();
-    config.headers = config.headers || {};
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
 /* ------------------------------ axios base ------------------------------ */
 const api = axios.create({
   baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
@@ -20,15 +11,35 @@ const api = axios.create({
   timeout: 15000,
 });
 
+// ✅ attach token AFTER api is created
+api.interceptors.request.use(async (config) => {
+  try {
+    const u = getAuth().currentUser;
+    if (u) {
+      const token = await u.getIdToken();
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  } catch {
+    // ignore
+  }
+  return config;
+});
+
 /* ------------------------------ small UI bits ------------------------------ */
 function Tile({ title, subtitle, children, badge }) {
   return (
     <div
       className="rounded-2xl border border-white/10 bg-white/5 p-4"
-      style={{ minHeight: 152, display: "flex", flexDirection: "column", justifyContent: "space-between" }}
+      style={{
+        minHeight: 152,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "space-between",
+      }}
     >
       <div>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <h3 className="font-extrabold text-white text-lg">{title}</h3>
           {badge ? (
             <span
@@ -46,6 +57,7 @@ function Tile({ title, subtitle, children, badge }) {
         </div>
         {subtitle ? <p className="text-white/70 text-[13px] mt-1">{subtitle}</p> : null}
       </div>
+
       <div className="pt-3">{children}</div>
     </div>
   );
@@ -75,17 +87,13 @@ export default function AdminPage() {
 
   useEffect(() => {
     let alive = true;
+
     (async () => {
       try {
         setLoading(true);
+
         const res = await api.get("/admin/overview");
-        // Expected response shape (example):
-        // {
-        //   users, listings,
-        //   transactions: { total, confirmed, refunded, cancelled },
-        //   kycPending,
-        //   featureRequests: { total, pending, planned, shipped, rejected }
-        // }
+
         if (alive && res?.data) {
           setStats({
             users: Number(res.data.users || 0),
@@ -108,11 +116,12 @@ export default function AdminPage() {
         }
       } catch (e) {
         console.error("Overview load failed:", e);
-        // Keep zeros; page still renders fine
+        // keep zero state
       } finally {
         if (alive) setLoading(false);
       }
     })();
+
     return () => {
       alive = false;
     };
@@ -135,6 +144,7 @@ export default function AdminPage() {
         >
           ← Back
         </button>
+
         <button
           className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
           onClick={() => nav("/")}
@@ -148,7 +158,6 @@ export default function AdminPage() {
         <p className="text-white/70 text-[13px]">Overview & quick links</p>
       </div>
 
-      {/* Top metrics row */}
       <div className="mt-4 grid gap-3 grid-cols-1 md:grid-cols-4">
         <StatCard label="Users" value={stats.users.toLocaleString()} />
         <StatCard label="Listings" value={stats.listings.toLocaleString()} />
@@ -156,63 +165,67 @@ export default function AdminPage() {
         <StatCard label="KYC pending" value={stats.kycPending.toLocaleString()} />
       </div>
 
-      {/* Tiles grid */}
       <div className="mt-5 grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-        <Tile title="Manage Users" subtitle="Assign roles (host, partner), disable users, view directory.">
-          <Link to="/admin/manage-users" className="text-yellow-300 font-bold">Open →</Link>
+        <Tile title="Manage Users" subtitle="Assign roles, disable users, and view directory.">
+          <Link to="/admin/manage-users" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
 
-        <Tile title="Manage Listings" subtitle="Approve/disable, toggle featured, and review inventory quality.">
-          <Link to="/admin/manage-listings" className="text-yellow-300 font-bold">Open →</Link>
+        <Tile title="Manage Listings" subtitle="Approve, disable, feature, and review inventory quality.">
+          <Link to="/admin/listings" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
 
-        <Tile title="Transactions" subtitle="Confirm, cancel, or refund bookings; export if needed." badge={txBadge}>
-          <Link to="/admin/transactions" className="text-yellow-300 font-bold">Open →</Link>
+        <Tile
+          title="Transactions"
+          subtitle="Confirm, cancel, or refund bookings; export if needed."
+          badge={txBadge}
+        >
+          <Link to="/admin/transactions" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
 
         <Tile title="KYC Reviews" subtitle="Verify identities; approve or reject with notes.">
-          <Link to="/admin/kyc" className="text-yellow-300 font-bold">Open →</Link>
+          <Link to="/admin/kyc" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
 
         <Tile title="Bookings Admin" subtitle="Raw booking records and CSV export.">
-          <Link to="/admin/bookings" className="text-yellow-300 font-bold">Open →</Link>
+          <Link to="/admin/bookings-admin" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
 
         <Tile title="Payouts" subtitle="Track partner/host payouts and settlement status.">
-          <Link to="/admin/payouts" className="text-yellow-300 font-bold">Open →</Link>
+          <Link to="/admin/payouts" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
 
         <Tile title="Reports & Exports" subtitle="CSV exports, summaries, and audit trails.">
-          <Link to="/admin/reports" className="text-yellow-300 font-bold">Open →</Link>
+          <Link to="/admin/reports" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
 
-        <Tile title="Settings" subtitle="Brand toggles, payment keys, maintenance mode.">
-          <Link to="/admin/settings" className="text-yellow-300 font-bold">Open →</Link>
+        <Tile title="Settings" subtitle="Brand toggles, payment keys, and maintenance mode.">
+          <Link to="/admin/settings" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
-        {/* Feature Requests */}
-<div className="admin-card">
-  <div className="admin-card-icon">
-    💡
-  </div>
-  <div className="admin-card-body">
-    <h3>Feature Requests</h3>
-    <p>Track and prioritize new product ideas from users.</p>
-    <p style={{ marginTop: "0.5rem", color: "#FFD74A", fontWeight: "700" }}>
-      {stats?.featureRequests?.pending || 0} pending
-    </p>
-    <Link to="/admin/feature-requests" className="admin-card-link">
-      Open →
-    </Link>
-  </div>
-</div>
 
-        {/* ⭐ NEW: Feature Requests tile */}
         <Tile
           title="Feature Requests"
-          subtitle="Track and prioritize product ideas."
+          subtitle="Track and prioritise product ideas."
           badge={`${stats?.featureRequests?.pending || 0} pending`}
         >
-          <Link to="/admin/feature-requests" className="text-yellow-300 font-bold">Open →</Link>
+          <Link to="/admin/feature-requests" className="text-yellow-300 font-bold">
+            Open →
+          </Link>
         </Tile>
       </div>
 

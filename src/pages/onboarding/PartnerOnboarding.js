@@ -1,30 +1,87 @@
 // src/pages/onboarding/PartnerOnboarding.js
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { getAuth } from "firebase/auth";
 import { useAuth } from "../../auth/AuthContext";
+import useUserProfile from "../../hooks/useUserProfile";
 
-const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(
-  /\/$/,
-  ""
-);
+/* ---------------- API base ---------------- */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
+async function getBearerToken() {
+  try {
+    const auth = getAuth();
+    return auth.currentUser ? await auth.currentUser.getIdToken() : "";
+  } catch {
+    return "";
+  }
+}
 
 const api = {
   get: async (p) => {
-    const r = await fetch(`${API_BASE}${p}`, { credentials: "include" });
-    if (!r.ok) throw new Error(await r.text());
+    const token = await getBearerToken();
+    const r = await fetch(`${API_BASE}${p}`, {
+      method: "GET",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!r.ok) {
+      throw new Error((await r.text()) || "Request failed");
+    }
+
     return r.json();
   },
+
   post: async (p, body) => {
+    const token = await getBearerToken();
     const r = await fetch(`${API_BASE}${p}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify(body || {}),
     });
-    if (!r.ok) throw new Error(await r.text());
+
+    if (!r.ok) {
+      throw new Error((await r.text()) || "Request failed");
+    }
+
     return r.json();
   },
 };
+
+function normalizeRole(raw) {
+  const r = String(raw || "").toLowerCase().trim();
+  if (r === "verified_partner") return "partner";
+  if (r === "verified_host") return "host";
+  if (!r) return "guest";
+  return r;
+}
+
+function normalizeKycStatus(profile = {}) {
+  return String(
+    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || ""
+  )
+    .toLowerCase()
+    .trim();
+}
+
+function prettyStatus(v) {
+  const s = String(v || "none").toLowerCase().trim();
+  if (!s) return "None";
+  if (s === "under_review") return "Under review";
+  if (s === "approved") return "Approved";
+  if (s === "rejected") return "Rejected";
+  if (s === "pending") return "Pending";
+  return s.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
 
 function Pill({ tone = "slate", children }) {
   const map = {
@@ -33,7 +90,9 @@ function Pill({ tone = "slate", children }) {
     red: { bg: "rgba(239,68,68,.15)", bd: "rgba(239,68,68,.35)", fg: "#ffd3d3" },
     slate: { bg: "rgba(255,255,255,.08)", bd: "rgba(255,255,255,.18)", fg: "#e6ebf4" },
   };
+
   const c = map[tone] || map.slate;
+
   return (
     <span
       style={{
@@ -55,8 +114,24 @@ function Pill({ tone = "slate", children }) {
 }
 
 export default function PartnerOnboarding() {
-  const { user, profile } = useAuth();
-  const uid = user?.uid || profile?.uid;
+  const nav = useNavigate();
+  const { user, profile: authProfile } = useAuth();
+  const { profile: liveProfile } = useUserProfile();
+
+  const profile = liveProfile || authProfile || {};
+  const uid = user?.uid || profile?.uid || null;
+
+  const role = useMemo(
+    () => normalizeRole(profile?.role || profile?.type),
+    [profile?.role, profile?.type]
+  );
+
+  const kycStatus = useMemo(() => normalizeKycStatus(profile), [profile]);
+
+  const isKycApproved =
+    kycStatus === "approved" ||
+    kycStatus === "verified" ||
+    kycStatus === "complete";
 
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -69,15 +144,12 @@ export default function PartnerOnboarding() {
     note: "",
   });
 
-  // derive KYC status from profile (same idea as host onboarding)
-  const kycStatus = String(
-    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || ""
-  ).toLowerCase();
-
-  const isKycApproved =
-    kycStatus === "approved" ||
-    kycStatus === "verified" ||
-    kycStatus === "complete";
+  useEffect(() => {
+    setForm((f) => ({
+      ...f,
+      email: user?.email || profile?.email || f.email || "",
+    }));
+  }, [user?.email, profile?.email]);
 
   // remember intent so KycGate knows where to send them after approval
   useEffect(() => {
@@ -85,12 +157,21 @@ export default function PartnerOnboarding() {
     try {
       localStorage.setItem("nesta_kyc_intent", "partner");
     } catch {
-      // ignore if localStorage unavailable
+      // ignore
     }
   }, [uid]);
 
+  // if already approved partner + kyc approved, send to dashboard
+  useEffect(() => {
+    const s = String(status?.status || "").toLowerCase().trim();
+    if (!user) return;
+    if (role === "partner" && isKycApproved && s === "approved") {
+      nav("/partner", { replace: true });
+    }
+  }, [user, role, isKycApproved, status?.status, nav]);
+
   const statusTone = useMemo(() => {
-    const s = String(status?.status || "none").toLowerCase();
+    const s = String(status?.status || "none").toLowerCase().trim();
     if (s === "approved") return "green";
     if (s === "under_review" || s === "pending") return "amber";
     if (s === "rejected") return "red";
@@ -98,18 +179,25 @@ export default function PartnerOnboarding() {
   }, [status]);
 
   const load = useCallback(async () => {
-    if (!uid) return;
+    if (!uid) {
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       setErr("");
+
       const res = await api.get(`/onboarding/partner/status?userId=${encodeURIComponent(uid)}`);
-      const data = res?.data || null;
+      const data = res?.data || res || null;
+
       setStatus(data);
-      if (data?.portfolioUrl) {
+
+      if (data?.portfolioUrl || data?.note) {
         setForm((f) => ({
           ...f,
-          portfolioUrl: data.portfolioUrl,
-          note: data.note || "",
+          portfolioUrl: data?.portfolioUrl || "",
+          note: data?.note || "",
         }));
       }
     } catch (e) {
@@ -126,6 +214,7 @@ export default function PartnerOnboarding() {
 
   async function submit(e) {
     e?.preventDefault?.();
+
     if (!uid) return;
 
     if (!isKycApproved) {
@@ -135,13 +224,19 @@ export default function PartnerOnboarding() {
 
     try {
       setSubmitting(true);
+      setErr("");
+
       await api.post("/onboarding/partner/apply", {
         userId: uid,
-        ...form,
+        email: form.email,
+        portfolioUrl: form.portfolioUrl,
+        note: form.note,
       });
+
       await load();
     } catch (e) {
       console.error(e);
+      setErr("Could not submit application. Please try again.");
       alert("Could not submit application. Please try again.");
     } finally {
       setSubmitting(false);
@@ -159,12 +254,13 @@ export default function PartnerOnboarding() {
     );
   }
 
-  const s = String(status?.status || "none").toLowerCase();
+  const s = String(status?.status || "none").toLowerCase().trim();
   const formDisabled = !isKycApproved || s === "under_review" || s === "approved";
 
   return (
     <div className="container" style={{ padding: 24, color: "#e6ebf4" }}>
       <h1 style={{ fontWeight: 900, marginBottom: 6 }}>Verified Partner Onboarding</h1>
+
       <p style={{ color: "#b9c2d3" }}>
         Apply to become a Nesta Verified Partner. KYC must be approved before we can review your
         portfolio.
@@ -198,9 +294,15 @@ export default function PartnerOnboarding() {
           background: "rgba(255,255,255,.04)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div className="font-bold">Status:</div>
-          <Pill tone={statusTone}>{status?.status || "none"}</Pill>
+          <Pill tone={statusTone}>{prettyStatus(status?.status || "none")}</Pill>
+          <Pill tone={isKycApproved ? "green" : "amber"}>
+            KYC: {kycStatus || "not started"}
+          </Pill>
+          <Pill tone={role === "partner" ? "green" : "slate"}>
+            Account: {role === "partner" ? "Partner" : role === "host" ? "Host" : "Guest"}
+          </Pill>
         </div>
 
         {s === "approved" && (
@@ -219,6 +321,12 @@ export default function PartnerOnboarding() {
           </div>
         )}
 
+        {s === "rejected" && (
+          <div style={{ marginTop: 12, color: "#c9d2e3" }}>
+            Your previous application was not approved. You may update your portfolio details and re-apply.
+          </div>
+        )}
+
         <form
           onSubmit={submit}
           style={{ marginTop: 16, display: "grid", gap: 12, maxWidth: 680 }}
@@ -230,6 +338,7 @@ export default function PartnerOnboarding() {
             disabled
             onChange={(e) => setForm({ ...form, email: e.target.value })}
           />
+
           <input
             className="pill"
             placeholder="Portfolio URL (bulk portfolio / drive folder / website)"
@@ -237,6 +346,7 @@ export default function PartnerOnboarding() {
             disabled={formDisabled}
             onChange={(e) => setForm({ ...form, portfolioUrl: e.target.value })}
           />
+
           <textarea
             className="pill"
             placeholder="Notes (regions, inventory size, ops readiness, etc.)"
@@ -246,6 +356,7 @@ export default function PartnerOnboarding() {
             disabled={formDisabled}
             onChange={(e) => setForm({ ...form, note: e.target.value })}
           />
+
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button
               className="btn-gold"
@@ -258,6 +369,17 @@ export default function PartnerOnboarding() {
                 ? "Re-apply as Partner"
                 : "Submit Partner Application"}
             </button>
+
+            {role === "partner" && s === "approved" ? (
+              <button
+                type="button"
+                className="btn btn-gold"
+                onClick={() => nav("/partner")}
+              >
+                Go to partner dashboard
+              </button>
+            ) : null}
+
             <Link
               className="btn btn-gold"
               to="/"

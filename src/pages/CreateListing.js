@@ -9,14 +9,14 @@ import ImageUploader from "../components/ImageUploader";
 import ListingMap from "../components/ListingMap";
 
 /**
- * CreateListing (Luxury Standard)
- * - Writes listing fields in a compatible shape for all pages:
- *   images[] + imageUrls[] + photos[] + primaryImageUrl
- *   pricePerNight + nightlyRate
- * - Featured request creates a Firestore featureRequests doc with:
- *   status=pending, planId, planLabel, price, durationDays
- * - Admin later approves -> awaiting-payment and locks terms.
- */
+* CreateListing (Luxury Standard)
+* - Writes listing fields in a compatible shape for all pages:
+*   images[] + imageUrls[] + photos[] + primaryImageUrl
+*   pricePerNight + nightlyRate
+* - Featured request creates a Firestore featureRequests doc with:
+*   status=pending, planId, planLabel, price, durationDays
+* - Admin later approves -> awaiting-payment and locks terms.
+*/
 
 const TYPES = ["Apartment", "Bungalow", "Studio", "Loft", "Villa", "Penthouse", "Hotel", "Other"];
 const STATUS = ["active", "inactive", "review"];
@@ -33,7 +33,6 @@ const AMENITIES = [
   "Gym",
 ];
 
-// Default plan for Create (simple + consistent)
 const DEFAULT_SPOTLIGHT_PLAN = {
   planId: "spotlight",
   planLabel: "Spotlight · 24 hours",
@@ -41,14 +40,11 @@ const DEFAULT_SPOTLIGHT_PLAN = {
   durationDays: 1,
 };
 
-// Redact emails + phone numbers from guest-facing copy
 function redactContactText(raw) {
   if (!raw) return "";
   let s = String(raw);
-
   s = s.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email removed]");
   s = s.replace(/\+?\d[\d\s\-().]{6,}\d/g, "[number removed]");
-
   return s.trim();
 }
 
@@ -59,20 +55,18 @@ function slugify(s) {
     .replace(/(^-|-$)+/g, "");
 }
 
-/**
- * ✅ Parses user input like:
- * "20000" -> 20000
- * "20,000" -> 20000
- * " ₦ 20 000 " -> 20000
- * "" -> 0
- */
 function parseNaira(input) {
   const raw = String(input ?? "").trim();
   if (!raw) return 0;
-  // keep digits + decimal point only
   const cleaned = raw.replace(/[^\d.]/g, "");
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : 0;
+}
+
+function toNullableNumber(v) {
+  if (v === "" || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 function Section({ title, subtitle, children }) {
@@ -183,6 +177,8 @@ export default function CreateListing() {
     description: "",
     bedrooms: "",
     bathrooms: "",
+    beds: "",
+    maxGuests: "",
     size: "",
     lat: null,
     lng: null,
@@ -190,15 +186,13 @@ export default function CreateListing() {
 
   const [amenities, setAmenities] = useState([]);
   const [houseRules, setHouseRules] = useState("");
-  const [images, setImages] = useState([]); // URLs
+  const [images, setImages] = useState([]);
   const [requestFeatured, setRequestFeatured] = useState(false);
-
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const roleRaw = String(profile?.role || "").toLowerCase();
   const isPartner = ["partner", "verified_partner", "partner_verified"].includes(roleRaw);
-
   const priceFieldRef = useRef(null);
 
   function setField(k, v) {
@@ -211,18 +205,14 @@ export default function CreateListing() {
 
   const parsedPrice = useMemo(() => parseNaira(form.pricePerNight), [form.pricePerNight]);
 
-  // ✅ granular checks (for debugging why Publish is grey)
   const checks = useMemo(() => {
     const titleOk = form.title.trim().length >= 5;
     const cityOk = form.city.trim().length >= 2;
     const areaOk = form.area.trim().length >= 2;
-
-    // ✅ robust price check (works for 20,000)
     const priceOk = parsedPrice > 0;
-
-    // ✅ robust photos check (must be non-empty URL strings)
     const photosOk =
-      Array.isArray(images) && images.filter((u) => typeof u === "string" && u.trim().length > 10).length > 0;
+      Array.isArray(images) &&
+      images.filter((u) => typeof u === "string" && u.trim().length > 10).length > 0;
 
     return { titleOk, cityOk, areaOk, priceOk, photosOk };
   }, [form, images, parsedPrice]);
@@ -235,11 +225,13 @@ export default function CreateListing() {
     const bag = [cleanTitle, form.type, form.city, form.area, ...(amenities || [])]
       .join(" ")
       .toLowerCase();
+
     const k = new Set();
     bag
       .split(/[\s,./-]+/g)
       .filter(Boolean)
       .forEach((w) => k.add(w));
+
     return Array.from(k);
   }
 
@@ -250,6 +242,7 @@ export default function CreateListing() {
       alert("Please log in to create a listing.");
       return;
     }
+
     if (!canSubmit) {
       setErr("Please complete all required fields and add at least one photo.");
       priceFieldRef.current?.focus();
@@ -261,17 +254,13 @@ export default function CreateListing() {
 
     try {
       const uid = user.uid;
-
       const cleanTitle = redactContactText(form.title.trim());
       const cleanDesc = redactContactText(form.description);
       const cleanRules = redactContactText(houseRules);
-
-      const price = parsedPrice; // ✅ use parsed numeric price
+      const price = parsedPrice;
       const nowSlug = slugify(`${cleanTitle}-${form.city}-${form.area}`);
-
       const primaryImageUrl = images?.[0] || null;
 
-      // Ownership fields (host + partner support)
       const baseOwner = {
         ownerUid: uid,
         ownerId: uid,
@@ -302,10 +291,12 @@ export default function CreateListing() {
         nightlyRate: price,
 
         // Capacity / details
-        bedrooms: form.bedrooms ? Number(form.bedrooms) : null,
-        bathrooms: form.bathrooms ? Number(form.bathrooms) : null,
-        maxGuests: null,
+        bedrooms: toNullableNumber(form.bedrooms),
+        bathrooms: toNullableNumber(form.bathrooms),
+        beds: toNullableNumber(form.beds),
+        maxGuests: toNullableNumber(form.maxGuests),
         size: form.size ? String(form.size) : "",
+
         status: form.status,
 
         // Location
@@ -342,30 +333,23 @@ export default function CreateListing() {
 
       const docRef = await addDoc(collection(db, "listings"), payload);
 
-      // Featured request (simple default plan)
       if (requestFeatured) {
         try {
           await addDoc(collection(db, "featureRequests"), {
             kind: "listing-feature",
             type: "featured-carousel",
-
             listingId: docRef.id,
             listingTitle: payload.title,
-
             hostUid: uid,
             hostEmail: user.email || profile?.email || "",
             requesterRole: profile?.role || "",
-
             status: "pending",
             archived: false,
-
             planId: DEFAULT_SPOTLIGHT_PLAN.planId,
             planLabel: DEFAULT_SPOTLIGHT_PLAN.planLabel,
             price: DEFAULT_SPOTLIGHT_PLAN.price,
             durationDays: DEFAULT_SPOTLIGHT_PLAN.durationDays,
-
             primaryImageUrl,
-
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
@@ -407,9 +391,9 @@ export default function CreateListing() {
         </div>
       ) : null}
 
-      {/* ✅ Publish checklist (THIS shows why publish button is grey) */}
       <div className="mt-4 max-w-5xl rounded-2xl border border-white/10 bg-white/5 p-4">
         <div className="text-sm font-semibold text-white">Publish checklist</div>
+
         <div className="mt-3 grid gap-2">
           <CheckRow ok={checks.titleOk} label="Title at least 5 characters" />
           <CheckRow ok={checks.cityOk} label="City at least 2 characters" />
@@ -423,8 +407,8 @@ export default function CreateListing() {
 
         {!checks.priceOk ? (
           <div className="mt-3 text-xs text-white/60">
-            Tip: enter price like <span className="text-white/80 font-semibold">20000</span> (commas like{" "}
-            <span className="text-white/80 font-semibold">20,000</span> are allowed now, but avoid currency symbols).
+            Tip: enter price like <span className="text-white/80 font-semibold">20000</span>{" "}
+            (commas like <span className="text-white/80 font-semibold">20,000</span> are allowed now, but avoid currency symbols).
           </div>
         ) : null}
 
@@ -457,11 +441,19 @@ export default function CreateListing() {
             </Field>
 
             <Field label="City">
-              <TextInput value={form.city} onChange={(e) => setField("city", e.target.value)} maxLength={40} />
+              <TextInput
+                value={form.city}
+                onChange={(e) => setField("city", e.target.value)}
+                maxLength={40}
+              />
             </Field>
 
             <Field label="Area / Neighbourhood">
-              <TextInput value={form.area} onChange={(e) => setField("area", e.target.value)} maxLength={50} />
+              <TextInput
+                value={form.area}
+                onChange={(e) => setField("area", e.target.value)}
+                maxLength={50}
+              />
             </Field>
 
             <Field label="Price per night (₦)" hint="Enter numbers only e.g. 20000 (commas ok too)">
@@ -486,7 +478,7 @@ export default function CreateListing() {
             </Field>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <Field label="Bedrooms">
               <TextInput
                 inputMode="numeric"
@@ -496,6 +488,7 @@ export default function CreateListing() {
                 onChange={(e) => setField("bedrooms", e.target.value)}
               />
             </Field>
+
             <Field label="Bathrooms">
               <TextInput
                 inputMode="numeric"
@@ -505,8 +498,35 @@ export default function CreateListing() {
                 onChange={(e) => setField("bathrooms", e.target.value)}
               />
             </Field>
+
+            <Field label="Beds">
+              <TextInput
+                inputMode="numeric"
+                type="number"
+                min={0}
+                value={form.beds}
+                onChange={(e) => setField("beds", e.target.value)}
+              />
+            </Field>
+
+            <Field label="Max Guests">
+              <TextInput
+                inputMode="numeric"
+                type="number"
+                min={1}
+                value={form.maxGuests}
+                onChange={(e) => setField("maxGuests", e.target.value)}
+              />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Size (m²)">
-              <TextInput placeholder="e.g. 85" value={form.size} onChange={(e) => setField("size", e.target.value)} />
+              <TextInput
+                placeholder="e.g. 85"
+                value={form.size}
+                onChange={(e) => setField("size", e.target.value)}
+              />
             </Field>
           </div>
 
@@ -537,6 +557,7 @@ export default function CreateListing() {
                     placeholder="e.g. 6.435"
                   />
                 </Field>
+
                 <Field label="Longitude" hint="Click the map or paste manually.">
                   <TextInput
                     className="text-xs"
@@ -546,6 +567,7 @@ export default function CreateListing() {
                   />
                 </Field>
               </div>
+
               <p className="mt-2 text-[11px] text-white/55">
                 Exact street details are only shown to confirmed guests. Use the pin to mark a nearby safe point.
               </p>

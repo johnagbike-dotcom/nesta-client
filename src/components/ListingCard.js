@@ -23,6 +23,55 @@ function getRatingData(l) {
   return { avg, count };
 }
 
+function pickImage(listing) {
+  return (
+    listing?.primaryImageUrl ||
+    (Array.isArray(listing?.images) && listing.images[0]) ||
+    (Array.isArray(listing?.imageUrls) && listing.imageUrls[0]) ||
+    (Array.isArray(listing?.photos) && listing.photos[0]) ||
+    listing?.coverImage ||
+    listing?.coverUrl ||
+    listing?.imageUrl ||
+    listing?.image ||
+    "/hero.jpg"
+  );
+}
+
+function pickPrice(listing) {
+  const value =
+    listing?.pricePerNight ??
+    listing?.nightlyRate ??
+    listing?.priceN ??
+    listing?.price ??
+    0;
+
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function pickGuests(listing) {
+  const candidates = [
+    listing?.maxGuests,
+    listing?.guests,
+    listing?.guestCapacity,
+    listing?.capacity,
+    listing?.sleeps,
+  ];
+
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return null;
+}
+
+function trimText(text, max = 120) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  if (s.length <= max) return s;
+  return `${s.slice(0, max).trim()}…`;
+}
+
 function Stars({ value = 0, count = 0 }) {
   const v = Math.max(0, Math.min(5, Number(value || 0)));
   const full = Math.floor(v);
@@ -37,7 +86,15 @@ function Stars({ value = 0, count = 0 }) {
   if (!v && !count) return null;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginTop: 10,
+        flexWrap: "wrap",
+      }}
+    >
       <span
         style={{
           fontSize: 12,
@@ -46,15 +103,15 @@ function Stars({ value = 0, count = 0 }) {
           border: "1px solid rgba(255,255,255,.12)",
           background: "rgba(0,0,0,.25)",
           color: "rgba(255,255,255,.9)",
+          fontWeight: 700,
         }}
       >
         <span style={{ color: "#fbbf24" }}>{stars.join("")}</span>{" "}
-        <span style={{ opacity: 0.9 }}>{v.toFixed(1)}</span
-        >
+        <span style={{ opacity: 0.95 }}>{v.toFixed(1)}</span>
       </span>
 
       {count > 0 ? (
-        <span style={{ fontSize: 12, opacity: 0.7 }}>
+        <span style={{ fontSize: 12, opacity: 0.72 }}>
           {count} review{count === 1 ? "" : "s"}
         </span>
       ) : (
@@ -70,8 +127,6 @@ export default function ListingCard({ listing }) {
     title,
     area,
     city,
-    priceN,
-    image,
     description,
     bedrooms,
     bathrooms,
@@ -81,18 +136,21 @@ export default function ListingCard({ listing }) {
     userId,
   } = listing;
 
+  const image = pickImage(listing);
+  const price = pickPrice(listing);
+  const guests = pickGuests(listing);
+
   const { user } = useAuth();
   const { profile, loading } = useUserProfile(user?.uid);
 
-  // Normalize role safely
   const roleRaw =
     profile?.role || profile?.accountType || profile?.userType || profile?.kind || "";
   const role = String(roleRaw).toLowerCase();
 
-  // While loading: treat as host/partner (so we DO NOT show guest actions)
-  const isHostOrPartner = loading || role === "host" || role === "partner" || role === "admin";
+  // While loading: treat as host/partner/admin so guest actions do not flash
+  const isHostOrPartner =
+    loading || role === "host" || role === "partner" || role === "admin";
 
-  // Detect if current user owns this listing
   const uid = user?.uid;
   const isOwner =
     !!uid &&
@@ -101,65 +159,162 @@ export default function ListingCard({ listing }) {
       .map(String)
       .includes(String(uid));
 
-  // Rating badge for cards
   const { avg, count } = useMemo(() => getRatingData(listing), [listing]);
+
+  const metaBits = [
+    Number.isFinite(Number(bedrooms)) && Number(bedrooms) > 0
+      ? `🛏 ${Number(bedrooms)}`
+      : null,
+    Number.isFinite(Number(bathrooms)) && Number(bathrooms) > 0
+      ? `🛁 ${Number(bathrooms)}`
+      : null,
+    guests ? `👤 ${guests}` : null,
+  ].filter(Boolean);
 
   return (
     <div
       className="listing-card"
       style={{
-        background: "#18181b",
-        border: "1px solid #2a2a2e",
-        borderRadius: 14,
+        background:
+          "linear-gradient(180deg, rgba(24,24,27,0.98), rgba(16,16,19,0.98))",
+        border: "1px solid rgba(255,255,255,.08)",
+        borderRadius: 18,
         overflow: "hidden",
-        boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
+        boxShadow: "0 14px 36px rgba(0,0,0,0.35)",
+        transition: "transform .18s ease, box-shadow .18s ease, border-color .18s ease",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.transform = "translateY(-4px)";
+        e.currentTarget.style.boxShadow = "0 22px 46px rgba(0,0,0,0.42)";
+        e.currentTarget.style.borderColor = "rgba(255,255,255,.14)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.transform = "translateY(0)";
+        e.currentTarget.style.boxShadow = "0 14px 36px rgba(0,0,0,0.35)";
+        e.currentTarget.style.borderColor = "rgba(255,255,255,.08)";
       }}
     >
-      <div style={{ aspectRatio: "16/9", overflow: "hidden" }}>
+      <div
+        style={{
+          aspectRatio: "16 / 10",
+          overflow: "hidden",
+          background: "rgba(255,255,255,.03)",
+          position: "relative",
+        }}
+      >
         <img
           src={image}
-          alt={title}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          alt={title || "Listing"}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            display: "block",
+          }}
           loading="lazy"
+          onError={(e) => {
+            e.currentTarget.src = "/hero.jpg";
+          }}
+        />
+
+        <div
+          style={{
+            position: "absolute",
+            inset: "auto 0 0 0",
+            height: 70,
+            background: "linear-gradient(to top, rgba(0,0,0,.48), rgba(0,0,0,0))",
+            pointerEvents: "none",
+          }}
         />
       </div>
 
       <div style={{ padding: 16 }}>
-        <h3 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>{title}</h3>
-        <div style={{ opacity: 0.85, marginTop: 4 }}>
-          {area}, {city}
-        </div>
-
-        {/* ✅ stars on listing cards */}
-        <Stars value={avg} count={count} />
-
-        <div style={{ display: "flex", gap: 10, marginTop: 10, opacity: 0.9 }}>
-          <span>🛏 {bedrooms}</span>
-          <span>🛁 {bathrooms}</span>
-        </div>
+        <h3
+          style={{
+            margin: 0,
+            fontSize: 20,
+            fontWeight: 800,
+            color: "#f8fafc",
+            lineHeight: 1.2,
+          }}
+        >
+          {title || "Luxury stay"}
+        </h3>
 
         <div
           style={{
-            marginTop: 10,
-            fontSize: 28,
-            fontWeight: 800,
-            letterSpacing: 0.3,
+            opacity: 0.8,
+            marginTop: 6,
+            fontSize: 14,
+            color: "rgba(255,255,255,.82)",
           }}
         >
-          ₦{Naira.format(priceN)} <span style={{ fontSize: 14 }}>/ night</span>
+          {area || "—"}, {city || "Nigeria"}
         </div>
 
-        <p style={{ marginTop: 8, opacity: 0.9, lineHeight: 1.5 }}>
-          {description}
+        <Stars value={avg} count={count} />
+
+        {metaBits.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              marginTop: 10,
+              flexWrap: "wrap",
+              color: "rgba(255,255,255,.9)",
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            {metaBits.map((bit) => (
+              <span
+                key={bit}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  background: "rgba(255,255,255,.04)",
+                  border: "1px solid rgba(255,255,255,.08)",
+                }}
+              >
+                {bit}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div
+          style={{
+            marginTop: 14,
+            fontSize: 28,
+            fontWeight: 800,
+            letterSpacing: 0.2,
+            color: "#fde68a",
+          }}
+        >
+          ₦{Naira.format(price)}{" "}
+          <span style={{ fontSize: 14, color: "rgba(255,255,255,.75)", fontWeight: 700 }}>
+            / night
+          </span>
+        </div>
+
+        <p
+          style={{
+            marginTop: 10,
+            opacity: 0.86,
+            lineHeight: 1.6,
+            color: "rgba(255,255,255,.82)",
+            minHeight: 52,
+          }}
+        >
+          {trimText(description, 115) || "Premium stay curated for comfort, convenience and a smooth Nesta experience."}
         </p>
 
-        {/* HOSTS / PARTNERS: View + Edit ONLY */}
         {isHostOrPartner ? (
           <div
             style={{
               display: "flex",
               gap: 10,
-              marginTop: 12,
+              marginTop: 14,
               flexWrap: "wrap",
             }}
           >
@@ -196,14 +351,15 @@ export default function ListingCard({ listing }) {
             )}
           </div>
         ) : (
-          // GUESTS ONLY: Reserve (chat removed)
-          <CheckoutButtons
-  listingId={id}
-  amountN={priceN}
-  title={title}
-  city={city}
-  area={area}
-/>
+          <div style={{ marginTop: 14 }}>
+            <CheckoutButtons
+              listingId={id}
+              amountN={price}
+              title={title}
+              city={city}
+              area={area}
+            />
+          </div>
         )}
       </div>
     </div>

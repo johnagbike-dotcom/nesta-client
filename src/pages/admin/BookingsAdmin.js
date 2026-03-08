@@ -20,8 +20,11 @@ import {
 import { getAuth } from "firebase/auth";
 
 /* axios base */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   timeout: 20000,
   withCredentials: false,
 });
@@ -38,6 +41,7 @@ api.interceptors.request.use(async (config) => {
 
 /* helpers */
 const safeLower = (v) => String(v || "").trim().toLowerCase();
+const safeStr = (v) => String(v || "").trim();
 
 const money = (n) => {
   const num = Number(n ?? 0);
@@ -56,9 +60,31 @@ function errMsg(e) {
   return status ? `${status}: ${txt}` : txt;
 }
 
+function safeDate(v) {
+  if (!v) return null;
+
+  if (typeof v?.toDate === "function") {
+    try {
+      return v.toDate();
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof v?.seconds === "number") {
+    const ms = v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 /**
  * Stronger status normalization:
- * Returns: pending | confirmed | failed | cancelled | refunded | paid | cancel_req | date_change
+ * Returns:
+ * pending | confirmed | failed | cancelled | refunded | paid | cancel_req | date_change
  */
 function normalizeStatus(rawStatus, booking) {
   const b = booking || {};
@@ -68,7 +94,14 @@ function normalizeStatus(rawStatus, booking) {
     b?.cancellationRequested === true ||
     b?.cancelRequested === true ||
     b?.cancel_request === true ||
-    ["cancel_req", "cancel-requested", "cancel_requested", "cancel request", "cancel_request", "cancel-request"].includes(s);
+    [
+      "cancel_req",
+      "cancel-requested",
+      "cancel_requested",
+      "cancel request",
+      "cancel_request",
+      "cancel-request",
+    ].includes(s);
 
   if (cancelReq) return "cancel_req";
 
@@ -79,12 +112,27 @@ function normalizeStatus(rawStatus, booking) {
 
   if (dateChange) return "date_change";
 
-  if (["confirmed", "confirm", "booked", "accepted", "completed"].includes(s)) return "confirmed";
+  if (
+    [
+      "confirmed",
+      "confirm",
+      "booked",
+      "accepted",
+      "completed",
+      "released",
+      "paid_pending_release",
+    ].includes(s)
+  ) {
+    return s === "paid_pending_release" ? "paid" : "confirmed";
+  }
+
   if (["paid", "payment_success", "payment-success", "success_paid"].includes(s)) return "paid";
   if (["failed", "fail", "declined", "error"].includes(s)) return "failed";
   if (["cancelled", "canceled", "cancel", "void"].includes(s)) return "cancelled";
   if (["refunded", "refund", "refunded_full", "refund_success"].includes(s)) return "refunded";
-  if (["pending", "awaiting", "processing", "created", "initiated", "initialized"].includes(s)) return "pending";
+  if (["pending", "awaiting", "processing", "created", "initiated", "initialized"].includes(s)) {
+    return "pending";
+  }
 
   const gatewayStatus = safeLower(
     b.gatewayStatus ||
@@ -245,7 +293,7 @@ export default function BookingsAdmin() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  // ✅ refresh trigger (same behaviour as dashboards)
+  // ✅ refresh trigger
   const shouldForceRefresh = useMemo(() => {
     const sp = new URLSearchParams(location.search || "");
     const qp = sp.get("refresh");
@@ -277,6 +325,8 @@ export default function BookingsAdmin() {
         ? data.data
         : Array.isArray(data?.items)
         ? data.items
+        : Array.isArray(data?.rows)
+        ? data.rows
         : Array.isArray(data)
         ? data
         : [];
@@ -286,7 +336,6 @@ export default function BookingsAdmin() {
           const id = b.id || b._id || b.bookingId || b.reference || b.ref;
           if (!id) return null;
 
-          // ✅ backend truth first
           const amount =
             Number(
               b.amountLockedN ??
@@ -335,19 +384,23 @@ export default function BookingsAdmin() {
             status,
 
             gateway: b.gateway || b.paymentGateway || b.payment?.gateway || "-",
-            ref: String(b.reference || b.ref || id || "-"),
+            ref: safeStr(b.reference || b.ref || id || "-"),
 
-            checkIn: b.checkIn || b.startDate || b.from || b.dates?.checkIn || null,
-            checkOut: b.checkOut || b.endDate || b.to || b.dates?.checkOut || null,
+            checkIn: safeDate(b.checkIn || b.startDate || b.from || b.dates?.checkIn || null),
+            checkOut: safeDate(b.checkOut || b.endDate || b.to || b.dates?.checkOut || null),
 
-            createdAt: b.createdAt || b.date || b.created || b.timestamp || null,
+            createdAt: safeDate(b.createdAt || b.date || b.created || b.timestamp || null),
 
             cancellationRequested,
             dateChangeRequested,
 
             _rawStatus: b.status,
             _gatewayStatus:
-              b.gatewayStatus || b.paymentStatus || b.payment?.status || b.transactionStatus || null,
+              b.gatewayStatus ||
+              b.paymentStatus ||
+              b.payment?.status ||
+              b.transactionStatus ||
+              null,
           };
         })
         .filter(Boolean);
@@ -359,7 +412,7 @@ export default function BookingsAdmin() {
       if (norm.length > 0 && pendingCount === norm.length) {
         toast &&
           toast(
-            "All bookings are showing as pending. This usually means your webhook/payment confirmation is not writing booking.status (confirmed/paid) back to Firestore.",
+            "All bookings are showing as pending. This usually means your webhook/payment confirmation is not writing booking.status back properly.",
             "info"
           );
       }
@@ -375,7 +428,6 @@ export default function BookingsAdmin() {
     load();
   }, [load]);
 
-  // ✅ auto refresh when coming back with refresh=1 or state.refresh
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -384,7 +436,6 @@ export default function BookingsAdmin() {
       await load();
       if (!alive) return;
 
-      // clean refresh from URL but keep other query params e.g. filter
       const sp = new URLSearchParams(location.search || "");
       if (sp.get("refresh") === "1") {
         sp.delete("refresh");
@@ -423,18 +474,22 @@ export default function BookingsAdmin() {
   const filtered = useMemo(() => {
     let list = rows;
 
-    if (tab === "cancel_req") list = list.filter((r) => r.status === "cancel_req" || r.cancellationRequested);
-    else if (tab === "date_change") list = list.filter((r) => r.status === "date_change" || r.dateChangeRequested);
-    else if (tab !== "all") list = list.filter((r) => r.status === tab);
+    if (tab === "cancel_req") {
+      list = list.filter((r) => r.status === "cancel_req" || r.cancellationRequested);
+    } else if (tab === "date_change") {
+      list = list.filter((r) => r.status === "date_change" || r.dateChangeRequested);
+    } else if (tab !== "all") {
+      list = list.filter((r) => r.status === tab);
+    }
 
     const q = query.trim().toLowerCase();
     if (q) {
       list = list.filter(
         (r) =>
-          (r.listing || "").toLowerCase().includes(q) ||
-          (r.guest || "").toLowerCase().includes(q) ||
-          (r.ref || "").toLowerCase().includes(q) ||
-          String(r.id || "").toLowerCase().includes(q)
+          safeStr(r.listing).toLowerCase().includes(q) ||
+          safeStr(r.guest).toLowerCase().includes(q) ||
+          safeStr(r.ref).toLowerCase().includes(q) ||
+          safeStr(r.id).toLowerCase().includes(q)
       );
     }
     return list;
@@ -442,20 +497,25 @@ export default function BookingsAdmin() {
 
   const total = filtered.length;
   const lastPage = Math.max(1, Math.ceil(total / perPage));
+
   const pageItems = useMemo(() => {
-    const start = (page - 1) * perPage;
+    const safePage = Math.min(page, lastPage);
+    const start = (safePage - 1) * perPage;
     return filtered.slice(start, start + perPage);
-  }, [filtered, page, perPage]);
+  }, [filtered, page, perPage, lastPage]);
+
+  useEffect(() => {
+    if (page > lastPage) setPage(lastPage);
+  }, [page, lastPage]);
 
   const doAction = async (row, toStatus) => {
     if (!row.id) return;
 
     setBusyId(row.id);
 
-    // Optimistic UI
     const prev = rows.slice();
-    setRows(
-      rows.map((r) =>
+    setRows((cur) =>
+      cur.map((r) =>
         r.id === row.id
           ? {
               ...r,
@@ -593,7 +653,6 @@ export default function BookingsAdmin() {
     toast && toast("CSV exported.", "success");
   };
 
-  // ✅ consistent “Back” that triggers dashboard refresh
   const backToAdmin = () => nav("/admin?refresh=1", { replace: false });
 
   return (
@@ -682,7 +741,7 @@ export default function BookingsAdmin() {
           ))}
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <span
             style={{
               background: "rgba(15,23,42,.25)",
@@ -729,7 +788,7 @@ export default function BookingsAdmin() {
           </button>
 
           <button
-            onClick={() => load()}
+            onClick={load}
             style={{
               background: "linear-gradient(180deg,#6366f1,#4338ca)",
               border: "none",
@@ -756,7 +815,7 @@ export default function BookingsAdmin() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1.4fr .9fr .7fr .7fr .7fr",
+            gridTemplateColumns: "1.4fr .9fr .7fr .7fr .9fr",
             gap: 8,
             padding: "12px 16px",
             borderBottom: "1px solid rgba(255,255,255,.03)",
@@ -787,7 +846,7 @@ export default function BookingsAdmin() {
                 key={r.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1.4fr .9fr .7fr .7fr .7fr",
+                  gridTemplateColumns: "1.4fr .9fr .7fr .7fr .9fr",
                   gap: 8,
                   padding: "14px 16px",
                   borderBottom: "1px solid rgba(255,255,255,.015)",
@@ -824,7 +883,7 @@ export default function BookingsAdmin() {
                 <div style={{ fontWeight: 700, color: "#fff" }}>
                   {money(r.amount)}
                   <div style={{ fontSize: 11, color: "rgba(226,232,240,.5)", marginTop: 2 }}>
-                    {r.gateway} • {String(r.ref || "-").slice(0, 14)}
+                    {r.gateway} • {safeStr(r.ref || "-").slice(0, 14)}
                   </div>
                 </div>
 
@@ -832,24 +891,40 @@ export default function BookingsAdmin() {
                   {r.createdAt ? dayjs(r.createdAt).format("DD/MM/YYYY, HH:mm") : "—"}
                 </div>
 
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  {(r.status === "confirmed" || r.status === "paid") ? (
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  {r.status === "confirmed" || r.status === "paid" ? (
                     <>
-                      <ActionBtn kind="cancel" disabled={busyId === r.id} onClick={() => doAction(r, "cancelled")}>
+                      <ActionBtn
+                        kind="cancel"
+                        disabled={busyId === r.id}
+                        onClick={() => doAction(r, "cancelled")}
+                      >
                         Mark cancelled
                       </ActionBtn>
-                      <ActionBtn kind="cancel" disabled={busyId === r.id} onClick={() => doAction(r, "refunded")}>
+                      <ActionBtn
+                        kind="cancel"
+                        disabled={busyId === r.id}
+                        onClick={() => doAction(r, "refunded")}
+                      >
                         Mark refunded
                       </ActionBtn>
                     </>
                   ) : (
-                    <ActionBtn kind="confirm" disabled={busyId === r.id} onClick={() => doAction(r, "confirmed")}>
+                    <ActionBtn
+                      kind="confirm"
+                      disabled={busyId === r.id}
+                      onClick={() => doAction(r, "confirmed")}
+                    >
                       Mark confirmed
                     </ActionBtn>
                   )}
 
-                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "guest")}>Msg guest</ActionBtn>
-                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "host")}>Msg host</ActionBtn>
+                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "guest")}>
+                    Msg guest
+                  </ActionBtn>
+                  <ActionBtn kind="ghost" onClick={() => openChatFromRow(r, "host")}>
+                    Msg host
+                  </ActionBtn>
                 </div>
               </div>
             );

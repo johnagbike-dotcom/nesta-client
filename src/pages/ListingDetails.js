@@ -6,18 +6,16 @@ import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import "../styles/polish.css";
 import ListingMap from "../components/ListingMap";
-
 // ✅ shared featured logic
 import { isFeaturedActive } from "../utils/featured";
-
 // ✅ favourites
 import FavButton from "../components/FavButton";
-
 // ✅ reviews
 import ReviewsPanel from "../components/ReviewsPanel";
 import StarRating from "../components/StarRating";
 
 const nf = new Intl.NumberFormat("en-NG");
+const SWIPE_THRESHOLD = 70;
 
 export default function ListingDetails() {
   const { id } = useParams();
@@ -33,6 +31,9 @@ export default function ListingDetails() {
 
   // Share UX
   const [shareMsg, setShareMsg] = useState("");
+
+  // lightbox swipe tracking
+  const touchStartXRef = useRef(null);
 
   /* ───────────────── load listing ───────────────── */
   useEffect(() => {
@@ -74,8 +75,23 @@ export default function ListingDetails() {
     if (Array.isArray(listing.images) && listing.images.length) return listing.images;
     if (Array.isArray(listing.imageUrls) && listing.imageUrls.length) return listing.imageUrls;
     if (Array.isArray(listing.photos) && listing.photos.length) return listing.photos;
+    if (listing.primaryImageUrl) return [listing.primaryImageUrl];
     return [];
   }, [listing]);
+
+  const closeLightbox = useCallback(() => {
+    setLightboxIndex(null);
+  }, []);
+
+  const goNextImage = useCallback(() => {
+    if (!images.length) return;
+    setLightboxIndex((prev) => ((prev ?? 0) + 1) % images.length);
+  }, [images]);
+
+  const goPrevImage = useCallback(() => {
+    if (!images.length) return;
+    setLightboxIndex((prev) => ((prev ?? 0) - 1 + images.length) % images.length);
+  }, [images]);
 
   /* ───────────────── lightbox keyboard nav ───────────────── */
   useEffect(() => {
@@ -83,18 +99,17 @@ export default function ListingDetails() {
 
     const handler = (e) => {
       if (e.key === "Escape") {
-        setLightboxIndex(null);
+        closeLightbox();
         return;
       }
       if (!images.length) return;
-
-      if (e.key === "ArrowRight") setLightboxIndex((prev) => (prev + 1) % images.length);
-      if (e.key === "ArrowLeft") setLightboxIndex((prev) => (prev - 1 + images.length) % images.length);
+      if (e.key === "ArrowRight") goNextImage();
+      if (e.key === "ArrowLeft") goPrevImage();
     };
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [lightboxIndex, images]);
+  }, [lightboxIndex, images, closeLightbox, goNextImage, goPrevImage]);
 
   /* ───────────────── ownership helpers ───────────────── */
   const isOwner = useMemo(() => {
@@ -135,7 +150,6 @@ export default function ListingDetails() {
   const onShare = useCallback(async () => {
     try {
       setShareMsg("");
-
       const title = listing?.title ? `Nesta • ${listing.title}` : "Nesta listing";
       const text = listing?.city ? `Check this stay on Nesta (${listing.city}).` : "Check this stay on Nesta.";
 
@@ -161,7 +175,6 @@ export default function ListingDetails() {
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
-
       setShareMsg("Link copied ✅");
       clearShareMsgSoon();
     } catch (e) {
@@ -212,8 +225,8 @@ export default function ListingDetails() {
   const onAggregateUpdate = useCallback((agg) => {
     const nextAvg = Number(Number(agg?.ratingAvg || 0).toFixed(3));
     const nextCount = Number(agg?.ratingCount || 0);
-
     const prev = lastAggRef.current;
+
     if (prev.ratingAvg === nextAvg && prev.ratingCount === nextCount) return;
 
     lastAggRef.current = { ratingAvg: nextAvg, ratingCount: nextCount };
@@ -270,17 +283,38 @@ export default function ListingDetails() {
 
   /* ───────────────── main content ───────────────── */
   const price = listing.pricePerNight || listing.price || 0;
-  const hero = images[0] || listing.coverImage || listing.image || null;
+  const hero =
+    images[0] ||
+    listing.primaryImageUrl ||
+    listing.coverImage ||
+    listing.image ||
+    null;
 
-  // ✅ reserve availability (guest only)
   const canBook = !isOwner;
 
   return (
     <>
-      {/* small page-local style to prevent sticky bar covering content */}
       <style>{`
         .nesta-sticky-safe {
           padding-bottom: ${canBook ? "92px" : "0px"};
+        }
+
+        .nesta-hero-frame {
+          aspect-ratio: 16 / 10;
+        }
+
+        .nesta-thumb-frame {
+          aspect-ratio: 16 / 10;
+        }
+
+        .nesta-lightbox-shell {
+          aspect-ratio: 16 / 10;
+        }
+
+        @media (max-width: 768px) {
+          .nesta-lightbox-shell {
+            aspect-ratio: 4 / 3;
+          }
         }
       `}</style>
 
@@ -295,7 +329,6 @@ export default function ListingDetails() {
               >
                 ← Back
               </button>
-
               {isOwner ? (
                 <span className="hidden sm:inline text-xs text-white/40 truncate">
                   ID: {listing.id}
@@ -305,7 +338,6 @@ export default function ListingDetails() {
 
             <div className="flex items-center gap-2">
               <FavButton listingId={listing.id} compact onRequireLogin={requireLoginForSocial} />
-
               <button
                 onClick={onShare}
                 className="px-4 py-2 rounded-full bg-white/5 border border-white/15 hover:bg-white/10 text-sm"
@@ -313,7 +345,6 @@ export default function ListingDetails() {
               >
                 Share
               </button>
-
               {isOwner && (
                 <button
                   onClick={() => nav(`/listing/${listing.id}/edit`)}
@@ -333,7 +364,7 @@ export default function ListingDetails() {
 
           {/* hero / gallery */}
           <div className="grid gap-3 grid-cols-1 lg:grid-cols-[1.1fr,0.9fr]">
-            <div className="rounded-3xl overflow-hidden border border-white/10 bg-black/30 min-h-[220px] shadow-[0_24px_70px_rgba(0,0,0,.75)]">
+            <div className="rounded-3xl overflow-hidden border border-white/10 bg-black/30 shadow-[0_24px_70px_rgba(0,0,0,.75)] nesta-hero-frame">
               {hero ? (
                 <button
                   type="button"
@@ -343,7 +374,7 @@ export default function ListingDetails() {
                   <img
                     src={hero}
                     alt={listing.title || "Listing"}
-                    className="w-full h-full object-cover max-h-[430px] cursor-zoom-in"
+                    className="w-full h-full object-cover cursor-zoom-in"
                     loading="lazy"
                   />
                 </button>
@@ -357,10 +388,10 @@ export default function ListingDetails() {
             <div className="grid grid-cols-2 gap-3">
               {images.slice(1, 5).map((img, idx) => (
                 <button
-                  key={img}
+                  key={`${img}-${idx}`}
                   type="button"
                   onClick={() => setLightboxIndex(idx + 1)}
-                  className="rounded-2xl overflow-hidden border border-white/10 bg-black/20 h-28"
+                  className="rounded-2xl overflow-hidden border border-white/10 bg-black/20 nesta-thumb-frame"
                 >
                   <img
                     src={img}
@@ -370,6 +401,7 @@ export default function ListingDetails() {
                   />
                 </button>
               ))}
+
               {images.length === 0 && (
                 <div className="col-span-2 rounded-2xl border border-white/10 bg-black/10 h-28 grid place-items-center text-gray-500">
                   More images coming soon
@@ -378,7 +410,7 @@ export default function ListingDetails() {
             </div>
           </div>
 
-          {/* title + summary (✅ removed duplicate Reserve button here) */}
+          {/* title + summary */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <h1
@@ -390,7 +422,6 @@ export default function ListingDetails() {
               >
                 {listing.title || "Luxury apartment"}
               </h1>
-
               <p className="text-gray-300 mt-1 text-sm md:text-base">
                 {listing.area || "—"}, {listing.city || "Nigeria"}
               </p>
@@ -481,10 +512,12 @@ export default function ListingDetails() {
                     {listing.area || "—"}, {listing.city || "Nigeria"}
                   </div>
                 </div>
+
                 <ListingMap
                   lat={typeof listing.lat === "number" ? listing.lat : null}
                   lng={typeof listing.lng === "number" ? listing.lng : null}
                 />
+
                 <p className="text-[11px] text-white/50 mt-1">
                   Exact details are shared securely with confirmed guests only.
                 </p>
@@ -583,6 +616,7 @@ export default function ListingDetails() {
                 ₦{nf.format(price)} <span className="text-[12px] text-white/60 font-semibold">/ night</span>
               </div>
             </div>
+
             <button
               onClick={goReserve}
               className="px-5 py-3 rounded-full bg-gradient-to-b from-amber-400 to-amber-500 text-black font-semibold hover:from-amber-300 hover:to-amber-500 shadow-[0_10px_30px_rgba(0,0,0,.55)] text-sm"
@@ -596,20 +630,69 @@ export default function ListingDetails() {
       {/* lightbox overlay */}
       {lightboxIndex !== null && images.length > 0 && (
         <div
-          className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center px-4"
-          onClick={() => setLightboxIndex(null)}
+          className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-sm flex items-center justify-center px-4"
+          onClick={closeLightbox}
         >
-          <div className="relative max-w-5xl w-full" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => setLightboxIndex(null)}
-              className="absolute -top-10 right-0 text-white/70 hover:text-white text-2xl"
-              aria-label="Close gallery"
-            >
-              ×
-            </button>
+          <div className="relative max-w-6xl w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="absolute top-3 left-3 z-20">
+              <button
+                type="button"
+                onClick={closeLightbox}
+                className="px-4 py-2 rounded-full bg-black/60 border border-white/20 text-white hover:bg-black/80"
+                aria-label="Back"
+              >
+                ← Back
+              </button>
+            </div>
 
-            <div className="aspect-video rounded-2xl overflow-hidden bg-black/60 border border-white/15">
+            <div className="absolute top-3 right-3 z-20">
+              <button
+                type="button"
+                onClick={closeLightbox}
+                className="w-11 h-11 rounded-full bg-black/60 border border-white/20 text-white hover:bg-black/80 text-xl"
+                aria-label="Close gallery"
+              >
+                ×
+              </button>
+            </div>
+
+            {images.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  onClick={goPrevImage}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 z-20 w-11 h-11 rounded-full bg-black/60 border border-white/20 text-white hover:bg-black/80 text-xl"
+                  aria-label="Previous image"
+                >
+                  ‹
+                </button>
+
+                <button
+                  type="button"
+                  onClick={goNextImage}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 z-20 w-11 h-11 rounded-full bg-black/60 border border-white/20 text-white hover:bg-black/80 text-xl"
+                  aria-label="Next image"
+                >
+                  ›
+                </button>
+              </>
+            )}
+
+            <div
+              className="nesta-lightbox-shell rounded-2xl overflow-hidden bg-black/60 border border-white/15"
+              onTouchStart={(e) => {
+                touchStartXRef.current = e.changedTouches?.[0]?.clientX ?? null;
+              }}
+              onTouchEnd={(e) => {
+                const startX = touchStartXRef.current;
+                const endX = e.changedTouches?.[0]?.clientX ?? null;
+                if (startX == null || endX == null) return;
+                const delta = endX - startX;
+                if (delta <= -SWIPE_THRESHOLD) goNextImage();
+                if (delta >= SWIPE_THRESHOLD) goPrevImage();
+                touchStartXRef.current = null;
+              }}
+            >
               <img
                 src={images[lightboxIndex]}
                 alt={listing.title || "Listing photo"}
@@ -621,17 +704,19 @@ export default function ListingDetails() {
               <div className="flex items-center justify-between mt-3 text-sm text-white/70">
                 <button
                   type="button"
-                  onClick={() => setLightboxIndex((prev) => (prev - 1 + images.length) % images.length)}
+                  onClick={goPrevImage}
                   className="px-3 py-1 rounded-full bg-white/10 border border-white/20 hover:bg-white/20"
                 >
                   ← Previous
                 </button>
+
                 <div>
                   {lightboxIndex + 1} / {images.length}
                 </div>
+
                 <button
                   type="button"
-                  onClick={() => setLightboxIndex((prev) => (prev + 1) % images.length)}
+                  onClick={goNextImage}
                   className="px-3 py-1 rounded-full bg-white/10 border border-white/20 hover:bg-white/20"
                 >
                   Next →
@@ -643,4 +728,4 @@ export default function ListingDetails() {
       )}
     </>
   );
-}
+} 

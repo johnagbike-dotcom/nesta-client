@@ -29,16 +29,24 @@ function safeLower(v) {
   return String(v || "").toLowerCase();
 }
 
+function safeUpper(v) {
+  return String(v || "").toUpperCase();
+}
+
 function formatDateTime(v) {
   if (!v) return "—";
   try {
     const d =
       typeof v?.toDate === "function"
         ? v.toDate()
+        : typeof v?.seconds === "number"
+        ? new Date(v.seconds * 1000)
         : v instanceof Date
         ? v
         : new Date(v);
+
     if (Number.isNaN(d.getTime())) return "—";
+
     return d.toLocaleString(undefined, {
       year: "numeric",
       month: "short",
@@ -55,6 +63,7 @@ function toMillis(ts) {
   try {
     if (!ts) return 0;
     if (typeof ts?.toDate === "function") return ts.toDate().getTime();
+    if (typeof ts?.seconds === "number") return new Date(ts.seconds * 1000).getTime();
     const d = ts instanceof Date ? ts : new Date(ts);
     return Number.isNaN(d.getTime()) ? 0 : d.getTime();
   } catch {
@@ -69,6 +78,7 @@ function isPaidOrConfirmed(status) {
     s === "confirmed" ||
     s === "completed" ||
     s === "paid_pending_release" ||
+    s === "checked_in" ||
     s === "released"
   );
 }
@@ -237,10 +247,8 @@ export default function HostDashboard() {
     [showToast]
   );
 
-  // ✅ hook has NO args; it subscribes to auth internally
   const { profile } = useUserProfile();
 
-  // UI hint only; server policy is truth (withdrawals page uses /payouts/me/wallet)
   const kycStatusRaw =
     profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
   const kycStatus = String(kycStatusRaw || "").toLowerCase();
@@ -250,21 +258,18 @@ export default function HostDashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  // Filters
   const [q, setQ] = useState("");
   const [min, setMin] = useState("");
   const [max, setMax] = useState("");
   const [status, setStatus] = useState("all");
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // Subscription
   const [subInfo, setSubInfo] = useState({
     active: false,
     expiresAt: null,
     loading: true,
   });
 
-  // Wallet (server truth)
   const [wallet, setWallet] = useState({
     loading: true,
     availableN: 0,
@@ -277,7 +282,6 @@ export default function HostDashboard() {
     minWithdrawal: 1000,
   });
 
-  // Revenue + booking stats
   const [rev, setRev] = useState({
     grossLifetime: 0,
     gross30d: 0,
@@ -311,15 +315,26 @@ export default function HostDashboard() {
   const walletAvailable = Number(wallet.availableN || 0);
   const walletPending = Number(wallet.pendingN || 0);
 
+  const payoutStatusUpper = safeUpper(wallet.payoutStatus || "");
+  const payoutVerified = payoutStatusUpper === "VERIFIED";
+
   const canWithdraw = wallet.canWithdraw === true && walletAvailable > 0;
 
   const walletPrimaryHelper = wallet.loading
-    ? "Loading…"
+    ? "Loading wallet…"
     : wallet.canWithdraw === false
-    ? wallet.reason || "Withdrawals locked"
+    ? wallet.reason || "Withdrawals are currently locked"
+    : !payoutVerified
+    ? "Complete payout verification before withdrawals can be released"
     : walletAvailable <= 0
     ? "No withdrawable balance yet"
     : "Ready to withdraw";
+
+  const payoutStatusLabel = wallet.loading
+    ? "Loading…"
+    : payoutStatusUpper
+    ? payoutStatusUpper.replace(/_/g, " ")
+    : "Not set";
 
   const refreshMeta = useMemo(() => {
     const sp = new URLSearchParams(location.search || "");
@@ -546,10 +561,16 @@ export default function HostDashboard() {
         const createdAtMs = toMillis(d.createdAt);
         const in30d = createdAtMs >= cutoff30d;
 
-        const gross = Number(d.amountLockedN ?? d.amountN ?? d.total ?? d.totalAmount ?? 0) || 0;
+        const gross =
+          Number(d.amountLockedN ?? d.amountN ?? d.total ?? d.totalAmount ?? 0) || 0;
 
         const hostNetTracked =
-          Number(d.hostPayoutN ?? d.pricingSnapshot?.netPayoutN ?? d.pricingSnapshot?.hostPayoutN ?? 0) || 0;
+          Number(
+            d.hostPayoutN ??
+              d.pricingSnapshot?.netPayoutN ??
+              d.pricingSnapshot?.hostPayoutN ??
+              0
+          ) || 0;
 
         if (d.paymentMismatch) mismatchCount++;
         if (safeLower(d.status || "") === "paid-needs-review") reviewCount++;
@@ -712,7 +733,7 @@ export default function HostDashboard() {
     ? `${wallet.payoutPreview.bankName} ${wallet.payoutPreview.accountNumberMasked || ""}`.trim()
     : "No payout method yet";
 
-  /* ===================== JSX (calmer layout) ===================== */
+  /* ===================== JSX ===================== */
   return (
     <main className="min-h-screen bg-[#05070a] pt-20 pb-12 px-4 text-white">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -728,7 +749,12 @@ export default function HostDashboard() {
           <div className="flex items-center gap-2">
             <button
               onClick={async () => {
-                await Promise.all([loadListings(), loadWallet(), loadSubscription(), loadRevenueAndBookings()]);
+                await Promise.all([
+                  loadListings(),
+                  loadWallet(),
+                  loadSubscription(),
+                  loadRevenueAndBookings(),
+                ]);
                 notify("Dashboard refreshed ✅", "success");
               }}
               className="rounded-full px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-sm font-semibold"
@@ -789,7 +815,7 @@ export default function HostDashboard() {
           </div>
         )}
 
-        {/* Above the fold: only decision KPIs */}
+        {/* Above the fold */}
         <section className="grid gap-4 md:grid-cols-3">
           <Card title="Portfolio">
             <div className="grid grid-cols-2 gap-3">
@@ -817,7 +843,10 @@ export default function HostDashboard() {
             </div>
           </Card>
 
-          <Card title="Bookings overview" right={<span className="text-[11px] text-white/50">Last 30 days</span>}>
+          <Card
+            title="Bookings overview"
+            right={<span className="text-[11px] text-white/50">Last 30 days</span>}
+          >
             <div className="grid grid-cols-2 gap-3">
               <MiniKpi
                 label="Confirmed"
@@ -855,7 +884,7 @@ export default function HostDashboard() {
               <span className="text-[11px] text-white/50">
                 Status:{" "}
                 <span className="text-white/80 font-semibold">
-                  {String(wallet.payoutStatus || "—")}
+                  {payoutStatusLabel}
                 </span>
               </span>
             }
@@ -863,14 +892,18 @@ export default function HostDashboard() {
             <div className="space-y-2">
               <div className="flex items-baseline justify-between">
                 <div className="text-white/70 text-sm">Available (withdrawable)</div>
-                <div className="text-2xl font-semibold">{wallet.loading ? "—" : ngn(walletAvailable)}</div>
+                <div className="text-2xl font-semibold">
+                  {wallet.loading ? "—" : ngn(walletAvailable)}
+                </div>
               </div>
 
               <div className="flex items-baseline justify-between">
                 <div className="text-white/60 text-xs">
-                  Pending (releases after check-in)
+                  Pending (locked until release)
                 </div>
-                <div className="text-sm text-white/70">{wallet.loading ? "—" : ngn(walletPending)}</div>
+                <div className="text-sm text-white/70">
+                  {wallet.loading ? "—" : ngn(walletPending)}
+                </div>
               </div>
 
               <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70">
@@ -902,6 +935,8 @@ export default function HostDashboard() {
                       ? "Loading wallet…"
                       : wallet.canWithdraw === false
                       ? wallet.reason || "Withdrawals locked"
+                      : !payoutVerified
+                      ? "Payout method not yet verified"
                       : "No withdrawable balance yet"
                   }
                 >
@@ -912,7 +947,7 @@ export default function HostDashboard() {
           </Card>
         </section>
 
-        {/* Insights accordion: all secondary KPIs moved out of sight */}
+        {/* Insights accordion */}
         <section className="rounded-3xl border border-white/10 bg-[#090c12] overflow-hidden">
           <button
             onClick={() => setInsightsOpen((v) => !v)}
@@ -965,7 +1000,7 @@ export default function HostDashboard() {
           ) : null}
         </section>
 
-        {/* Filters (collapsed by default) */}
+        {/* Filters */}
         <section className="rounded-3xl bg-[#090c12] border border-white/5 overflow-hidden">
           <button
             onClick={() => setFiltersOpen((v) => !v)}
@@ -1095,7 +1130,7 @@ export default function HostDashboard() {
           )}
         </section>
 
-        {/* Recent bookings (collapsed) */}
+        {/* Recent bookings */}
         <section className="rounded-3xl bg-[#090c12] border border-white/5 overflow-hidden">
           <button
             onClick={() => setRecentOpen((v) => !v)}

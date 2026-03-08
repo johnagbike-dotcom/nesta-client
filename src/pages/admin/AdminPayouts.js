@@ -8,8 +8,11 @@ import { useToast } from "../../components/Toast";
 import { getAuth } from "firebase/auth";
 
 /* ------------------------------ axios base ------------------------------ */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   withCredentials: false,
   timeout: 20000,
 });
@@ -26,10 +29,31 @@ api.interceptors.request.use(async (config) => {
 
 /* --------------------------------- UI ---------------------------------- */
 const statusTone = {
-  pending: { bg: "rgba(148,163,184,.20)", text: "#e2e8f0", ring: "rgba(148,163,184,.35)" },
-  processing: { bg: "rgba(59,130,246,.20)", text: "#dbeafe", ring: "rgba(59,130,246,.35)" },
-  paid: { bg: "rgba(16,185,129,.18)", text: "#d1fae5", ring: "rgba(16,185,129,.35)" },
-  failed: { bg: "rgba(239,68,68,.18)", text: "#fecaca", ring: "rgba(239,68,68,.35)" },
+  pending: {
+    bg: "rgba(148,163,184,.20)",
+    text: "#e2e8f0",
+    ring: "rgba(148,163,184,.35)",
+  },
+  processing: {
+    bg: "rgba(59,130,246,.20)",
+    text: "#dbeafe",
+    ring: "rgba(59,130,246,.35)",
+  },
+  paid: {
+    bg: "rgba(16,185,129,.18)",
+    text: "#d1fae5",
+    ring: "rgba(16,185,129,.35)",
+  },
+  failed: {
+    bg: "rgba(239,68,68,.18)",
+    text: "#fecaca",
+    ring: "rgba(239,68,68,.35)",
+  },
+  cancelled: {
+    bg: "rgba(120,120,120,.18)",
+    text: "#e5e7eb",
+    ring: "rgba(120,120,120,.35)",
+  },
 };
 
 const Chip = ({ label, tone = "pending" }) => {
@@ -66,7 +90,7 @@ const money = (n) =>
   });
 
 function normalizeListShape(payload) {
-  if (Array.isArray(payload?.rows)) return payload.rows; // backend returns { ok, rows }
+  if (Array.isArray(payload?.rows)) return payload.rows;
   if (Array.isArray(payload?.data)) return payload.data;
   if (Array.isArray(payload?.items)) return payload.items;
   if (Array.isArray(payload)) return payload;
@@ -78,7 +102,29 @@ function safeDate(row) {
   if (!v) return null;
   if (typeof v?.toDate === "function") return v.toDate();
   const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function normalizeStatus(v) {
+  return String(v || "pending").toLowerCase();
+}
+
+function extractError(e, fallback) {
+  return (
+    e?.response?.data?.error ||
+    e?.response?.data?.message ||
+    e?.message ||
+    fallback
+  );
+}
+
+function getGatewayTone(v) {
+  const s = String(v || "").toLowerCase();
+  if (!s) return "rgba(255,255,255,.48)";
+  if (["success", "successful", "paid"].includes(s)) return "#86efac";
+  if (["failed", "reversed", "error"].includes(s)) return "#fca5a5";
+  if (["pending", "processing", "otp", "received"].includes(s)) return "#93c5fd";
+  return "#fcd34d";
 }
 
 /* ------------------------------- component ------------------------------- */
@@ -86,12 +132,14 @@ export default function AdminPayouts() {
   const toast = useToast() || {};
   const tOk = (m) => (toast.success ? toast.success(m) : alert(m));
   const tErr = (m) => (toast.error ? toast.error(m) : alert(m));
+  const tInfo = (m) => (toast.info ? toast.info(m) : alert(m));
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [busyId, setBusyId] = useState(null);
 
-  // ✅ backend supports: all | pending | processing | paid | failed
+  const [busyId, setBusyId] = useState(null);
+  const [busyAction, setBusyAction] = useState("");
+
   const [tab, setTab] = useState("pending");
   const [queryStr, setQueryStr] = useState("");
   const [page, setPage] = useState(1);
@@ -108,14 +156,23 @@ export default function AdminPayouts() {
         const status = String(r.status || "").toLowerCase();
         const note = String(r.note || "").toLowerCase();
         const bankCode = String(r.bankCode || "").toLowerCase();
+        const bankName = String(r.bankName || "").toLowerCase();
         const acct = String(r.accountNumberMasked || "").toLowerCase();
+        const transferRef = String(r.transferRef || "").toLowerCase();
+        const transferCode = String(r.transferCode || "").toLowerCase();
+        const gatewayStatus = String(r.gatewayStatus || "").toLowerCase();
+
         return (
           uid.includes(q) ||
           role.includes(q) ||
           status.includes(q) ||
           note.includes(q) ||
           bankCode.includes(q) ||
-          acct.includes(q)
+          bankName.includes(q) ||
+          acct.includes(q) ||
+          transferRef.includes(q) ||
+          transferCode.includes(q) ||
+          gatewayStatus.includes(q)
         );
       });
     }
@@ -141,7 +198,7 @@ export default function AdminPayouts() {
     setLoading(true);
     try {
       const { data } = await api.get("/admin/payouts", {
-        params: { status: tab, q: "" }, // backend supports q but we filter client-side too
+        params: { status: tab, q: "" },
       });
       setRows(normalizeListShape(data));
       setPage(1);
@@ -149,9 +206,9 @@ export default function AdminPayouts() {
       console.error("Failed to load payout_requests", e);
       const code = e?.response?.status;
       if (code === 401 || code === 403) {
-        tErr("Unauthorized. Log in as admin (users/{uid}.role='admin' or isAdmin=true).");
+        tErr("Unauthorized. Log in as admin.");
       } else {
-        tErr(e?.response?.data?.error || "Failed to load payout requests.");
+        tErr(extractError(e, "Failed to load payout requests."));
       }
       setRows([]);
     } finally {
@@ -176,6 +233,8 @@ export default function AdminPayouts() {
     }
 
     setBusyId(id);
+    setBusyAction(nextStatus);
+
     try {
       await api.patch(`/admin/payouts/${encodeURIComponent(id)}/status`, {
         status: nextStatus,
@@ -185,18 +244,93 @@ export default function AdminPayouts() {
       await load();
     } catch (e) {
       console.error("Status update failed", e);
-      tErr(e?.response?.data?.error || "Update failed.");
+      tErr(extractError(e, "Update failed."));
     } finally {
       setBusyId(null);
+      setBusyAction("");
     }
   };
+
+  const sendViaPaystack = async (row) => {
+    const id = row?.id;
+    if (!id) return;
+
+    const amountText = money(row?.amount || 0);
+    const proceed = window.confirm(
+      `Send ${amountText} to this host/partner via Paystack now?`
+    );
+    if (!proceed) return;
+
+    const note = window.prompt("Optional payout note / reason", "") || "";
+
+    setBusyId(id);
+    setBusyAction("paystack-send");
+
+    try {
+      const { data } = await api.post(
+        `/admin/payouts/${encodeURIComponent(id)}/paystack-send`,
+        { note }
+      );
+
+      if (String(data?.status || "").toLowerCase() === "paid") {
+        tOk("Paystack payout sent and settled successfully.");
+      } else if (String(data?.status || "").toLowerCase() === "failed") {
+        tErr("Paystack payout failed and funds were returned.");
+      } else {
+        tInfo("Paystack payout initiated. Status is processing.");
+      }
+
+      await load();
+    } catch (e) {
+      console.error("Paystack send failed", e);
+      tErr(extractError(e, "Paystack payout failed."));
+    } finally {
+      setBusyId(null);
+      setBusyAction("");
+    }
+  };
+
+  const syncPaystack = async (row) => {
+    const id = row?.id;
+    if (!id) return;
+
+    setBusyId(id);
+    setBusyAction("paystack-sync");
+
+    try {
+      const { data } = await api.post(
+        `/admin/payouts/${encodeURIComponent(id)}/paystack-sync`
+      );
+
+      const status = String(data?.status || "").toLowerCase();
+
+      if (status === "paid") {
+        tOk("Payout synced successfully and marked paid.");
+      } else if (status === "failed") {
+        tErr("Payout synced as failed and funds were returned.");
+      } else {
+        tInfo("Payout is still processing.");
+      }
+
+      await load();
+    } catch (e) {
+      console.error("Paystack sync failed", e);
+      tErr(extractError(e, "Sync failed."));
+    } finally {
+      setBusyId(null);
+      setBusyAction("");
+    }
+  };
+
+  const isBusy = (id, action = "") =>
+    busyId === id && (!action || busyAction === action);
 
   return (
     <div style={{ padding: 16 }}>
       <AdminHeader
         back
         title="Payout requests"
-        subtitle="Move payouts: pending → processing → paid (or failed to release funds)."
+        subtitle="Manage withdrawals and send host/partner payouts via Paystack."
         rightActions={
           <div style={{ display: "flex", gap: 8 }}>
             <LuxeBtn small onClick={load} title="Refresh">
@@ -249,7 +383,7 @@ export default function AdminPayouts() {
         <input
           value={queryStr}
           onChange={(e) => setQueryStr(e.target.value)}
-          placeholder="Search uid/role/status/bank/last4/note…"
+          placeholder="Search uid/role/status/bank/last4/transfer ref/note…"
           style={{
             height: 44,
             borderRadius: 12,
@@ -283,10 +417,34 @@ export default function AdminPayouts() {
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 1150 }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "separate",
+              borderSpacing: 0,
+              minWidth: 1480,
+            }}
+          >
             <thead>
-              <tr style={{ background: "rgba(255,255,255,.02)", color: "#aeb6c2", textAlign: "left" }}>
-                {["Date", "UID", "Role", "Amount", "Bank", "Account", "Status", "Actions"].map((h) => (
+              <tr
+                style={{
+                  background: "rgba(255,255,255,.02)",
+                  color: "#aeb6c2",
+                  textAlign: "left",
+                }}
+              >
+                {[
+                  "Date",
+                  "UID",
+                  "Role",
+                  "Amount",
+                  "Bank",
+                  "Account",
+                  "Status",
+                  "Gateway",
+                  "Transfer Ref",
+                  "Actions",
+                ].map((h) => (
                   <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
                     {h}
                   </th>
@@ -297,7 +455,7 @@ export default function AdminPayouts() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={8} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={10} style={{ padding: 20, color: "#aeb6c2" }}>
                     Loading…
                   </td>
                 </tr>
@@ -305,7 +463,7 @@ export default function AdminPayouts() {
 
               {!loading && pageItems.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={10} style={{ padding: 20, color: "#aeb6c2" }}>
                     No results.
                   </td>
                 </tr>
@@ -317,7 +475,17 @@ export default function AdminPayouts() {
                   const date = safeDate(p);
                   const role = p.role || "-";
                   const amount = Number(p.amount || 0);
-                  const status = String(p.status || "pending").toLowerCase();
+                  const status = normalizeStatus(p.status);
+                  const gatewayStatus = String(p.gatewayStatus || "").toLowerCase();
+                  const transferRef = p.transferRef || "-";
+
+                  const canManualProcess = status === "pending";
+                  const canManualSettle =
+                    status === "pending" || status === "processing";
+                  const canSendPaystack =
+                    status === "pending" || status === "processing";
+                  const canSyncPaystack =
+                    status === "processing" && !!p.transferRef;
 
                   return (
                     <tr key={id}>
@@ -327,18 +495,58 @@ export default function AdminPayouts() {
 
                       <td style={{ padding: "12px 16px" }}>{p.uid || "-"}</td>
 
-                      <td style={{ padding: "12px 16px", textTransform: "capitalize" }}>{role}</td>
+                      <td style={{ padding: "12px 16px", textTransform: "capitalize" }}>
+                        {role}
+                      </td>
 
                       <td style={{ padding: "12px 16px", whiteSpace: "nowrap", fontWeight: 900 }}>
                         {money(amount)}
                       </td>
 
-                      <td style={{ padding: "12px 16px" }}>{p.bankCode || p.bankName || "-"}</td>
+                      <td style={{ padding: "12px 16px" }}>
+                        {p.bankName || p.bankCode || "-"}
+                      </td>
 
-                      <td style={{ padding: "12px 16px" }}>{p.accountNumberMasked || "-"}</td>
+                      <td style={{ padding: "12px 16px" }}>
+                        {p.accountNumberMasked || "-"}
+                      </td>
 
                       <td style={{ padding: "12px 16px" }}>
                         <Chip label={status} tone={status} />
+                      </td>
+
+                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          <span style={{ color: "#cfd3da", fontWeight: 700 }}>
+                            {p.provider || "-"}
+                          </span>
+                          <span
+                            style={{
+                              color: getGatewayTone(gatewayStatus),
+                              fontSize: 12,
+                              fontWeight: 800,
+                              textTransform: "capitalize",
+                            }}
+                          >
+                            {gatewayStatus || "-"}
+                          </span>
+                        </div>
+                      </td>
+
+                      <td style={{ padding: "12px 16px", maxWidth: 260 }}>
+                        <div
+                          title={transferRef}
+                          style={{
+                            color: "#cfd3da",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            maxWidth: 240,
+                            fontSize: 12,
+                          }}
+                        >
+                          {transferRef}
+                        </div>
                       </td>
 
                       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
@@ -346,30 +554,62 @@ export default function AdminPayouts() {
                           <LuxeBtn
                             small
                             kind="slate"
-                            disabled={busyId === id || !(status === "pending")}
+                            disabled={isBusy(id) || !canManualProcess}
                             onClick={() => updateStatus(p, "processing")}
                           >
-                            Mark processing
+                            {isBusy(id, "processing") ? "Working…" : "Mark processing"}
                           </LuxeBtn>
 
                           <LuxeBtn
                             small
                             kind="emerald"
-                            disabled={busyId === id || !(status === "pending" || status === "processing")}
+                            disabled={isBusy(id) || !canManualSettle}
                             onClick={() => updateStatus(p, "paid")}
                           >
-                            Mark paid
+                            {isBusy(id, "paid") ? "Working…" : "Mark paid"}
                           </LuxeBtn>
 
                           <LuxeBtn
                             small
                             kind="ruby"
-                            disabled={busyId === id || !(status === "pending" || status === "processing")}
+                            disabled={isBusy(id) || !canManualSettle}
                             onClick={() => updateStatus(p, "failed")}
                           >
-                            Mark failed
+                            {isBusy(id, "failed") ? "Working…" : "Mark failed"}
+                          </LuxeBtn>
+
+                          <LuxeBtn
+                            small
+                            kind="amber"
+                            disabled={isBusy(id) || !canSendPaystack}
+                            onClick={() => sendViaPaystack(p)}
+                          >
+                            {isBusy(id, "paystack-send") ? "Sending…" : "Send via Paystack"}
+                          </LuxeBtn>
+
+                          <LuxeBtn
+                            small
+                            kind="slate"
+                            disabled={isBusy(id) || !canSyncPaystack}
+                            onClick={() => syncPaystack(p)}
+                          >
+                            {isBusy(id, "paystack-sync") ? "Syncing…" : "Sync payout"}
                           </LuxeBtn>
                         </div>
+
+                        {!!p.note && (
+                          <div
+                            style={{
+                              marginTop: 8,
+                              color: "#94a3b8",
+                              fontSize: 12,
+                              maxWidth: 320,
+                              whiteSpace: "normal",
+                            }}
+                          >
+                            Note: {p.note}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

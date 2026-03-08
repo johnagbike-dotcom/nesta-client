@@ -6,14 +6,16 @@ import { getBookingStatusAPI, notifyPaymentReceivedAPI } from "../api/bookings";
 /* ---------- helpers ---------- */
 const safeText = (v) => {
   if (v == null) return "";
-  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+    return String(v);
+  }
 
-  // Firestore Timestamp-like
   if (typeof v === "object" && typeof v.seconds === "number") {
     try {
       return new Date(v.seconds * 1000).toLocaleString();
     } catch {}
   }
+
   if (typeof v === "object" && typeof v.toDate === "function") {
     try {
       return v.toDate().toLocaleString();
@@ -31,10 +33,12 @@ const toDateObj = (d) => {
   try {
     if (!d) return null;
     let x = d;
+
     if (typeof x === "object") {
       if (typeof x.toDate === "function") x = x.toDate();
       else if (typeof x.seconds === "number") x = new Date(x.seconds * 1000);
     }
+
     const dt = x instanceof Date ? x : new Date(x);
     return Number.isNaN(dt.getTime()) ? null : dt;
   } catch {
@@ -46,7 +50,11 @@ const fmtDate = (d, fallback = "—") => {
   const dt = toDateObj(d);
   if (!dt) return fallback;
   try {
-    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    return dt.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
   } catch {
     return dt.toDateString();
   }
@@ -73,7 +81,6 @@ const diffNights = (checkIn, checkOut) => {
   const aa = new Date(a);
   const bb = new Date(b);
 
-  // midday to avoid DST edge cases
   aa.setHours(12, 0, 0, 0);
   bb.setHours(12, 0, 0, 0);
 
@@ -88,14 +95,29 @@ function normalizeProvider(v) {
   return s || "";
 }
 
+function prettyStatus(status) {
+  const s = String(status || "").toLowerCase().trim();
+
+  if (!s) return "Pending";
+  if (s === "paid") return "Paid";
+  if (s === "confirmed") return "Confirmed";
+  if (s === "paid_pending_release" || s === "paid-pending-release") {
+    return "Paid — awaiting check-in";
+  }
+  if (s === "checked_in" || s === "checked-in") return "Checked in";
+  if (s === "released") return "Stay active";
+  if (s === "completed") return "Completed";
+  if (s === "cancelled" || s === "canceled") return "Cancelled";
+  if (s === "refunded") return "Refunded";
+  if (s === "failed") return "Failed";
+
+  return s.replace(/[_-]/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
 /**
  * Payment truth for UI:
  * - paymentStatus is the gateway truth
  * - status is your internal lifecycle truth
- *
- * Your webhook currently sets:
- *  - status: "paid_pending_release"
- *  - paymentStatus: "paid"
  */
 function isPaidOrConfirmed(statusRaw, paymentStatusRaw) {
   const s = String(statusRaw || "").toLowerCase().trim();
@@ -110,6 +132,7 @@ function isPaidOrConfirmed(statusRaw, paymentStatusRaw) {
     "paid-pending-confirmation",
     "paid_needs_review",
     "paid-needs-review",
+    "checked_in",
     "released",
     "completed",
   ]);
@@ -120,10 +143,8 @@ function isPaidOrConfirmed(statusRaw, paymentStatusRaw) {
 }
 
 /**
- * Payout lifecycle (your current backend):
- * - booking.releaseStatus: "pending" | "released" | ...
- *
- * Backward compatible with any older "payoutStatus" field if present.
+ * Release lifecycle:
+ * - booking.releaseStatus: "pending" | "scheduled" | "released" | ...
  */
 function getReleaseStatus(b) {
   const s = String(
@@ -131,12 +152,12 @@ function getReleaseStatus(b) {
   )
     .toLowerCase()
     .trim();
+
   return s || "—";
 }
 
 /**
- * Optional dispute lifecycle (if you add it later):
- * - disputeStatus: "open" | "resolved"
+ * Optional dispute lifecycle
  */
 function getDisputeStatus(b) {
   const s = String(b?.disputeStatus || b?.dispute_status || "").toLowerCase().trim();
@@ -145,6 +166,7 @@ function getDisputeStatus(b) {
 
 function resolveHostUidFromBooking(b) {
   if (!b || typeof b !== "object") return null;
+
   return (
     b.hostId ||
     b.hostUid ||
@@ -152,7 +174,7 @@ function resolveHostUidFromBooking(b) {
     b.partnerId ||
     b.ownerId ||
     b.ownerUid ||
-    b.payoutUid || // ✅ your webhook stores payoutUid
+    b.payoutUid ||
     b.listing?.hostId ||
     b.listing?.hostUid ||
     b.listing?.partnerUid ||
@@ -170,7 +192,6 @@ function getUiState(booking) {
   const releaseStatus = getReleaseStatus(b);
   const disputeStatus = getDisputeStatus(b);
 
-  // dispute takes precedence
   if (disputeStatus === "open") {
     return {
       icon: "⚠️",
@@ -213,13 +234,22 @@ function getUiState(booking) {
     };
   }
 
-  // Paid/confirmed — show release policy (your marketplace model)
-  if (status.includes("paid_pending_release") || releaseStatus === "pending") {
+  if (status === "paid_pending_release" || releaseStatus === "pending") {
     return {
       icon: "✅",
       title: "Booking confirmed",
-      subtitle: "Payment verified. Host payout is released after check-in.",
-      chip: "Confirmed · Pending release",
+      subtitle: "Payment verified. Your stay is confirmed and host payout will be released after check-in.",
+      chip: "Confirmed · Awaiting check-in",
+      tone: "success",
+    };
+  }
+
+  if (status === "checked_in" || releaseStatus === "scheduled") {
+    return {
+      icon: "🏡",
+      title: "Checked in",
+      subtitle: "Your check-in has been confirmed and payout release has been scheduled.",
+      chip: "Checked in · Release scheduled",
       tone: "success",
     };
   }
@@ -227,14 +257,13 @@ function getUiState(booking) {
   if (releaseStatus === "released" || status === "released") {
     return {
       icon: "✅",
-      title: "Booking confirmed",
+      title: "Stay active",
       subtitle: "Enjoy your stay. You can message the host from your bookings.",
       chip: "Confirmed · Released",
       tone: "success",
     };
   }
 
-  // Default paid state
   return {
     icon: "✅",
     title: "Booking confirmed",
@@ -258,16 +287,17 @@ export default function BookingCompletePage() {
   const pollRef = useRef(null);
   const nudgedRef = useRef(false);
 
-  // Receipt mode (from My Bookings with full booking object)
   const routeBooking =
     state?.booking &&
-    (state.booking.listingTitle || state.booking.total || state.booking.amountN || state.booking.id)
+    (state.booking.listingTitle ||
+      state.booking.total ||
+      state.booking.amountN ||
+      state.booking.id)
       ? state.booking
       : null;
 
   const entrySourceRibbon = routeBooking ? "My Bookings → Receipt" : "Post-checkout summary";
 
-  // Support query params after redirect/callback (optional)
   const queryParams = useMemo(() => {
     const sp = new URLSearchParams(location.search || "");
     return {
@@ -278,7 +308,6 @@ export default function BookingCompletePage() {
   }, [location.search]);
 
   useEffect(() => {
-    // Receipt mode: still poll server for freshest status
     if (routeBooking) {
       setSnapshot({
         mode: "receipt",
@@ -291,7 +320,6 @@ export default function BookingCompletePage() {
       return;
     }
 
-    // Snapshot mode: read from router state then sessionStorage
     const statePending = state?.booking || state?.pending || null;
     const stateTx = state?.tx || null;
 
@@ -321,7 +349,6 @@ export default function BookingCompletePage() {
       tx = null;
     }
 
-    // Normalize tx (Paystack + Flutterwave)
     const normalizedTx =
       tx && typeof tx === "object"
         ? {
@@ -342,7 +369,6 @@ export default function BookingCompletePage() {
           }
         : null;
 
-    // Determine bookingIdOrRef (query can override)
     const bookingIdOrRef =
       safeText(queryParams.bookingId) ||
       safeText(pending?.bookingId) ||
@@ -365,7 +391,6 @@ export default function BookingCompletePage() {
       when: new Date().toISOString(),
     });
 
-    // clear session copies
     try {
       sessionStorage.removeItem("booking_pending");
     } catch {}
@@ -377,7 +402,6 @@ export default function BookingCompletePage() {
     } catch {}
   }, [state, routeBooking, queryParams]);
 
-  // Compute display info from snapshot.pending (UI only; server remains truth)
   const info = useMemo(() => {
     const p = snapshot?.pending;
     if (!p) return null;
@@ -390,7 +414,6 @@ export default function BookingCompletePage() {
     const nights = diffNights(checkIn, checkOut);
     const guests = Number(p.guests ?? 1) || 1;
 
-    // UI-only fee calc (server should lock amountLockedN / amountN)
     const feePct = Number(p.feePct ?? 5) || 0;
     const subtotal = nightly * nights;
     const fee = Math.round((feePct / 100) * subtotal);
@@ -415,7 +438,6 @@ export default function BookingCompletePage() {
     };
   }, [snapshot]);
 
-  // ✅ Server-truth poller
   useEffect(() => {
     if (!snapshot?.bookingIdOrRef) return;
 
@@ -435,7 +457,7 @@ export default function BookingCompletePage() {
     loadOnce();
 
     const started = Date.now();
-    const maxMs = 120_000; // 120s
+    const maxMs = 120_000;
     const intervalMs = 3000;
 
     pollRef.current = setInterval(async () => {
@@ -456,8 +478,6 @@ export default function BookingCompletePage() {
     };
   }, [snapshot?.bookingIdOrRef]);
 
-  // ✅ Optional UX nudge after redirect/callback (Paystack + Flutterwave)
-  // Webhook remains the source of truth.
   useEffect(() => {
     if (!snapshot || routeBooking) return;
     if (nudgedRef.current) return;
@@ -467,7 +487,10 @@ export default function BookingCompletePage() {
       safeText(queryParams.bookingId) ||
       safeText(snapshot?.bookingIdOrRef);
 
-    const provider = normalizeProvider(snapshot?.provider || queryParams.provider || snapshot?.tx?.provider);
+    const provider = normalizeProvider(
+      snapshot?.provider || queryParams.provider || snapshot?.tx?.provider
+    );
+
     const reference =
       safeText(queryParams.reference) ||
       safeText(snapshot?.pending?.reference) ||
@@ -482,7 +505,7 @@ export default function BookingCompletePage() {
       try {
         await notifyPaymentReceivedAPI({ bookingId, provider, reference });
       } catch {
-        // swallow; polling + webhook will still update
+        // webhook/polling remains source of truth
       } finally {
         setNotifying(false);
       }
@@ -495,11 +518,15 @@ export default function BookingCompletePage() {
 
     const listingTitle = b.listingTitle || b.listing?.title || b.title || "Listing";
     const locationLabel =
-      b.listingLocation || [b.city || b.listingCity, b.area || b.listingArea].filter(Boolean).join(", ") || "";
+      b.listingLocation ||
+      [b.city || b.listingCity, b.area || b.listingArea].filter(Boolean).join(", ") ||
+      "";
     const ref = b.reference || b.ref || b.id || "";
 
     const nights =
-      typeof b.nights === "number" && b.nights > 0 ? b.nights : diffNights(b.checkIn, b.checkOut);
+      typeof b.nights === "number" && b.nights > 0
+        ? b.nights
+        : diffNights(b.checkIn, b.checkOut);
 
     const nightly =
       Number(b.pricePerNight || b.listing?.pricePerNight || 0) ||
@@ -512,7 +539,14 @@ export default function BookingCompletePage() {
     const confirmed = isPaidOrConfirmed(b.status, b.paymentStatus);
     const hostUid = resolveHostUidFromBooking(b);
     const listingId = safeText(b.listingId || b.listing?.id || "");
-    const canChat = !!(confirmed && hostUid && listingId);
+    const canChat = !!(
+      confirmed &&
+      hostUid &&
+      listingId &&
+      ["paid", "confirmed", "paid_pending_release", "checked_in", "released", "completed"].includes(
+        String(b.status || "").toLowerCase().trim()
+      )
+    );
 
     const ui = getUiState(b);
     const releaseStatus = getReleaseStatus(b);
@@ -533,7 +567,14 @@ export default function BookingCompletePage() {
                 "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
             }}
           >
-            <div style={{ display: "flex", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 18,
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
               <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
                 <div
                   style={{
@@ -558,6 +599,7 @@ export default function BookingCompletePage() {
                 >
                   <span style={{ fontSize: 22 }}>{ui.icon}</span>
                 </div>
+
                 <div>
                   <h2 style={{ margin: "0 0 6px" }}>{ui.title}</h2>
                   <div className="muted" style={{ fontSize: 13 }}>
@@ -647,7 +689,7 @@ export default function BookingCompletePage() {
                         fontSize: 11,
                       }}
                     >
-                      {b.status || "—"} / {b.paymentStatus || "—"}
+                      {prettyStatus(b.status)} / {prettyStatus(b.paymentStatus)}
                     </span>
                   </div>
 
@@ -662,7 +704,7 @@ export default function BookingCompletePage() {
                         marginRight: 6,
                       }}
                     >
-                      {releaseStatus}
+                      {prettyStatus(releaseStatus)}
                     </span>
 
                     {disputeStatus ? (
@@ -676,7 +718,7 @@ export default function BookingCompletePage() {
                             fontSize: 11,
                           }}
                         >
-                          {disputeStatus}
+                          {prettyStatus(disputeStatus)}
                         </span>
                       </>
                     ) : null}
@@ -689,7 +731,10 @@ export default function BookingCompletePage() {
                       type="button"
                       onClick={() =>
                         nav("/chat", {
-                          state: { partnerUid: hostUid, listing: { id: listingId, title: listingTitle } },
+                          state: {
+                            partnerUid: hostUid,
+                            listing: { id: listingId, title: listingTitle },
+                          },
                         })
                       }
                       className="btn"
@@ -698,7 +743,7 @@ export default function BookingCompletePage() {
                       Message host
                     </button>
                     <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                      Chat is available for paid/confirmed bookings only.
+                      Chat is available for active bookings only.
                     </div>
                   </div>
                 ) : null}
@@ -714,12 +759,24 @@ export default function BookingCompletePage() {
               >
                 <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>Payment summary</h3>
 
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 4,
+                  }}
+                >
                   <span className="muted">Nightly rate × {nights || 1}</span>
                   <span style={{ fontWeight: 600 }}>{ngn(subtotal)}</span>
                 </div>
 
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 4,
+                  }}
+                >
                   <span className="muted">Service fee</span>
                   <span style={{ fontWeight: 600 }}>{ngn(fee)}</span>
                 </div>
@@ -746,7 +803,14 @@ export default function BookingCompletePage() {
               </section>
             </div>
 
-            <div style={{ marginTop: 22, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <div
+              style={{
+                marginTop: 22,
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+              }}
+            >
               <Link className="btn ghost" to="/bookings">
                 My bookings
               </Link>
@@ -788,7 +852,9 @@ export default function BookingCompletePage() {
             }}
           >
             <h2 style={{ marginTop: 0 }}>Checkout</h2>
-            <p>We couldn’t find your booking details. Please go back to Explore and select a listing again.</p>
+            <p>
+              We couldn’t find your booking details. Please go back to Explore and select a listing again.
+            </p>
             <div style={{ marginTop: 16 }}>
               <Link className="btn" to="/explore">
                 Explore listings
@@ -810,10 +876,16 @@ export default function BookingCompletePage() {
   const releaseStatus = b ? getReleaseStatus(b) : "—";
   const disputeStatus = b ? getDisputeStatus(b) : "";
 
-  // enable chat when server says paid/confirmed and we can resolve a target + listing id
   const hostUid = b ? resolveHostUidFromBooking(b) : null;
   const listingId = safeText(b?.listingId || b?.listing?.id || listing?.id || "");
-  const canChat = !!(confirmed && hostUid && listingId);
+  const canChat = !!(
+    confirmed &&
+    hostUid &&
+    listingId &&
+    ["paid", "confirmed", "paid_pending_release", "checked_in", "released", "completed"].includes(
+      String(b?.status || "").toLowerCase().trim()
+    )
+  );
 
   return (
     <main className="dash-bg">
@@ -826,10 +898,18 @@ export default function BookingCompletePage() {
             borderRadius: 18,
             padding: 22,
             border: "1px solid rgba(255,255,255,0.10)",
-            background: "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
+            background:
+              "linear-gradient(180deg, rgba(30,41,59,0.45) 0%, rgba(30,41,59,0.30) 100%)",
           }}
         >
-          <div style={{ display: "flex", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 18,
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
             <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
               <div
                 style={{
@@ -854,6 +934,7 @@ export default function BookingCompletePage() {
               >
                 <span style={{ fontSize: 22 }}>{ui.icon}</span>
               </div>
+
               <div>
                 <h2 style={{ margin: "0 0 6px" }}>{ui.title}</h2>
                 <div className="muted" style={{ fontSize: 13 }}>
@@ -876,7 +957,7 @@ export default function BookingCompletePage() {
                   </div>
                 ) : (
                   <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    Payment verified. Host payout releases after check-in.
+                    {ui.subtitle}
                   </div>
                 )}
               </div>
@@ -943,7 +1024,7 @@ export default function BookingCompletePage() {
                       fontSize: 11,
                     }}
                   >
-                    {b.status || "—"} / {b.paymentStatus || "—"}
+                    {prettyStatus(b.status)} / {prettyStatus(b.paymentStatus)}
                   </span>
 
                   <div style={{ marginTop: 8 }}>
@@ -957,7 +1038,7 @@ export default function BookingCompletePage() {
                         marginRight: 6,
                       }}
                     >
-                      {releaseStatus}
+                      {prettyStatus(releaseStatus)}
                     </span>
 
                     {disputeStatus ? (
@@ -971,7 +1052,7 @@ export default function BookingCompletePage() {
                             fontSize: 11,
                           }}
                         >
-                          {disputeStatus}
+                          {prettyStatus(disputeStatus)}
                         </span>
                       </>
                     ) : null}
@@ -999,7 +1080,10 @@ export default function BookingCompletePage() {
                     type="button"
                     onClick={() =>
                       nav("/chat", {
-                        state: { partnerUid: hostUid, listing: { id: listingId, title: listing.title } },
+                        state: {
+                          partnerUid: hostUid,
+                          listing: { id: listingId, title: listing.title },
+                        },
                       })
                     }
                     className="btn"
@@ -1007,7 +1091,7 @@ export default function BookingCompletePage() {
                     Message host
                   </button>
                   <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                    Chat is available for paid/confirmed bookings only.
+                    Chat is available for active bookings only.
                   </div>
                 </div>
               ) : null}

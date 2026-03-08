@@ -33,7 +33,6 @@ import GuestDashboard from "./pages/GuestDashboard";
 import ListingDetails from "./pages/ListingDetails";
 import ReservePage from "./pages/ReservePage";
 import ChatPage from "./pages/ChatPage";
-import ChatStart from "./pages/ChatStart";
 import Wishlist from "./pages/Wishlist";
 import GuestBookings from "./pages/GuestBookings";
 import InboxPage from "./pages/InboxPage";
@@ -69,7 +68,7 @@ import PayoutSetup from "./pages/PayoutSetup";
 
 // Admin router
 import AdminRouter from "./pages/admin/AdminRouter";
-import AdminDashboard from "./pages/admin/AdminDashboard";
+
 
 // Auth pages
 import LoginPage from "./pages/LoginPage";
@@ -93,12 +92,20 @@ import {
 /* ---------- Local admin guard ---------- */
 function RequireAdmin({ children }) {
   const { user, profile, loading } = useAuth();
+
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
+
   const role = (profile?.role || "").toLowerCase();
-  if (role !== "admin" && profile?.isAdmin !== true) {
+
+  if (
+    role !== "admin" &&
+    role !== "operations" &&
+    profile?.isAdmin !== true
+  ) {
     return <Navigate to="/" replace />;
   }
+
   return children;
 }
 
@@ -109,6 +116,7 @@ export default function AppRouter() {
         <BrowserRouter>
           <ToastProvider>
             <Header />
+
             <Routes>
               {/* ---------- Public ---------- */}
               <Route path="/" element={<HomePage />} />
@@ -211,8 +219,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
-              {/* ✅ NEW: Step 1 page route */}
               <Route
                 path="/onboarding/kyc/start"
                 element={
@@ -221,7 +227,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
               <Route
                 path="/onboarding/kyc/gate"
                 element={
@@ -299,12 +304,12 @@ export default function AppRouter() {
                 }
               />
 
-              {/* ✅ Canonical booking chat deep-link → ChatStart (bootstraps and redirects into /chat) */}
+              {/* ✅ Booking deep-link now goes directly to ChatPage */}
               <Route
                 path="/booking/:bookingId/chat"
                 element={
                   <RequireAuth>
-                    <ChatStart />
+                    <ChatPage />
                   </RequireAuth>
                 }
               />
@@ -327,7 +332,7 @@ export default function AppRouter() {
                 }
               />
 
-              {/* ✅ Favourites / Wishlist (aliases) */}
+              {/* ---------- Favourites / Wishlist ---------- */}
               <Route
                 path="/favourites"
                 element={
@@ -340,7 +345,7 @@ export default function AppRouter() {
               <Route path="/favorites" element={<Navigate to="/favourites" replace />} />
 
               {/* =========================================================
-                  ✅ ONLY HOST/PARTNER/ADMIN CAN SET PAYOUT DETAILS
+                  ONLY HOST/PARTNER/ADMIN CAN SET PAYOUT DETAILS
                   ========================================================= */}
               <Route
                 path="/payout-setup"
@@ -354,7 +359,7 @@ export default function AppRouter() {
               />
 
               {/* =========================================================
-                  ✅ ONLY HOST/PARTNER/ADMIN CAN LIST PROPERTIES
+                  ONLY HOST/PARTNER/ADMIN CAN LIST PROPERTIES
                   ========================================================= */}
               <Route
                 path="/post"
@@ -418,7 +423,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
               <Route
                 path="/host-reservations"
                 element={
@@ -443,7 +447,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
               <Route
                 path="/withdrawals"
                 element={
@@ -456,7 +459,6 @@ export default function AppRouter() {
                   </RequireAuth>
                 }
               />
-
               <Route
                 path="/manage-listings"
                 element={
@@ -473,7 +475,7 @@ export default function AppRouter() {
               <Route path="/host-listings" element={<Navigate to="/manage-listings" replace />} />
               <Route path="/partner-listings" element={<Navigate to="/manage-listings" replace />} />
 
-              {/* ✅ Alias routes to prevent “bounce to home” when old paths exist */}
+              {/* ---------- Alias routes ---------- */}
               <Route path="/partner-reservations" element={<Navigate to="/reservations" replace />} />
               <Route path="/partner-withdrawals" element={<Navigate to="/withdrawals" replace />} />
               <Route path="/partner-wallet" element={<Navigate to="/withdrawals" replace />} />
@@ -481,7 +483,7 @@ export default function AppRouter() {
               <Route path="/partner-add-listing" element={<Navigate to="/post/new" replace />} />
               <Route path="/partner-inbox" element={<Navigate to="/inbox" replace />} />
 
-              {/* ---------- Admin (consolidated) ---------- */}
+              {/* ---------- Admin ---------- */}
               <Route
                 path="/admin/*"
                 element={
@@ -490,18 +492,11 @@ export default function AppRouter() {
                   </RequireAdmin>
                 }
               />
-              <Route
-                path="/admin"
-                element={
-                  <RequireAdmin>
-                    <AdminDashboard />
-                  </RequireAdmin>
-                }
-              />
 
               {/* ---------- Backstop ---------- */}
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
+
             <Footer />
           </ToastProvider>
         </BrowserRouter>

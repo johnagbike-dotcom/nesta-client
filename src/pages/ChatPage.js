@@ -24,7 +24,7 @@ import "../styles/motion.css";
 
 /**
  * ✅ Chat enabled default:
- * - If env is missing, chat is ON (prevents accidental production disable).
+ * - If env is missing, chat is ON.
  * - Only OFF when REACT_APP_CHAT_ENABLED explicitly set to "false".
  */
 const CHAT_ENABLED =
@@ -38,12 +38,14 @@ const QUICK_GUEST = [
   "Can I get a flexible check-in?",
   "Please share house rules.",
 ];
+
 const QUICK_HOST = [
   "Hi there 👋 How can I help?",
   "Your dates are available ✅",
   "Check-in is from 2pm; we can be flexible.",
   "Here are the house rules:",
 ];
+
 const QUICK_PARTNER = [
   "Hello 👋 thanks for your interest.",
   "We manage similar properties if you’d like options.",
@@ -53,9 +55,15 @@ const QUICK_PARTNER = [
 
 const ONLINE_WINDOW_MS = 60 * 1000;
 
-function stableChatId(listingId, a, b) {
-  const [x, y] = [a, b].sort();
-  return `l:${listingId}::u:${x}::v:${y}`;
+function stableListingChatId(listingId, a, b) {
+  const [x, y] = [String(a || "").trim(), String(b || "").trim()].sort();
+  return `l:${String(listingId || "").trim()}::u:${x}::v:${y}`;
+}
+
+function stableBookingChatId(bookingId, guestId, hostId) {
+  return `b:${String(bookingId || "").trim()}::g:${String(guestId || "").trim()}::h:${String(
+    hostId || ""
+  ).trim()}`;
 }
 
 function safeMillis(ts) {
@@ -74,6 +82,7 @@ function safeMillis(ts) {
 function safeStr(v) {
   return String(v ?? "").trim();
 }
+
 function safeLower(v) {
   return safeStr(v).toLowerCase();
 }
@@ -87,15 +96,47 @@ async function getBearerToken() {
   }
 }
 
+function resolveCounterpartyFromBooking(booking = {}) {
+  const ownership = safeLower(booking.ownershipType || "");
+  if (ownership === "host") {
+    return (
+      booking.ownerId ||
+      booking.ownerUid ||
+      booking.hostId ||
+      booking.hostUid ||
+      booking.partnerUid ||
+      null
+    );
+  }
+
+  return (
+    booking.partnerUid ||
+    booking.partnerId ||
+    booking.ownerId ||
+    booking.ownerUid ||
+    booking.hostId ||
+    booking.hostUid ||
+    booking.payoutUid ||
+    null
+  );
+}
+
+function buildInitialThreadId({ forcedChatId, bookingId, guestId, hostId, listingId }) {
+  if (forcedChatId) return forcedChatId;
+  if (bookingId && guestId && hostId) return stableBookingChatId(bookingId, guestId, hostId);
+  if (listingId && guestId && hostId) return stableListingChatId(listingId, guestId, hostId);
+  return null;
+}
+
 export default function ChatPage() {
   const nav = useNavigate();
   const params = useParams();
   const { state } = useLocation();
 
   const { user } = useAuth();
-  const { profile } = useUserProfile(user?.uid);
+  const { profile } = useUserProfile();
 
-  const myRole = (profile?.role || "").toLowerCase();
+  const myRole = safeLower(profile?.role);
   const QUICK =
     !myRole || myRole === "guest"
       ? QUICK_GUEST
@@ -105,21 +146,32 @@ export default function ChatPage() {
 
   // Supports:
   // - /chat (expects state)
-  // - /chat/:uid (paramUid)
-  // - /booking/:bookingId/chat (bookingId)
+  // - /chat/:uid
+  // - /booking/:bookingId/chat
   const forcedChatId = state?.chatId || state?.threadId || null;
   const paramUid = params?.uid || null;
   const bookingIdParam = params?.bookingId || null;
 
   const partnerUidFromState = state?.partnerUid || paramUid || null;
-  const listingFromState = state?.listing || null; // { id, title }
+  const listingFromState = state?.listing || null;
+  const bookingFromState = state?.booking || null;
+  const bookingIdFromState = state?.bookingId || bookingFromState?.id || null;
 
-  const [chatId, setChatId] = useState(forcedChatId || null);
-  const [headerTitle, setHeaderTitle] = useState("Chat");
-
-  // ✅ MUST be mutable (so booking/:bookingId/chat can hydrate)
+  const [bookingId, setBookingId] = useState(bookingIdParam || bookingIdFromState || null);
   const [counterUid, setCounterUid] = useState(partnerUidFromState);
   const [listing, setListing] = useState(listingFromState);
+  const [chatId, setChatId] = useState(
+    buildInitialThreadId({
+      forcedChatId,
+      bookingId: bookingIdParam || bookingIdFromState,
+      guestId: user?.uid,
+      hostId: partnerUidFromState,
+      listingId: listingFromState?.id,
+    })
+  );
+  const [headerTitle, setHeaderTitle] = useState(
+    listingFromState?.title || bookingFromState?.listingTitle || "Chat"
+  );
 
   const [chatMeta, setChatMeta] = useState(null);
   const [counterProfile, setCounterProfile] = useState(null);
@@ -139,60 +191,64 @@ export default function ChatPage() {
   const myPresenceRef = useRef(null);
   const otherPresenceRef = useRef(null);
 
-  // ✅ If opened via /booking/:bookingId/chat, hydrate listing + partnerUid from booking
+  // ✅ Hydrate from booking when opened via /booking/:bookingId/chat
   useEffect(() => {
     let alive = true;
 
     async function hydrateFromBooking() {
       if (!CHAT_ENABLED) return;
       if (!user?.uid) return;
-      if (!bookingIdParam) return;
 
-      // If we already have both, no need.
-      if (counterUid && listing?.id) return;
+      const effectiveBookingId = bookingIdParam || bookingIdFromState || null;
+      if (!effectiveBookingId) return;
+
+      // If we already have enough info, skip
+      if (counterUid && listing?.id && bookingId) return;
 
       try {
         setPageError("");
 
-        // Prefer API (so it matches your server truth), fallback to Firestore
-        const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+        const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(
+          /\/+$/,
+          ""
+        );
         const API = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
 
-        let booking = null;
-
+        let booking = bookingFromState || null;
         const token = await getBearerToken();
-        if (token) {
-          const res = await fetch(`${API}/bookings/${encodeURIComponent(bookingIdParam)}`, {
+
+        if (!booking && token) {
+          const res = await fetch(`${API}/bookings/${encodeURIComponent(effectiveBookingId)}`, {
             method: "GET",
             headers: { Authorization: `Bearer ${token}` },
           });
+
           const json = await res.json().catch(() => null);
           booking = json?.booking || json?.data || json || null;
         }
 
         if (!booking) {
-          // Firestore fallback
-          const snap = await getDoc(doc(db, "bookings", String(bookingIdParam)));
+          const snap = await getDoc(doc(db, "bookings", String(effectiveBookingId)));
           booking = snap.exists() ? { id: snap.id, ...(snap.data() || {}) } : null;
         }
 
         if (!booking) throw new Error("booking_not_found");
 
         const listingId = booking.listingId || booking?.listing?.id || null;
-        const listingTitle = booking.listingTitle || booking?.listing?.title || "Listing";
+        const listingTitle =
+          booking.listingTitle || booking?.listing?.title || booking?.title || "Listing";
+        const counterpartUid = resolveCounterpartyFromBooking(booking);
 
-        // host vs partner resolution
-        const ownership = safeLower(booking.ownershipType || "");
-        const counterpartUid =
-          ownership === "host"
-            ? booking.ownerId || booking.hostId || booking.partnerUid || null
-            : booking.partnerUid || booking.ownerId || booking.hostId || null;
-
-        if (!listingId || !counterpartUid) throw new Error("booking_missing_chat_fields");
+        if (!listingId || !counterpartUid) {
+          throw new Error("booking_missing_chat_fields");
+        }
 
         if (!alive) return;
+
+        setBookingId(String(booking.id || effectiveBookingId));
         setListing({ id: String(listingId), title: listingTitle });
         setCounterUid(String(counterpartUid));
+        setHeaderTitle(listingTitle);
       } catch (e) {
         console.error("[ChatPage] hydrateFromBooking failed:", e);
         if (!alive) return;
@@ -201,17 +257,26 @@ export default function ChatPage() {
     }
 
     hydrateFromBooking();
+
     return () => {
       alive = false;
     };
-  }, [bookingIdParam, user?.uid, counterUid, listing?.id]);
+  }, [
+    bookingIdParam,
+    bookingIdFromState,
+    bookingFromState,
+    user?.uid,
+    counterUid,
+    listing?.id,
+    bookingId,
+  ]);
 
   const canRunChat = useMemo(() => {
     if (!CHAT_ENABLED) return false;
     if (!user?.uid) return false;
     if (forcedChatId) return true;
-    return !!(counterUid && listing?.id);
-  }, [user?.uid, forcedChatId, counterUid, listing?.id]);
+    return !!(counterUid && (listing?.id || bookingId));
+  }, [user?.uid, forcedChatId, counterUid, listing?.id, bookingId]);
 
   const scrollToBottom = useCallback(() => {
     if (!listRef.current) return;
@@ -225,12 +290,14 @@ export default function ChatPage() {
     if (counterPresence.typing) return "Typing…";
     const updatedAt = counterPresence.updatedAt;
     if (!updatedAt) return "Offline";
+
     const ts =
       typeof updatedAt?.toDate === "function"
         ? updatedAt.toDate().getTime()
         : typeof updatedAt === "number"
         ? updatedAt
         : 0;
+
     const now = Date.now();
     return ts && now - ts < ONLINE_WINDOW_MS ? "Online" : "Last seen recently";
   }, [counterPresence]);
@@ -245,9 +312,7 @@ export default function ChatPage() {
   }, [messages, user?.uid]);
 
   const otherIdForSeen = otherIdRef.current || null;
-  const otherLastReadMs = otherIdForSeen
-    ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen])
-    : 0;
+  const otherLastReadMs = otherIdForSeen ? safeMillis(chatMeta?.lastReadAt?.[otherIdForSeen]) : 0;
   const lastMineCreatedMs = safeMillis(lastMineMsg?.createdAt);
   const showSeen =
     !!lastMineMsg &&
@@ -255,7 +320,6 @@ export default function ChatPage() {
     lastMineCreatedMs > 0 &&
     otherLastReadMs >= lastMineCreatedMs;
 
-  // ✅ Archive gate
   const isArchivedForMe = useMemo(() => {
     if (!user?.uid) return false;
     return !!chatMeta?.archived?.[user.uid];
@@ -268,7 +332,7 @@ export default function ChatPage() {
     let cancelled = false;
 
     async function resolveThread() {
-      if (!canRunChat) return;
+      if (!canRunChat || !user?.uid) return;
 
       try {
         setPageError("");
@@ -278,28 +342,75 @@ export default function ChatPage() {
           return;
         }
 
-        const id = stableChatId(listing.id, user.uid, counterUid);
-        const ref = doc(db, "chats", id);
+        const resolvedChatId =
+          bookingId && counterUid
+            ? stableBookingChatId(bookingId, user.uid, counterUid)
+            : stableListingChatId(listing.id, user.uid, counterUid);
+
+        const ref = doc(db, "chats", resolvedChatId);
         const snap = await getDoc(ref);
 
         if (!snap.exists()) {
           await setDoc(ref, {
+            bookingId: bookingId || null,
             participants: [user.uid, counterUid],
-            listingId: listing.id,
-            listingTitle: listing.title || "Listing",
-            archived: {},
-            pinned: {},
+            listingId: listing?.id || null,
+            listingTitle: listing?.title || "Listing",
+            archived: {
+              [user.uid]: false,
+              [counterUid]: false,
+            },
+            pinned: {
+              [user.uid]: false,
+              [counterUid]: false,
+            },
             lastReadAt: {},
             unreadFor: [],
             lastMessage: null,
+            lastMessageText: "",
+            lastMessageSenderId: null,
+            lastMessageAt: null,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
+        } else {
+          const d = snap.data() || {};
+          const participants = Array.isArray(d.participants) ? d.participants : [];
+
+          const needsRepair =
+            !participants.includes(user.uid) ||
+            !participants.includes(counterUid) ||
+            !d.listingId ||
+            (bookingId && !d.bookingId);
+
+          if (needsRepair) {
+            await setDoc(
+              ref,
+              {
+                bookingId: d.bookingId || bookingId || null,
+                listingId: d.listingId || listing?.id || null,
+                listingTitle: d.listingTitle || listing?.title || "Listing",
+                participants: Array.from(new Set([...participants, user.uid, counterUid])),
+                archived: {
+                  [user.uid]: d.archived?.[user.uid] ?? false,
+                  [counterUid]: d.archived?.[counterUid] ?? false,
+                  ...(d.archived || {}),
+                },
+                pinned: {
+                  [user.uid]: d.pinned?.[user.uid] ?? false,
+                  [counterUid]: d.pinned?.[counterUid] ?? false,
+                  ...(d.pinned || {}),
+                },
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
         }
 
         if (!cancelled) {
-          setChatId(id);
-          setHeaderTitle(listing.title || "Chat");
+          setChatId(resolvedChatId);
+          setHeaderTitle(listing?.title || "Chat");
         }
       } catch (e) {
         console.error("Resolve/create chat failed:", e);
@@ -308,20 +419,22 @@ export default function ChatPage() {
     }
 
     resolveThread();
+
     return () => {
       cancelled = true;
     };
-  }, [canRunChat, forcedChatId, user?.uid, counterUid, listing?.id, listing?.title, listing]);
+  }, [canRunChat, forcedChatId, user?.uid, counterUid, listing?.id, listing?.title, bookingId]);
 
   // Chat doc listener
   useEffect(() => {
-    if (!canRunChat || !chatId) return;
+    if (!canRunChat || !chatId || !user?.uid) return;
 
     const chatRef = doc(db, "chats", chatId);
     const unsub = onSnapshot(
       chatRef,
       (snap) => {
         if (!snap.exists()) return;
+
         const d = snap.data() || {};
         setChatMeta(d);
         setHeaderTitle(d.listingTitle || "Chat");
@@ -390,6 +503,7 @@ export default function ChatPage() {
     }
 
     load();
+
     return () => {
       alive = false;
     };
@@ -399,23 +513,23 @@ export default function ChatPage() {
   useEffect(() => {
     if (!canRunChat || !chatId) return;
 
-    const qRef = query(
-      collection(db, "chats", chatId, "messages"),
-      orderBy("createdAt", "asc")
-    );
+    const qRef = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
     const unsub = onSnapshot(
       qRef,
       (snap) => {
         setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         setTimeout(scrollToBottom, 0);
       },
-      (err) => console.error(err)
+      (err) => {
+        console.error(err);
+        setPageError("Could not load messages.");
+      }
     );
 
     return () => unsub();
   }, [canRunChat, chatId, scrollToBottom]);
 
-  // Update lastReadAt (skip if archived)
+  // Update lastReadAt
   useEffect(() => {
     if (!canRunChat || !chatId || !user?.uid) return;
 
@@ -457,6 +571,9 @@ export default function ChatPage() {
 
       await updateDoc(doc(db, "chats", chatId), {
         lastMessage: { text, senderId: user.uid, createdAt: serverTimestamp() },
+        lastMessageText: text,
+        lastMessageSenderId: user.uid,
+        lastMessageAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         [`lastReadAt.${user.uid}`]: serverTimestamp(),
         ...(otherId ? { unreadFor: arrayUnion(otherId) } : {}),
@@ -510,10 +627,13 @@ export default function ChatPage() {
       return;
     }
     setMessage(t);
-    setTimeout(onSend, 20);
+    setTimeout(() => {
+      const nextText = t.trim();
+      if (!nextText) return;
+      setMessage(nextText);
+      setTimeout(onSend, 20);
+    }, 0);
   };
-
-  // RENDER
 
   if (!CHAT_ENABLED) {
     return (
@@ -554,15 +674,13 @@ export default function ChatPage() {
     );
   }
 
-  if (!forcedChatId && (!counterUid || !listing?.id)) {
+  if (!forcedChatId && (!counterUid || (!listing?.id && !bookingId))) {
     return (
       <main className="min-h-[70vh] px-4 py-6 text-white bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] motion-fade-in">
         <div className="max-w-3xl mx-auto rounded-2xl border border-white/10 bg-gray-900/60 p-6 motion-pop">
           <h2 className="text-2xl font-bold mb-2">Messages</h2>
           <p className="text-gray-300">Open a conversation from your Bookings.</p>
-          {pageError ? (
-            <div className="mt-3 text-sm text-rose-200">{pageError}</div>
-          ) : null}
+          {pageError ? <div className="mt-3 text-sm text-rose-200">{pageError}</div> : null}
         </div>
       </main>
     );
@@ -573,6 +691,7 @@ export default function ChatPage() {
     counterProfile?.name ||
     counterProfile?.email ||
     "Host/Partner";
+
   const avatarUrl =
     counterProfile?.photoURL ||
     counterProfile?.avatarUrl ||
@@ -588,7 +707,7 @@ export default function ChatPage() {
               <span className="truncate">{headerTitle || "Messages"}</span>
             </h1>
 
-            <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
+            <div className="flex items-center gap-2 text-xs text-gray-400 mt-1 flex-wrap">
               <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-2 py-1">
                 <span className="relative inline-flex items-center justify-center w-6 h-6 rounded-full overflow-hidden border border-white/10 bg-black/30">
                   {avatarUrl ? (
@@ -603,6 +722,7 @@ export default function ChatPage() {
                     </span>
                   )}
                 </span>
+
                 <span className="inline-flex items-center gap-1">
                   <span
                     className={`h-2 w-2 rounded-full ${
@@ -615,10 +735,12 @@ export default function ChatPage() {
                   />
                   {presenceLabel}
                 </span>
+
                 <span className="opacity-80 truncate max-w-[160px]">
                   • {counterDisplayName}
                 </span>
               </span>
+
               {showSeen ? <span className="text-amber-300/80">• Seen</span> : null}
             </div>
           </div>

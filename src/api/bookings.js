@@ -47,7 +47,7 @@ const API = normaliseApiRoot(getEnvApiBase());
 
 /* ---------------- AUTH TOKEN (HARDENED) ---------------- */
 
-// Wait for Firebase Auth to hydrate (prevents false "logged out" reads (auth.currentUser null))
+// Wait for Firebase Auth to hydrate
 function waitForAuthUser({ timeoutMs = 8000 } = {}) {
   return new Promise((resolve) => {
     if (auth.currentUser) return resolve(auth.currentUser);
@@ -69,7 +69,7 @@ function waitForAuthUser({ timeoutMs = 8000 } = {}) {
   });
 }
 
-// Strict token getter: if requireAuth is true, this MUST return a token or throw.
+// Strict token getter
 async function getIdToken({ forceRefresh = false, waitUser = true, requireAuth = false } = {}) {
   const u = auth.currentUser || (waitUser ? await waitForAuthUser() : null);
 
@@ -97,12 +97,62 @@ async function getIdToken({ forceRefresh = false, waitUser = true, requireAuth =
   }
 }
 
-// Provider normalisation used across flows (paystack/flutterwave)
+// Provider normalisation used across flows
 export function normalizeProvider(v) {
   const s = String(v || "").toLowerCase().trim();
   if (s.includes("flutter")) return "flutterwave";
   if (s.includes("paystack")) return "paystack";
   return s || "";
+}
+
+// Shared booking status normaliser
+export function normalizeBookingStatus(v) {
+  return String(v || "").toLowerCase().trim();
+}
+
+// Shared pretty status helper for UI
+export function prettyBookingStatus(v) {
+  const s = normalizeBookingStatus(v);
+
+  if (!s) return "Pending";
+  if (s === "paid") return "Paid";
+  if (s === "confirmed") return "Confirmed";
+  if (s === "paid_pending_release" || s === "paid-pending-release") {
+    return "Paid — awaiting check-in";
+  }
+  if (s === "checked_in" || s === "checked-in") return "Checked in";
+  if (s === "released") return "Stay active";
+  if (s === "completed") return "Completed";
+  if (s === "cancelled" || s === "canceled") return "Cancelled";
+  if (s === "refunded") return "Refunded";
+  if (s === "failed") return "Failed";
+  if (s === "expired") return "Expired";
+
+  return s.replace(/[_-]/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+// Booking payment/confirmation truth helper
+export function isPaidOrConfirmedStatus(statusRaw, paymentStatusRaw = "") {
+  const s = normalizeBookingStatus(statusRaw);
+  const p = normalizeBookingStatus(paymentStatusRaw);
+
+  const paidishStatus = new Set([
+    "confirmed",
+    "paid",
+    "paid_pending_release",
+    "paid-pending-release",
+    "paid_pending_confirmation",
+    "paid-pending-confirmation",
+    "paid_needs_review",
+    "paid-needs-review",
+    "checked_in",
+    "released",
+    "completed",
+  ]);
+
+  const paidishPay = new Set(["paid", "successful", "completed"]);
+
+  return paidishStatus.has(s) || paidishPay.has(p);
 }
 
 // generic JSON fetch helper (Bearer-token; no cookies)
@@ -145,10 +195,8 @@ async function fetchJson(url, options = {}) {
     return { res, data };
   };
 
-  // 1) First attempt
   let { res, data } = await doFetch(false);
 
-  // 2) If unauthorized and allowed, retry once with forced refresh
   if (res.status === 401 && retryOn401 && requireAuth) {
     ({ res, data } = await doFetch(true));
   }
@@ -170,7 +218,7 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
-// small helper to safely turn FS dates into ISO strings
+// safely turn FS dates into ISO strings
 function toIso(v) {
   if (!v) return null;
   try {
@@ -224,20 +272,11 @@ export async function createBookingHoldAPI(payload) {
 
 /**
  * Get booking from server (recommended for polling after callback).
- *
- * IMPORTANT:
- * - BookingCompletePage may pass a bookingId OR a gateway reference.
- * - Your server can choose to support either.
- *
- * This client:
- *  1) tries GET /bookings/:idOrRef
- *  2) if 404/400, tries optional resolve-style fallbacks (safe if not implemented)
  */
 export async function getBookingStatusAPI(bookingIdOrRef) {
   const key = String(bookingIdOrRef || "").trim();
   if (!key) throw new Error("Missing booking id");
 
-  // (1) Primary path (recommended)
   try {
     const data = await fetchJson(`${API}/bookings/${encodeURIComponent(key)}`, {
       method: "GET",
@@ -250,14 +289,10 @@ export async function getBookingStatusAPI(bookingIdOrRef) {
     return data?.booking ?? data;
   } catch (e) {
     const status = e?.status;
-
-    // Only attempt fallbacks on common "not found / bad param" cases
     const shouldTryFallback = status === 404 || status === 400;
 
     if (!shouldTryFallback) throw e;
 
-    // (2) Fallback A: /bookings/resolve?reference=
-    // Safe even if not implemented (will throw and we'll continue)
     try {
       const qs = new URLSearchParams({ reference: key }).toString();
       const data = await fetchJson(`${API}/bookings/resolve?${qs}`, {
@@ -270,7 +305,6 @@ export async function getBookingStatusAPI(bookingIdOrRef) {
       return data?.booking ?? data;
     } catch {}
 
-    // (3) Fallback B: /bookings/by-reference?ref=
     try {
       const qs = new URLSearchParams({ ref: key }).toString();
       const data = await fetchJson(`${API}/bookings/by-reference?${qs}`, {
@@ -283,7 +317,6 @@ export async function getBookingStatusAPI(bookingIdOrRef) {
       return data?.booking ?? data;
     } catch {}
 
-    // If no fallback worked, throw original error
     throw e;
   }
 }
@@ -321,7 +354,7 @@ export async function syncBookingToAdminLedger(bookingId, statusOverride) {
     if (!snap.exists()) return;
 
     const b = snap.data() || {};
-    const status = (statusOverride || b.status || "confirmed").toLowerCase();
+    const status = normalizeBookingStatus(statusOverride || b.status || "confirmed");
 
     const createdAt = toIso(
       b.createdAt && b.createdAt.toDate ? b.createdAt : b.createdAt || b.created || null
@@ -574,13 +607,16 @@ export async function ensurePendingHoldFS({
   return { id, expiresAt };
 }
 
-export async function markBookingConfirmedFS(bookingId, { provider = "paystack", reference = "" } = {}) {
+export async function markBookingConfirmedFS(
+  bookingId,
+  { provider = "paystack", reference = "" } = {}
+) {
   try {
     await notifyPaymentReceivedAPI({ bookingId, provider, reference });
   } catch {}
 
   try {
-    await syncBookingToAdminLedger(bookingId, "paid");
+    await syncBookingToAdminLedger(bookingId, "paid_pending_release");
   } catch {}
 
   return { ok: true };
@@ -636,7 +672,8 @@ export async function expireStaleBookings() {
       const b = d.data();
       if (b.status !== "pending") return;
 
-      const exp = b.expiresAt?.toDate ? b.expiresAt.toDate() : b.expiresAt ? new Date(b.expiresAt) : null;
+      const exp =
+        b.expiresAt?.toDate ? b.expiresAt.toDate() : b.expiresAt ? new Date(b.expiresAt) : null;
 
       if (exp && exp.getTime() < now) {
         ops.push(

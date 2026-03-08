@@ -12,35 +12,71 @@ import {
 const COUNTRY_DEFAULT = "Nigeria";
 
 function safe(str) {
-  return String(str || "");
+  return String(str || "").trim();
 }
 
 function normalizeRole(raw) {
-  const r = String(raw || "").toLowerCase();
-  return r === "partner" || r === "verified_partner" ? "partner" : "host";
+  const r = String(raw || "").toLowerCase().trim();
+  if (r === "partner" || r === "verified_partner") return "partner";
+  return "host";
+}
+
+function normalizeIntent(raw) {
+  const s = String(raw || "").toLowerCase().trim();
+  return s === "partner" ? "partner" : "host";
+}
+
+function normalizeKycStatus(profile = {}) {
+  return String(
+    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || ""
+  )
+    .toLowerCase()
+    .trim();
 }
 
 export default function KycApplicationPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  const { user } = useAuth();
-  const { profile: userProfile } = useUserProfile(user?.uid);
+  const { user, profile: authProfile } = useAuth();
+  const { profile: liveProfile } = useUserProfile();
+  const userProfile = liveProfile || authProfile || {};
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  // role from URL (?role=host|partner) or inferred fallback
-  const urlRole = normalizeRole(searchParams.get("role"));
-  const inferredRole = normalizeRole(
-    urlRole ||
-      safe(userProfile?.role).toLowerCase() ||
-      safe(userProfile?.accountType).toLowerCase() ||
-      safe(userProfile?.type).toLowerCase()
-  );
+  const queryRole = searchParams.get("role");
+  const queryIntent = searchParams.get("intent");
 
-  const targetRole = inferredRole; // "host" | "partner"
+  const storedIntent = (() => {
+    try {
+      return localStorage.getItem("nesta_kyc_intent");
+    } catch {
+      return "";
+    }
+  })();
+
+  const kycStatus = useMemo(() => normalizeKycStatus(userProfile), [userProfile]);
+  const isKycApproved =
+    kycStatus === "approved" ||
+    kycStatus === "verified" ||
+    kycStatus === "complete";
+
+  // precedence: query intent > query role > local storage intent > profile role/type
+  const targetRole = useMemo(() => {
+    const candidate =
+      queryIntent ||
+      queryRole ||
+      storedIntent ||
+      userProfile?.role ||
+      userProfile?.accountType ||
+      userProfile?.type ||
+      "host";
+
+    return normalizeIntent(candidate);
+  }, [queryIntent, queryRole, storedIntent, userProfile?.role, userProfile?.accountType, userProfile?.type]);
+
   const isHost = targetRole === "host";
   const isPartner = targetRole === "partner";
 
@@ -67,12 +103,37 @@ export default function KycApplicationPage() {
     companyContactRole: "",
   });
 
-  /* ---------- load / create existing KYC profile (defensive) ---------- */
+  // keep intent persisted
+  useEffect(() => {
+    try {
+      localStorage.setItem("nesta_kyc_intent", targetRole);
+    } catch {
+      // ignore
+    }
+  }, [targetRole]);
+
+  // if user is already approved and already has the final role, send them straight in
+  useEffect(() => {
+    if (!user) return;
+
+    const currentRole = normalizeRole(userProfile?.role || userProfile?.type || "");
+
+    if (isKycApproved && currentRole === "host" && targetRole === "host") {
+      navigate("/host", { replace: true });
+      return;
+    }
+
+    if (isKycApproved && currentRole === "partner" && targetRole === "partner") {
+      navigate("/partner", { replace: true });
+    }
+  }, [user, userProfile?.role, userProfile?.type, isKycApproved, targetRole, navigate]);
+
+  /* ---------- load / create existing KYC profile ---------- */
   useEffect(() => {
     let live = true;
 
     async function run() {
-      if (!user) {
+      if (!user?.uid) {
         navigate("/login", { replace: true });
         return;
       }
@@ -81,13 +142,12 @@ export default function KycApplicationPage() {
       setError("");
 
       try {
-        // ✅ Ensure doc exists (handles direct hits to /apply)
         const existing = await loadKycProfile(user.uid);
+
         if (!existing) {
           await createInitialKycProfile(user.uid, targetRole);
         } else {
-          // ✅ keep role aligned with intent (URL > profile)
-          const docRole = normalizeRole(existing.role);
+          const docRole = normalizeRole(existing.role || targetRole);
           if (docRole !== targetRole) {
             await saveKycProfile(user.uid, { role: targetRole });
           }
@@ -97,19 +157,26 @@ export default function KycApplicationPage() {
 
         if (live && data) {
           const finalRole = normalizeRole(data.role || targetRole);
+          const finalIsHost = finalRole === "host";
 
           setForm((prev) => ({
             ...prev,
             ...data,
             role: finalRole,
             accountType:
-              finalRole === "host"
+              finalIsHost
                 ? "individual"
                 : data.accountType === "company"
                 ? "company"
                 : "individual",
             country: data.country || COUNTRY_DEFAULT,
             companyCountry: data.companyCountry || COUNTRY_DEFAULT,
+          }));
+        } else if (live) {
+          setForm((prev) => ({
+            ...prev,
+            role: targetRole,
+            accountType: targetRole === "host" ? "individual" : prev.accountType || "individual",
           }));
         }
       } catch (e) {
@@ -121,11 +188,11 @@ export default function KycApplicationPage() {
     }
 
     run();
+
     return () => {
       live = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.uid, targetRole]);
+  }, [user?.uid, targetRole, navigate]);
 
   const onChange = (e) => {
     const { name, value } = e.target;
@@ -139,7 +206,8 @@ export default function KycApplicationPage() {
 
   const onSubmit = async (e) => {
     e.preventDefault();
-    if (!user) {
+
+    if (!user?.uid) {
       navigate("/login", { replace: true });
       return;
     }
@@ -157,8 +225,15 @@ export default function KycApplicationPage() {
 
       await saveKycProfile(user.uid, payload);
 
-      // after saving details → go to uploads page (step 3)
-      navigate("/onboarding/kyc", { replace: true });
+      try {
+        localStorage.setItem("nesta_kyc_intent", targetRole);
+      } catch {
+        // ignore
+      }
+
+      navigate(`/onboarding/kyc?intent=${encodeURIComponent(targetRole)}`, {
+        replace: true,
+      });
     } catch (err) {
       console.error(err);
       setError(err?.message || "Could not save your application.");
@@ -190,6 +265,10 @@ export default function KycApplicationPage() {
             company partner, fill in both the company and primary contact
             details.
           </p>
+          <p className="mt-2 text-xs text-white/45">
+            Application intent:{" "}
+            <span className="font-semibold text-white/80 capitalize">{targetRole}</span>
+          </p>
         </header>
 
         <section className="rounded-3xl border border-white/10 bg-[#070b12] p-6 md:p-8 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
@@ -219,6 +298,7 @@ export default function KycApplicationPage() {
                 <p className="text-sm font-semibold mb-2">
                   Are you onboarding as an individual or a company?
                 </p>
+
                 <div className="inline-flex rounded-full bg-white/5 p-1 border border-white/10">
                   <button
                     type="button"
@@ -231,6 +311,7 @@ export default function KycApplicationPage() {
                   >
                     Individual account
                   </button>
+
                   <button
                     type="button"
                     onClick={() => handleAccountTypeChange("company")}
@@ -243,6 +324,7 @@ export default function KycApplicationPage() {
                     Company
                   </button>
                 </div>
+
                 <p className="mt-1 text-xs text-white/50">
                   Choose company if you are applying on behalf of a registered
                   business or agency.
@@ -516,6 +598,7 @@ export default function KycApplicationPage() {
               >
                 {saving ? "Saving…" : "Save & continue to uploads"}
               </button>
+
               <button
                 type="button"
                 onClick={() => navigate("/")}

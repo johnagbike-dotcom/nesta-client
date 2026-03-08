@@ -36,6 +36,7 @@ function allowedStatus(status) {
     s === "paid" ||
     s === "completed" ||
     s === "paid_pending_release" ||
+    s === "checked_in" ||
     s === "released"
   );
 }
@@ -43,17 +44,33 @@ function allowedStatus(status) {
 function bookingBelongsToUser(booking, uid) {
   if (!booking || !uid) return false;
 
-  const guestUid =
-    safeStr(booking.guestUid || booking.guestId || booking.userId || booking.userUid || "");
+  const guestUid = safeStr(
+    booking.guestUid || booking.guestId || booking.userId || booking.userUid || ""
+  );
 
   return guestUid && guestUid === String(uid);
+}
+
+function prettyStatus(status) {
+  const s = lower(status);
+  if (!s) return "Pending";
+  if (s === "paid") return "Paid";
+  if (s === "confirmed") return "Confirmed";
+  if (s === "completed") return "Completed";
+  if (s === "paid_pending_release") return "Paid — awaiting check-in";
+  if (s === "checked_in") return "Checked in";
+  if (s === "released") return "Stay active";
+  if (s === "cancelled") return "Cancelled";
+  if (s === "refunded") return "Refunded";
+  if (s === "failed") return "Failed";
+  return s.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
 /* ===================== Date helpers ===================== */
 function toDateObj(v) {
   if (!v) return null;
   if (v instanceof Date) return v;
-  if (typeof v?.toDate === "function") return v.toDate(); // Firestore Timestamp-style
+  if (typeof v?.toDate === "function") return v.toDate();
   if (typeof v?.seconds === "number") return new Date(v.seconds * 1000);
   if (typeof v === "string" || typeof v === "number") return new Date(v);
   return null;
@@ -84,19 +101,22 @@ function InfoBlock({ label, children }) {
 }
 
 export default function CheckinGuidePage() {
-  const { id } = useParams(); // bookingId
+  const { id } = useParams();
   const nav = useNavigate();
   const { state } = useLocation();
 
   const { user, profile: authProfile } = useAuth();
-  const { profile: liveProfile } = useUserProfile(); // ✅ no args
+  const { profile: liveProfile } = useUserProfile();
   const profile = liveProfile || authProfile || {};
 
   const [booking, setBooking] = useState(state?.booking || null);
   const [loading, setLoading] = useState(!state?.booking);
   const [error, setError] = useState("");
 
-  const role = useMemo(() => lower(profile?.role || profile?.type || ""), [profile?.role, profile?.type]);
+  const role = useMemo(
+    () => lower(profile?.role || profile?.type || ""),
+    [profile?.role, profile?.type]
+  );
   const isGuestRole = useMemo(() => !role || role === "guest", [role]);
 
   const loadBooking = useCallback(async () => {
@@ -142,7 +162,7 @@ export default function CheckinGuidePage() {
     (async () => {
       if (!alive) return;
       if (!user?.uid) return;
-      if (booking) return; // state already provided
+      if (booking) return;
       await loadBooking();
     })();
     return () => {
@@ -194,10 +214,8 @@ export default function CheckinGuidePage() {
     );
   }
 
-  // ✅ MUST belong to current user
   const isOwnerGuest = bookingBelongsToUser(booking, user.uid);
 
-  // Page policy: only guests viewing their own confirmed+ bookings
   if (!isGuestRole || !isOwnerGuest || !allowedStatus(booking.status)) {
     return (
       <main className="min-h-[70vh] bg-[#0f1419] text-white px-4 pt-[calc(var(--topbar-h,88px)+24px)] pb-10">
@@ -223,11 +241,40 @@ export default function CheckinGuidePage() {
     title,
     listingTitle,
     listingLocation,
+    city,
+    area,
+    listingId,
     checkIn,
     checkOut,
     guests,
     checkinGuide,
   } = booking;
+
+  const displayTitle = title || listingTitle || "Your stay";
+  const displayLocation = listingLocation || city || area || "";
+  const displayStatus = prettyStatus(booking.status);
+
+  const arrivalText =
+    checkinGuide?.arrival ||
+    (lower(booking.status) === "paid_pending_release"
+      ? "Your booking is paid. Arrival details will be provided by your host before check-in."
+      : lower(booking.status) === "checked_in"
+      ? "Your check-in has been confirmed. Please follow the host’s arrival instructions shared for your stay."
+      : "Arrival details will be provided by your host before check-in.");
+
+  const accessText =
+    checkinGuide?.access ||
+    (lower(booking.status) === "checked_in" || lower(booking.status) === "released"
+      ? "Access instructions should already have been shared for your stay. If you still need help, please use secure chat."
+      : "Access instructions will be shared closer to your arrival date.");
+
+  const rulesText =
+    checkinGuide?.rules ||
+    "Please respect the property and adhere to all house rules provided by the host or partner.";
+
+  const wifiText =
+    checkinGuide?.wifi ||
+    "Wi-Fi details will be available inside the property or via host instructions.";
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white px-4 pt-[calc(var(--topbar-h,88px)+24px)] pb-10 motion-fade-in">
@@ -235,7 +282,7 @@ export default function CheckinGuidePage() {
         <header className="mb-8 motion-slide-up">
           <h1 className="text-3xl font-extrabold tracking-tight">Check-in Guide</h1>
           <p className="text-white/60 mt-2">
-            {title || listingTitle || "Your stay"} {listingLocation ? `• ${listingLocation}` : ""}
+            {displayTitle} {displayLocation ? `• ${displayLocation}` : ""}
           </p>
         </header>
 
@@ -244,31 +291,18 @@ export default function CheckinGuidePage() {
           <InfoBlock label="Check-out">{fmtDateTime(checkOut)}</InfoBlock>
           <InfoBlock label="Guests">{guests || 1}</InfoBlock>
           <InfoBlock label="Status">
-            <span className="text-emerald-300 font-semibold">
-              {String(booking.status || "").toUpperCase()}
-            </span>
+            <span className="text-emerald-300 font-semibold">{displayStatus}</span>
           </InfoBlock>
         </div>
 
         <div className="space-y-5">
-          <InfoBlock label="Arrival instructions">
-            {checkinGuide?.arrival ||
-              "Arrival details will be provided by your host before check-in."}
-          </InfoBlock>
+          <InfoBlock label="Arrival instructions">{arrivalText}</InfoBlock>
 
-          <InfoBlock label="Access & keys">
-            {checkinGuide?.access ||
-              "Access instructions will be shared closer to your arrival date."}
-          </InfoBlock>
+          <InfoBlock label="Access & keys">{accessText}</InfoBlock>
 
-          <InfoBlock label="House rules">
-            {checkinGuide?.rules ||
-              "Please respect the property and adhere to all house rules provided."}
-          </InfoBlock>
+          <InfoBlock label="House rules">{rulesText}</InfoBlock>
 
-          <InfoBlock label="Wi-Fi">
-            {checkinGuide?.wifi || "Wi-Fi details will be available inside the property."}
-          </InfoBlock>
+          <InfoBlock label="Wi-Fi">{wifiText}</InfoBlock>
 
           <InfoBlock label="Support">
             If you need assistance during your stay, please use the in-app chat
@@ -276,7 +310,7 @@ export default function CheckinGuidePage() {
           </InfoBlock>
         </div>
 
-        <div className="mt-10 flex justify-between items-center">
+        <div className="mt-10 flex justify-between items-center gap-3 flex-wrap">
           <button
             onClick={() => nav(-1)}
             className="px-4 py-2 rounded-xl bg-white/10 border border-white/15 hover:bg-white/15"
@@ -284,12 +318,34 @@ export default function CheckinGuidePage() {
             ← Back to bookings
           </button>
 
-          <button
-            onClick={() => nav(`/booking/${booking.id}/chat`, { state: { bookingId: booking.id } })}
-            className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-semibold"
-          >
-            Chat with host / partner
-          </button>
+          <div className="flex gap-2 flex-wrap">
+            {listingId ? (
+              <button
+                onClick={() => nav(`/listing/${listingId}`)}
+                className="px-4 py-2 rounded-xl bg-white/10 border border-white/15 hover:bg-white/15"
+              >
+                Open listing
+              </button>
+            ) : null}
+
+            <button
+              onClick={() =>
+                nav(`/booking/${booking.id}/chat`, {
+                  state: {
+                    bookingId: booking.id,
+                    booking,
+                    listing: listingId
+                      ? { id: listingId, title: displayTitle }
+                      : null,
+                    from: "checkin_guide",
+                  },
+                })
+              }
+              className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-semibold"
+            >
+              Chat with host / partner
+            </button>
+          </div>
         </div>
 
         <div className="mt-6 text-xs text-white/40">

@@ -8,8 +8,11 @@ import { useToast } from "../../components/Toast";
 import { getAuth } from "firebase/auth";
 
 /* ------------------------------ axios base ------------------------------ */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   withCredentials: false,
   timeout: 20000,
 });
@@ -25,14 +28,48 @@ api.interceptors.request.use(async (config) => {
 });
 
 /* -------------------------------- helpers ------------------------------- */
-function safeLower(v) { return String(v ?? "").trim().toLowerCase(); }
-function safeUpper(v) { return String(v ?? "").trim().toUpperCase(); }
+function safeLower(v) {
+  return String(v ?? "").trim().toLowerCase();
+}
+function safeUpper(v) {
+  return String(v ?? "").trim().toUpperCase();
+}
+function extractError(e, fallback = "Something went wrong.") {
+  return (
+    e?.response?.data?.error ||
+    e?.response?.data?.message ||
+    e?.message ||
+    fallback
+  );
+}
+function safeDateIso(v) {
+  if (!v) return null;
+  if (typeof v?.toDate === "function") return v.toDate();
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 const statusTone = {
-  PENDING_REVIEW: { bg: "rgba(148,163,184,.20)", text: "#e2e8f0", ring: "rgba(148,163,184,.35)" },
-  VERIFIED: { bg: "rgba(16,185,129,.18)", text: "#d1fae5", ring: "rgba(16,185,129,.35)" },
-  REJECTED: { bg: "rgba(239,68,68,.18)", text: "#fecaca", ring: "rgba(239,68,68,.35)" },
-  ALL: { bg: "rgba(255,255,255,.06)", text: "#e6e9ef", ring: "rgba(255,255,255,.12)" },
+  PENDING_REVIEW: {
+    bg: "rgba(148,163,184,.20)",
+    text: "#e2e8f0",
+    ring: "rgba(148,163,184,.35)",
+  },
+  VERIFIED: {
+    bg: "rgba(16,185,129,.18)",
+    text: "#d1fae5",
+    ring: "rgba(16,185,129,.35)",
+  },
+  REJECTED: {
+    bg: "rgba(239,68,68,.18)",
+    text: "#fecaca",
+    ring: "rgba(239,68,68,.35)",
+  },
+  ALL: {
+    bg: "rgba(255,255,255,.06)",
+    text: "#e6e9ef",
+    ring: "rgba(255,255,255,.12)",
+  },
 };
 
 const Chip = ({ label, tone }) => {
@@ -69,15 +106,10 @@ function normalizeListShape(payload) {
   return [];
 }
 
-function safeDateIso(v) {
-  if (!v) return null;
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
-}
-
 /* ------------------------------- modal ------------------------------- */
 function Modal({ open, title, children, onClose }) {
   if (!open) return null;
+
   return (
     <div
       style={{
@@ -102,7 +134,15 @@ function Modal({ open, title, children, onClose }) {
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,.08)", display: "flex", justifyContent: "space-between", gap: 10 }}>
+        <div
+          style={{
+            padding: "14px 16px",
+            borderBottom: "1px solid rgba(255,255,255,.08)",
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 10,
+          }}
+        >
           <div style={{ fontWeight: 900, fontSize: 16 }}>{title}</div>
           <button
             onClick={onClose}
@@ -141,7 +181,7 @@ export default function AdminPayoutSetups() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  // ✅ View modal state
+  // View modal state
   const [viewOpen, setViewOpen] = useState(false);
   const [viewUid, setViewUid] = useState(null);
   const [viewData, setViewData] = useState(null);
@@ -153,7 +193,10 @@ export default function AdminPayoutSetups() {
     setLoading(true);
     try {
       const { data } = await api.get("/admin/payout-setups", {
-        params: { status: tab, q: String(query || "").trim() || undefined },
+        params: {
+          status: tab,
+          q: String(query || "").trim() || undefined,
+        },
       });
       setRows(normalizeListShape(data));
       setPage(1);
@@ -161,17 +204,25 @@ export default function AdminPayoutSetups() {
       console.error("Failed to load payout setups", e);
       const code = e?.response?.status;
       if (code === 401 || code === 403) tErr("Unauthorized. Log in as admin.");
-      else tErr(e?.response?.data?.error || "Failed to load payout setups.");
+      else tErr(extractError(e, "Failed to load payout setups."));
       setRows([]);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
-  const onSearchKeyDown = (e) => { if (e.key === "Enter") load(); };
-  useEffect(() => setPage(1), [perPage, tab]);
+  useEffect(() => {
+    setPage(1);
+  }, [perPage, tab, query]);
+
+  const onSearchKeyDown = (e) => {
+    if (e.key === "Enter") load();
+  };
 
   const filtered = useMemo(() => {
     let list = Array.isArray(rows) ? rows.slice() : [];
@@ -188,13 +239,24 @@ export default function AdminPayoutSetups() {
         const acct = safeLower(r.accountNumberMasked);
         const note = safeLower(r.note);
         const name = safeLower(r.accountName);
-        return uid.includes(kw) || role.includes(kw) || kyc.includes(kw) || ps.includes(kw) || bank.includes(kw) || code.includes(kw) || acct.includes(kw) || note.includes(kw) || name.includes(kw);
+
+        return (
+          uid.includes(kw) ||
+          role.includes(kw) ||
+          kyc.includes(kw) ||
+          ps.includes(kw) ||
+          bank.includes(kw) ||
+          code.includes(kw) ||
+          acct.includes(kw) ||
+          note.includes(kw) ||
+          name.includes(kw)
+        );
       });
     }
 
     list.sort((a, b) => {
-      const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-      const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      const ta = safeDateIso(a.updatedAt) ? safeDateIso(a.updatedAt).getTime() : 0;
+      const tb = safeDateIso(b.updatedAt) ? safeDateIso(b.updatedAt).getTime() : 0;
       return tb - ta;
     });
 
@@ -203,10 +265,31 @@ export default function AdminPayoutSetups() {
 
   const total = filtered.length;
   const lastPage = Math.max(1, Math.ceil(total / perPage));
+
   const pageItems = useMemo(() => {
     const start = (page - 1) * perPage;
     return filtered.slice(start, start + perPage);
   }, [filtered, page, perPage]);
+
+  const openView = async (uid) => {
+    if (!uid) return;
+
+    setViewOpen(true);
+    setViewUid(uid);
+    setViewData(null);
+    setResolveResult(null);
+    setViewLoading(true);
+
+    try {
+      const { data } = await api.get(`/admin/payout-setups/${encodeURIComponent(uid)}`);
+      setViewData(data);
+    } catch (e) {
+      tErr(extractError(e, "Failed to load payout details."));
+      setViewData(null);
+    } finally {
+      setViewLoading(false);
+    }
+  };
 
   const patchStatus = async (uid, nextStatus) => {
     if (!uid) return;
@@ -220,50 +303,38 @@ export default function AdminPayoutSetups() {
         : "";
 
     setBusyUid(uid);
+
     try {
-      const { data } = await api.patch(`/admin/payout-setups/${encodeURIComponent(uid)}/status`, {
-        status, note,
-      });
+      const { data } = await api.patch(
+        `/admin/payout-setups/${encodeURIComponent(uid)}/status`,
+        { status, note }
+      );
 
       if (data?.ok) {
         tOk(status === "VERIFIED" ? "Payout method verified." : "Payout method rejected.");
         await load();
-        if (viewUid === uid) await openView(uid); // refresh modal
-      } else tErr(data?.error || "Update failed.");
+
+        if (viewUid === uid && viewOpen) {
+          await openView(uid);
+        }
+      } else {
+        tErr(data?.error || "Update failed.");
+      }
     } catch (e) {
       console.error("Update payout setup status failed", e);
-      tErr(e?.response?.data?.error || "Update failed.");
+      tErr(extractError(e, "Update failed."));
     } finally {
       setBusyUid(null);
     }
   };
 
-  // ✅ View endpoint
-  const openView = async (uid) => {
-    setViewOpen(true);
-    setViewUid(uid);
-    setViewData(null);
-    setResolveResult(null);
-    setViewLoading(true);
-    try {
-      const { data } = await api.get(`/admin/payout-setups/${encodeURIComponent(uid)}`);
-      setViewData(data);
-    } catch (e) {
-      tErr(e?.response?.data?.error || "Failed to load payout details.");
-      setViewData(null);
-    } finally {
-      setViewLoading(false);
-    }
-  };
-
-  // ✅ Validate account using /api/banks/resolve (Paystack)
   const validateAccount = async () => {
-    const p = viewData?.payout || viewData?.data?.payout || viewData?.payoutSetup || viewData?.payout;
-    const bankCode = String(viewData?.payout?.bankCode || "");
-    const accountNumber = String(viewData?.payout?.accountNumber || "");
+    const payout = viewData?.payout || {};
+    const bankCode = String(payout.bankCode || "").trim();
+    const accountNumber = String(payout.accountNumber || "").trim();
 
     if (!bankCode || !accountNumber) {
-      tErr("Missing bankCode/accountNumber for validation.");
+      tErr("Missing bank code or account number for validation.");
       return;
     }
 
@@ -276,15 +347,23 @@ export default function AdminPayoutSetups() {
         bankCode,
         accountNumber,
       });
+
       if (data?.ok) {
-        setResolveResult({ ok: true, accountName: data.accountName, provider: data.provider });
+        setResolveResult({
+          ok: true,
+          accountName: data.accountName,
+          provider: data.provider,
+        });
         tOk(`Validated: ${data.accountName}`);
       } else {
-        setResolveResult({ ok: false, message: data?.message || "Validation failed." });
+        setResolveResult({
+          ok: false,
+          message: data?.message || "Validation failed.",
+        });
         tErr(data?.message || "Validation failed.");
       }
     } catch (e) {
-      const msg = e?.response?.data?.message || e?.response?.data?.error || "Validation failed.";
+      const msg = extractError(e, "Validation failed.");
       setResolveResult({ ok: false, message: msg });
       tErr(msg);
     } finally {
@@ -327,7 +406,10 @@ export default function AdminPayoutSetups() {
         {tabs.map((t) => (
           <button
             key={t.k}
-            onClick={() => { setTab(t.k); setPage(1); }}
+            onClick={() => {
+              setTab(t.k);
+              setPage(1);
+            }}
             style={{
               padding: "10px 14px",
               borderRadius: 14,
@@ -362,7 +444,9 @@ export default function AdminPayoutSetups() {
           }}
         />
 
-        <LuxeBtn small onClick={load} title="Search">Search</LuxeBtn>
+        <LuxeBtn small onClick={load} title="Search">
+          Search
+        </LuxeBtn>
       </div>
 
       {/* Table */}
@@ -394,22 +478,39 @@ export default function AdminPayoutSetups() {
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 1320 }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "separate",
+              borderSpacing: 0,
+              minWidth: 1320,
+            }}
+          >
             <thead>
               <tr style={{ background: "rgba(255,255,255,.02)", color: "#aeb6c2", textAlign: "left" }}>
                 {["Updated", "UID", "Role", "KYC", "Bank", "Code", "Account", "BVN", "Status", "Note", "Actions"].map((h) => (
-                  <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>{h}</th>
+                  <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
+                    {h}
+                  </th>
                 ))}
               </tr>
             </thead>
 
             <tbody>
               {loading && (
-                <tr><td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>Loading…</td></tr>
+                <tr>
+                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
+                    Loading…
+                  </td>
+                </tr>
               )}
 
               {!loading && pageItems.length === 0 && (
-                <tr><td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>No results.</td></tr>
+                <tr>
+                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
+                    No results.
+                  </td>
+                </tr>
               )}
 
               {!loading &&
@@ -426,7 +527,12 @@ export default function AdminPayoutSetups() {
                         {updated ? dayjs(updated).format("YYYY-MM-DD, HH:mm") : "—"}
                       </td>
 
-                      <td style={{ padding: "12px 16px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                        }}
+                      >
                         {uid || "—"}
                       </td>
 
@@ -453,11 +559,23 @@ export default function AdminPayoutSetups() {
                         {p.bankCode || "—"}
                       </td>
 
-                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap", color: "rgba(255,255,255,.75)" }}>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          whiteSpace: "nowrap",
+                          color: "rgba(255,255,255,.75)",
+                        }}
+                      >
                         {p.accountNumberMasked || "—"}
                       </td>
 
-                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap", color: "rgba(255,255,255,.75)" }}>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          whiteSpace: "nowrap",
+                          color: "rgba(255,255,255,.75)",
+                        }}
+                      >
                         {p.bvnMasked || "—"}
                       </td>
 
@@ -466,7 +584,14 @@ export default function AdminPayoutSetups() {
                       </td>
 
                       <td style={{ padding: "12px 16px", color: "rgba(255,255,255,.65)", maxWidth: 260 }}>
-                        <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={p.note || ""}>
+                        <div
+                          style={{
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                          title={p.note || ""}
+                        >
                           {p.note || "—"}
                         </div>
                       </td>
@@ -484,7 +609,7 @@ export default function AdminPayoutSetups() {
                             onClick={() => patchStatus(uid, "VERIFIED")}
                             title={!canAct ? "Only pending review can be verified" : "Verify payout method"}
                           >
-                            Verify
+                            {isBusy && busyUid === uid ? "Working…" : "Verify"}
                           </LuxeBtn>
 
                           <LuxeBtn
@@ -494,7 +619,7 @@ export default function AdminPayoutSetups() {
                             onClick={() => patchStatus(uid, "REJECTED")}
                             title={!canAct ? "Only pending review can be rejected" : "Reject payout method"}
                           >
-                            Reject
+                            {isBusy && busyUid === uid ? "Working…" : "Reject"}
                           </LuxeBtn>
                         </div>
 
@@ -539,7 +664,9 @@ export default function AdminPayoutSetups() {
               }}
             >
               {[10, 20, 50].map((n) => (
-                <option key={n} value={n}>{n} / page</option>
+                <option key={n} value={n}>
+                  {n} / page
+                </option>
               ))}
             </select>
 
@@ -588,11 +715,16 @@ export default function AdminPayoutSetups() {
         Luxury best-practice: verify payout destination before enabling withdrawals to reduce fraud and protect brand trust.
       </div>
 
-      {/* ✅ View Modal */}
+      {/* View Modal */}
       <Modal
         open={viewOpen}
         title={`Payout details — ${viewUid || ""}`}
-        onClose={() => { setViewOpen(false); setViewUid(null); setViewData(null); setResolveResult(null); }}
+        onClose={() => {
+          setViewOpen(false);
+          setViewUid(null);
+          setViewData(null);
+          setResolveResult(null);
+        }}
       >
         {viewLoading ? (
           <div style={{ color: "rgba(255,255,255,.7)" }}>Loading…</div>
@@ -601,31 +733,88 @@ export default function AdminPayoutSetups() {
         ) : (
           <div style={{ display: "grid", gap: 14 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div style={{ padding: 12, borderRadius: 14, border: "1px solid rgba(255,255,255,.10)", background: "rgba(255,255,255,.04)" }}>
-                <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>Role / KYC</div>
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,.10)",
+                  background: "rgba(255,255,255,.04)",
+                }}
+              >
+                <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>
+                  Role / KYC
+                </div>
                 <div style={{ fontWeight: 900, marginTop: 6 }}>
                   {viewData.role || "—"} • {viewData.kycStatus || "—"}
                 </div>
               </div>
 
-              <div style={{ padding: 12, borderRadius: 14, border: "1px solid rgba(255,255,255,.10)", background: "rgba(255,255,255,.04)" }}>
-                <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>Payout status</div>
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,.10)",
+                  background: "rgba(255,255,255,.04)",
+                }}
+              >
+                <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>
+                  Payout status
+                </div>
                 <div style={{ marginTop: 6 }}>
-                  <Chip label={safeUpper(viewData.payoutStatus || "PENDING_REVIEW")} tone={safeUpper(viewData.payoutStatus || "PENDING_REVIEW")} />
+                  <Chip
+                    label={safeUpper(viewData.payoutStatus || "PENDING_REVIEW")}
+                    tone={safeUpper(viewData.payoutStatus || "PENDING_REVIEW")}
+                  />
                 </div>
               </div>
             </div>
 
-            <div style={{ padding: 12, borderRadius: 14, border: "1px solid rgba(255,255,255,.10)", background: "rgba(0,0,0,.25)" }}>
-              <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>Bank details</div>
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 14,
+                border: "1px solid rgba(255,255,255,.10)",
+                background: "rgba(0,0,0,.25)",
+              }}
+            >
+              <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>
+                Bank details
+              </div>
 
               <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div><div style={{ fontSize: 12, opacity: .65 }}>Bank</div><div style={{ fontWeight: 900 }}>{viewData.payout?.bankName || "—"}</div></div>
-                <div><div style={{ fontSize: 12, opacity: .65 }}>Bank code</div><div style={{ fontWeight: 900 }}>{viewData.payout?.bankCode || "—"}</div></div>
-                <div><div style={{ fontSize: 12, opacity: .65 }}>Account number</div><div style={{ fontWeight: 900 }}>{viewData.payout?.accountNumber || "—"}</div></div>
-                <div><div style={{ fontSize: 12, opacity: .65 }}>Account name</div><div style={{ fontWeight: 900 }}>{viewData.payout?.accountName || "—"}</div></div>
-                <div><div style={{ fontSize: 12, opacity: .65 }}>BVN</div><div style={{ fontWeight: 900 }}>{viewData.payout?.bvnMasked || "—"}</div></div>
-                <div><div style={{ fontSize: 12, opacity: .65 }}>Updated</div><div style={{ fontWeight: 900 }}>{viewData.payout?.updatedAt ? dayjs(viewData.payout.updatedAt).format("YYYY-MM-DD HH:mm") : "—"}</div></div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>Bank</div>
+                  <div style={{ fontWeight: 900 }}>{viewData.payout?.bankName || "—"}</div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>Bank code</div>
+                  <div style={{ fontWeight: 900 }}>{viewData.payout?.bankCode || "—"}</div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>Account number</div>
+                  <div style={{ fontWeight: 900 }}>{viewData.payout?.accountNumber || "—"}</div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>Account name</div>
+                  <div style={{ fontWeight: 900 }}>{viewData.payout?.accountName || "—"}</div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>BVN</div>
+                  <div style={{ fontWeight: 900 }}>{viewData.payout?.bvnMasked || "—"}</div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>Updated</div>
+                  <div style={{ fontWeight: 900 }}>
+                    {viewData.payout?.updatedAt
+                      ? dayjs(viewData.payout.updatedAt).format("YYYY-MM-DD HH:mm")
+                      : "—"}
+                  </div>
+                </div>
               </div>
 
               <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -646,7 +835,15 @@ export default function AdminPayoutSetups() {
               </div>
 
               {resolveResult ? (
-                <div style={{ marginTop: 10, fontSize: 12, color: resolveResult.ok ? "rgba(16,185,129,.95)" : "rgba(239,68,68,.95)" }}>
+                <div
+                  style={{
+                    marginTop: 10,
+                    fontSize: 12,
+                    color: resolveResult.ok
+                      ? "rgba(16,185,129,.95)"
+                      : "rgba(239,68,68,.95)",
+                  }}
+                >
                   {resolveResult.ok
                     ? `✓ Validated via ${resolveResult.provider}: ${resolveResult.accountName}`
                     : `✕ Validation failed: ${resolveResult.message}`}

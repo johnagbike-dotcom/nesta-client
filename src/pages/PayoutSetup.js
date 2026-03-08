@@ -12,6 +12,7 @@ const ngn = (n) => `₦${nf.format(Math.round(Number(n || 0)))}`;
 
 function maskBVN(v) {
   const s = String(v || "").replace(/\D/g, "");
+  if (!s) return "";
   if (s.length <= 4) return s;
   return "•".repeat(Math.max(0, s.length - 4)) + s.slice(-4);
 }
@@ -24,12 +25,26 @@ function normalizeBankName(v) {
   return String(v || "").trim().replace(/\s+/g, " ");
 }
 
+function fmtAnyDate(v) {
+  if (!v) return null;
+  try {
+    if (typeof v?.toDate === "function") return v.toDate();
+    if (typeof v?.seconds === "number") return new Date(v.seconds * 1000);
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
 function Pill({ tone = "amber", children }) {
   const cls =
     tone === "amber"
       ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
       : tone === "emerald"
       ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+      : tone === "slate"
+      ? "border-white/10 bg-white/5 text-white/80"
       : "border-white/10 bg-white/5 text-white/80";
 
   return (
@@ -45,7 +60,9 @@ function FieldShell({ label, hint, children }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-end justify-between gap-3">
-        <label className="text-[11px] uppercase tracking-[0.16em] text-white/60">{label}</label>
+        <label className="text-[11px] uppercase tracking-[0.16em] text-white/60">
+          {label}
+        </label>
         {hint ? <span className="text-[11px] text-white/40">{hint}</span> : null}
       </div>
       <div className="rounded-2xl bg-black/30 border border-white/10 px-3 py-2 text-white/90 focus-within:border-amber-400/70 transition-colors">
@@ -58,48 +75,51 @@ function FieldShell({ label, hint, children }) {
 export default function PayoutSetup() {
   const navigate = useNavigate();
   const { user } = useAuth();
-
-  // ✅ FIX: your hook takes no args (it reads auth internally)
   const { profile } = useUserProfile();
 
-  // KYC status
-  const kycStatusRaw = profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || "";
+  const kycStatusRaw =
+    profile?.kycStatus ||
+    profile?.kyc?.status ||
+    profile?.kyc?.state ||
+    "";
+
   const kycStatus = String(kycStatusRaw).toLowerCase();
   const isKycApproved = ["approved", "verified", "complete"].includes(kycStatus);
 
-  // wallet (best-effort)
-  const [wallet, setWallet] = useState({ loading: true, availableN: 0, pendingN: 0 });
+  const [wallet, setWallet] = useState({
+    loading: true,
+    availableN: 0,
+    pendingN: 0,
+  });
 
-  // payout fields
   const [bankName, setBankName] = useState("");
-  const [bankCode, setBankCode] = useState(""); // ✅ NEW: required (Nigeria bank code)
+  const [bankCode, setBankCode] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [bvn, setBvn] = useState("");
-
-  // display-only (optional)
   const [accountName, setAccountName] = useState("");
 
-  // loading/saving
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
-  // whether payout exists
   const [existing, setExisting] = useState({
     hasPayout: false,
     lastUpdatedAt: null,
     bvnMasked: "",
+    payoutStatus: "PENDING_REVIEW",
   });
 
-  // Bank selection guard (luxury UX: must select a real bank)
   const [bankSelected, setBankSelected] = useState(false);
 
   useEffect(() => {
     let alive = true;
 
     (async () => {
-      if (!user?.uid) return;
+      if (!user?.uid) {
+        if (alive) setLoading(false);
+        return;
+      }
 
       try {
         setLoading(true);
@@ -110,19 +130,29 @@ export default function PayoutSetup() {
         const d = snap.exists() ? snap.data() || {} : {};
 
         const availableN = Number(
-          d.walletAvailableN ?? d.availableBalanceN ?? d.availableN ?? d.wallet?.availableN ?? d.wallet?.availableN ?? 0
+          d.walletAvailableN ??
+            d.availableBalanceN ??
+            d.availableN ??
+            d.wallet?.availableN ??
+            0
         );
+
         const pendingN = Number(
-          d.walletPendingN ?? d.pendingBalanceN ?? d.pendingN ?? d.wallet?.pendingN ?? d.wallet?.pendingN ?? 0
+          d.walletPendingN ??
+            d.pendingBalanceN ??
+            d.pendingN ??
+            d.wallet?.pendingN ??
+            0
         );
 
         const payout = d.payout || d.payoutSetup || d.withdrawal || {};
 
         const loadedBankName = normalizeBankName(payout.bankName || "");
-        const loadedBankCode = String(payout.bankCode || "");
+        const loadedBankCode = String(payout.bankCode || "").trim();
         const loadedAccNo = onlyDigits(payout.accountNumber || "");
         const loadedBvn = onlyDigits(payout.bvn || "");
         const loadedAccName = String(payout.accountName || "");
+        const loadedStatus = String(payout.status || "PENDING_REVIEW").toUpperCase();
 
         const hasPayout =
           !!loadedBankName &&
@@ -140,16 +170,16 @@ export default function PayoutSetup() {
 
         setBankName(loadedBankName);
         setBankCode(loadedBankCode);
-        setBankSelected(!!loadedBankCode); // ✅ if stored, treat as selected
-
+        setBankSelected(!!loadedBankCode);
         setAccountNumber(loadedAccNo);
         setBvn(loadedBvn);
         setAccountName(loadedAccName);
 
         setExisting({
           hasPayout,
-          lastUpdatedAt: payout.updatedAt?.toDate?.() || payout.updatedAt || null,
+          lastUpdatedAt: fmtAnyDate(payout.updatedAt),
           bvnMasked: maskBVN(loadedBvn),
+          payoutStatus: loadedStatus,
         });
       } catch (e) {
         console.error("PayoutSetup load error:", e);
@@ -174,18 +204,18 @@ export default function PayoutSetup() {
     const bv = onlyDigits(bvn);
 
     const problems = [];
+
     if (!bn || bn.length < 3) problems.push("Enter your bank name.");
-    // ✅ require selection
     if (!bc || !bankSelected) problems.push("Please select a bank from the list.");
     if (acc.length !== 10) problems.push("Account number must be 10 digits (Nigeria).");
     if (bv.length !== 11) problems.push("BVN must be 11 digits.");
+
     return { ok: problems.length === 0, problems, bn, bc, acc, bv };
   }, [bankName, bankCode, bankSelected, accountNumber, bvn]);
 
   const payoutComplete = validations.ok;
-
-  // gated by: KYC approved + payoutComplete + balance > 0
   const canWithdrawSoon = isKycApproved && payoutComplete && walletAvailable > 0;
+  const savedPayoutStatus = String(existing.payoutStatus || "PENDING_REVIEW").toUpperCase();
 
   async function onSave(e) {
     e.preventDefault();
@@ -208,7 +238,7 @@ export default function PayoutSetup() {
       const payload = {
         payout: {
           bankName: validations.bn,
-          bankCode: validations.bc, // ✅ store code
+          bankCode: validations.bc,
           accountNumber: validations.acc,
           bvn: validations.bv,
           accountName: String(accountName || "").trim(),
@@ -228,9 +258,10 @@ export default function PayoutSetup() {
         hasPayout: true,
         bvnMasked: maskBVN(validations.bv),
         lastUpdatedAt: new Date(),
+        payoutStatus: "PENDING_REVIEW",
       }));
 
-      setOk("Payout details saved. You can now proceed to withdrawals when eligible.");
+      setOk("Payout details saved. They are now pending admin review before withdrawals can be released.");
     } catch (e) {
       console.error("PayoutSetup save error:", e);
       setErr("Could not save payout details. Please try again.");
@@ -239,7 +270,14 @@ export default function PayoutSetup() {
     }
   }
 
-  const statusTone = !isKycApproved ? "amber" : payoutComplete ? "emerald" : "amber";
+  const gateTone = !isKycApproved ? "amber" : payoutComplete ? "emerald" : "amber";
+
+  const payoutStatusTone =
+    savedPayoutStatus === "VERIFIED"
+      ? "emerald"
+      : savedPayoutStatus === "REJECTED"
+      ? "amber"
+      : "slate";
 
   return (
     <main className="min-h-screen bg-[#05070a] pt-20 pb-12 px-4 text-white">
@@ -258,7 +296,7 @@ export default function PayoutSetup() {
             </h1>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <Pill tone={statusTone}>
+              <Pill tone={gateTone}>
                 🔒 Withdrawal Gate
                 <span className="opacity-80">
                   {!isKycApproved
@@ -269,7 +307,17 @@ export default function PayoutSetup() {
                 </span>
               </Pill>
 
-              {existing.hasPayout ? <Pill tone="emerald">✓ Saved</Pill> : <Pill tone="amber">Setup pending</Pill>}
+              {existing.hasPayout ? (
+                <Pill tone={payoutStatusTone}>
+                  {savedPayoutStatus === "VERIFIED"
+                    ? "✓ Verified"
+                    : savedPayoutStatus === "REJECTED"
+                    ? "Needs update"
+                    : "Under review"}
+                </Pill>
+              ) : (
+                <Pill tone="amber">Setup pending</Pill>
+              )}
             </div>
           </div>
 
@@ -282,12 +330,22 @@ export default function PayoutSetup() {
           <div className="rounded-3xl border border-white/5 bg-[#090c12] p-4 md:p-5">
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div className="space-y-1">
-                <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">Eligibility preview</div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
+                  Eligibility preview
+                </div>
+
                 <div className="text-sm text-white/80">
                   {canWithdrawSoon
                     ? "You’re eligible to withdraw now."
-                    : "Withdrawals unlock when KYC + payout details are complete and available balance is > ₦0."}
+                    : !isKycApproved
+                    ? "Complete KYC first before withdrawals can be unlocked."
+                    : savedPayoutStatus === "VERIFIED"
+                    ? "Your payout method is verified. Withdrawals unlock once available balance is above ₦0."
+                    : existing.hasPayout
+                    ? "Your payout details are saved and pending admin review."
+                    : "Add payout details to prepare for withdrawals."}
                 </div>
+
                 <div className="text-[11px] text-white/45">
                   Available:{" "}
                   <span className="text-white/80 font-semibold">
@@ -320,6 +378,7 @@ export default function PayoutSetup() {
             {err}
           </div>
         )}
+
         {ok && (
           <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
             {ok}
@@ -328,9 +387,23 @@ export default function PayoutSetup() {
 
         <section className="rounded-3xl bg-[#090c12] border border-white/5 p-4 md:p-6">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
-            <h2 className="text-sm md:text-base font-semibold">Bank & identity details</h2>
-            <div className="text-[11px] text-white/45">
-              BVN: <span className="text-white/70 font-semibold">{existing.bvnMasked || "—"}</span>
+            <h2 className="text-sm md:text-base font-semibold">
+              Bank & identity details
+            </h2>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="text-[11px] text-white/45">
+                BVN:{" "}
+                <span className="text-white/70 font-semibold">
+                  {existing.bvnMasked || "—"}
+                </span>
+              </div>
+
+              {existing.hasPayout ? (
+                <Pill tone={payoutStatusTone}>
+                  Status: {savedPayoutStatus.replace(/_/g, " ")}
+                </Pill>
+              ) : null}
             </div>
           </div>
 
@@ -340,7 +413,6 @@ export default function PayoutSetup() {
                 <BankAutocomplete
                   value={bankName}
                   onChangeValue={(v) => {
-                    // typing resets selection until user clicks a bank
                     setBankName(normalizeBankName(v));
                     setBankSelected(false);
                     setBankCode("");
@@ -358,7 +430,9 @@ export default function PayoutSetup() {
               <FieldShell label="Account number" hint="10 digits">
                 <input
                   value={accountNumber}
-                  onChange={(e) => setAccountNumber(onlyDigits(e.target.value).slice(0, 10))}
+                  onChange={(e) =>
+                    setAccountNumber(onlyDigits(e.target.value).slice(0, 10))
+                  }
                   placeholder="0123456789"
                   inputMode="numeric"
                   className="w-full bg-transparent outline-none placeholder-white/30 text-sm"
@@ -369,7 +443,9 @@ export default function PayoutSetup() {
               <FieldShell label="BVN" hint="11 digits (Nigeria)">
                 <input
                   value={bvn}
-                  onChange={(e) => setBvn(onlyDigits(e.target.value).slice(0, 11))}
+                  onChange={(e) =>
+                    setBvn(onlyDigits(e.target.value).slice(0, 11))
+                  }
                   placeholder="***********"
                   inputMode="numeric"
                   className="w-full bg-transparent outline-none placeholder-white/30 text-sm"
@@ -388,7 +464,6 @@ export default function PayoutSetup() {
               </FieldShell>
             </div>
 
-            {/* tiny helper: show selected bank code (internal confidence) */}
             <div className="text-[11px] text-white/45">
               Bank selection:{" "}
               {bankSelected && bankCode ? (
@@ -396,7 +471,9 @@ export default function PayoutSetup() {
                   ✓ Selected (code: {bankCode})
                 </span>
               ) : (
-                <span className="text-amber-200/90">Please select a bank from the dropdown</span>
+                <span className="text-amber-200/90">
+                  Please select a bank from the dropdown
+                </span>
               )}
             </div>
 
@@ -405,7 +482,7 @@ export default function PayoutSetup() {
               <ul className="list-disc pl-5 space-y-1 text-white/70">
                 <li>We require BVN + bank details to reduce fraud and protect payouts.</li>
                 <li>Withdrawals remain locked until KYC is approved.</li>
-                <li>For luxury trust, payout changes may be reviewed.</li>
+                <li>Your payout setup may be reviewed before funds can be released.</li>
               </ul>
             </div>
 
@@ -420,7 +497,7 @@ export default function PayoutSetup() {
                 }`}
                 title={!validations.ok ? validations.problems[0] : "Save payout details"}
               >
-                {saving ? "Saving…" : "Save payout details"}
+                {saving ? "Saving…" : existing.hasPayout ? "Update payout details" : "Save payout details"}
               </button>
 
               <button
@@ -436,7 +513,7 @@ export default function PayoutSetup() {
                   <>
                     Last updated:{" "}
                     <span className="text-white/70 font-semibold">
-                      {new Date(existing.lastUpdatedAt).toLocaleString()}
+                      {existing.lastUpdatedAt.toLocaleString()}
                     </span>
                   </>
                 ) : (

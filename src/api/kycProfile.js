@@ -19,6 +19,17 @@ import {
  */
 export const OK_STATUSES = ["APPROVED", "VERIFIED", "COMPLETE"];
 
+function normalizeRole(raw) {
+  const r = String(raw || "").toLowerCase().trim();
+  if (r === "partner" || r === "verified_partner") return "partner";
+  return "host";
+}
+
+function normalizeIntent(raw) {
+  const s = String(raw || "").toLowerCase().trim();
+  return s === "partner" ? "partner" : "host";
+}
+
 /**
  * Normalise KYC status from a user profile or kycProfile doc.
  */
@@ -30,7 +41,7 @@ export function getKycStatusFromProfile(profile, fallback) {
     profile?.status ||
     fallback ||
     "";
-  return String(raw || "").toUpperCase();
+  return String(raw || "").toUpperCase().trim();
 }
 
 /**
@@ -39,7 +50,7 @@ export function getKycStatusFromProfile(profile, fallback) {
 export function isKycApproved(profileOrStatus) {
   const status =
     typeof profileOrStatus === "string"
-      ? String(profileOrStatus).toUpperCase()
+      ? String(profileOrStatus).toUpperCase().trim()
       : getKycStatusFromProfile(profileOrStatus);
   return OK_STATUSES.includes(status);
 }
@@ -48,25 +59,35 @@ export function isKycApproved(profileOrStatus) {
  * Create a bare KYC profile document if it does not exist.
  * Safe to call multiple times – merge = true.
  */
-export async function createInitialKycProfile(uid, role = "host") {
+export async function createInitialKycProfile(uid, role = "host", extras = {}) {
   if (!uid) return;
+
+  const normalizedRole = normalizeRole(role);
+  const normalizedIntent = normalizeIntent(extras?.intent || normalizedRole);
   const refDoc = doc(db, "kycProfiles", uid);
 
   await setDoc(
     refDoc,
     {
       uid,
-      role,
+      role: normalizedRole,
+      intent: normalizedIntent,
+      step: Number(extras?.step || 1),
+      status: "DRAFT",
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      status: "DRAFT", // not yet submitted
-      step: 1,
 
       // Canonical structure for uploads (map keyed by docType)
       uploads: {},
 
-      // Optional: track required docs as an array of strings (safe, no timestamps)
+      // Optional tracking fields
       requiredDocTypes: [],
+      declaration: {
+        accepted: false,
+        signature: "",
+      },
+
+      ...(extras?.email ? { email: extras.email } : {}),
     },
     { merge: true }
   );
@@ -80,24 +101,34 @@ export async function loadKycProfile(uid) {
   const refDoc = doc(db, "kycProfiles", uid);
   const snap = await getDoc(refDoc);
   if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() };
+
+  const data = snap.data() || {};
+  return {
+    id: snap.id,
+    ...data,
+    role: normalizeRole(data.role),
+    intent: normalizeIntent(data.intent || data.role),
+  };
 }
 
 /**
  * Merge arbitrary data into the kycProfiles/{uid} doc.
- *
- * NOTE:
- * - This function will NOT magically fix "serverTimestamp() inside arrays"
- *   if the caller passes that pattern. Use recordKycUpload() instead.
  */
-export async function saveKycProfile(uid, data) {
+export async function saveKycProfile(uid, data = {}) {
   if (!uid) throw new Error("Missing uid for saveKycProfile");
+
+  const payload = { ...data };
+
+  if ("role" in payload) payload.role = normalizeRole(payload.role);
+  if ("intent" in payload) payload.intent = normalizeIntent(payload.intent);
+  if (!("intent" in payload) && "role" in payload) payload.intent = normalizeIntent(payload.role);
+
   const refDoc = doc(db, "kycProfiles", uid);
 
   await setDoc(
     refDoc,
     {
-      ...data,
+      ...payload,
       uid,
       updatedAt: serverTimestamp(),
     },
@@ -110,13 +141,6 @@ export async function saveKycProfile(uid, data) {
  * Avoids serverTimestamp() inside arrays by:
  * - using uploads.<docType> map entries
  * - using uploadedAtMs: Date.now()
- *
- * docType examples:
- * - "governmentId"
- * - "liveSelfie"
- * - "proofOfAddress"
- * - "declaration"
- * - "proofOfRightToList"
  */
 export async function recordKycUpload(uid, docType, fileMeta) {
   if (!uid) throw new Error("Missing uid for recordKycUpload");
@@ -127,7 +151,6 @@ export async function recordKycUpload(uid, docType, fileMeta) {
 
   const refDoc = doc(db, "kycProfiles", uid);
 
-  // store a single “latest” upload per docType (simple and robust for launch)
   const patch = {
     status: "PENDING",
     [`uploads.${docType}`]: {
@@ -137,7 +160,7 @@ export async function recordKycUpload(uid, docType, fileMeta) {
       path: fileMeta.path,
       contentType: fileMeta.contentType || "",
       size: typeof fileMeta.size === "number" ? fileMeta.size : null,
-      uploadedAtMs: Date.now(), // ✅ allowed everywhere
+      uploadedAtMs: Date.now(),
     },
     updatedAt: serverTimestamp(),
   };
@@ -165,21 +188,32 @@ export async function removeKycUpload(uid, docType) {
 
 /**
  * Called on final submit – marks KYC as submitted / in review.
- * (Use this when user clicks "Submit for review".)
  */
-export async function submitKycForReview({ uid, role, email }) {
+export async function submitKycForReview({
+  uid,
+  role,
+  intent,
+  email,
+  step = 3,
+}) {
   if (!uid) throw new Error("Missing uid for submitKycForReview");
 
+  const normalizedRole = normalizeRole(role || intent || "host");
+  const normalizedIntent = normalizeIntent(intent || role || "host");
+
   const refDoc = doc(db, "kycProfiles", uid);
+
   await setDoc(
     refDoc,
     {
       uid,
-      role: role || "host",
+      role: normalizedRole,
+      intent: normalizedIntent,
       email: email || "",
-      status: "SUBMITTED", // admin can later set APPROVED / REJECTED / MORE_INFO_REQUIRED
+      status: "SUBMITTED",
       submittedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+      step: Number(step || 3),
     },
     { merge: true }
   );
@@ -196,7 +230,6 @@ export async function submitKycForReview({ uid, role, email }) {
 export async function listKycFiles(uid) {
   if (!uid) return [];
 
-  // 1) list direct items in kyc/{uid}
   const rootRef = ref(storage, `kyc/${uid}`);
   const rootRes = await listAll(rootRef);
 
@@ -208,7 +241,6 @@ export async function listKycFiles(uid) {
     }))
   );
 
-  // 2) list subfolders (docType folders) if any
   const folderItems = [];
   for (const prefix of rootRes.prefixes || []) {
     const subRes = await listAll(prefix);

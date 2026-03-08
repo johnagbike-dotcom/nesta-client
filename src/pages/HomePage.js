@@ -50,7 +50,6 @@ function normalizeRole(raw) {
 }
 
 function digitsOnly(v) {
-  // allows: "₦50,000" -> "50000"
   return String(v || "").replace(/[^\d]/g, "");
 }
 
@@ -68,7 +67,7 @@ function normalizeKey(s) {
 */
 function isKnownCityIntent(input) {
   const k = normalizeKey(input);
-  // Add more cities here as you expand inventory
+
   const known = new Set([
     "lagos",
     "abuja",
@@ -80,6 +79,7 @@ function isKnownCityIntent(input) {
     "port-harcourt",
     "portharcourt",
   ]);
+
   return known.has(k);
 }
 
@@ -101,11 +101,10 @@ export default function HomePage() {
 
   const heroBg = HERO_BG || HERO_BG_FALLBACK;
 
-  // ✅ Always send onboarding CTAs through Step 1 (KycStart)
+  // Always send onboarding CTAs through Step 1 (KycStart)
   const hostStartLink = "/onboarding/kyc/start?role=host";
   const partnerStartLink = "/onboarding/kyc/start?role=partner";
 
-  // Optional: show a slightly smarter placeholder based on typical searches
   const locPlaceholder = useMemo(
     () => "City or area (e.g. Lagos, Abuja, Ikoyi, Wuse, Lekki)",
     []
@@ -118,43 +117,46 @@ export default function HomePage() {
     const maxV = digitsOnly(max).trim();
 
     if (t) {
-      // Always include q so SearchBrowse can match title/area/city client-side
       qs.set("q", t);
-      // Only include exact city filter when it is truly a city
+
       if (forceCity || isKnownCityIntent(t)) {
         qs.set("city", t);
       }
     }
+
     if (minV) qs.set("min", minV);
     if (maxV) qs.set("max", maxV);
+
     return qs.toString();
   }
 
   function handleSearch(e) {
     e?.preventDefault?.();
+
     const queryString = buildSearchQueryString({
       text: loc,
       min: minN,
       max: maxN,
     });
+
     nav(`/search${queryString ? `?${queryString}` : ""}`);
   }
 
   function goToDestination(d) {
     const city = String(d?.query || "").trim();
-    // Destinations are always cities → force city filter
+
     const queryString = buildSearchQueryString({
       text: city,
       min: "",
       max: "",
       forceCity: true,
     });
+
     nav(`/search${queryString ? `?${queryString}` : ""}`);
   }
 
   return (
     <>
-      {/* inline styles for this page */}
       <style>{`
         .page-wrap {
           position: relative;
@@ -456,13 +458,16 @@ export default function HomePage() {
           <div className="hero-wrap">
             <div className="hero-bg" style={{ backgroundImage: `url(${heroBg})` }} />
             <div className="hero-scrim" />
+
             <div className="hero-body">
               <div className="hero-kicker">NESTA • SIGNATURE STAYS</div>
+
               <h1 className="hero-title">
                 Premium stays. Trusted homes.
                 <br />
                 Across Nigeria.
               </h1>
+
               <p className="hero-sub">
                 Thoughtfully curated apartments, villas and city homes in Nigeria’s most desirable
                 neighbourhoods — with verified hosts, secure local payments and concierge-style support.
@@ -476,16 +481,19 @@ export default function HomePage() {
                         Go to host dashboard
                       </Link>
                     )}
+
                     {isPartner && (
                       <Link to="/partner" className="btn-gold">
                         Go to partner dashboard
                       </Link>
                     )}
+
                     {isAdmin && (
                       <Link to="/admin" className="btn-gold">
                         Go to admin console
                       </Link>
                     )}
+
                     <Link to="/explore" className="btn-ghost">
                       Explore stays
                     </Link>
@@ -495,6 +503,7 @@ export default function HomePage() {
                     <Link to="/explore" className="btn-gold">
                       Explore stays
                     </Link>
+
                     <Link to={hostStartLink} className="btn-ghost">
                       List your home
                     </Link>
@@ -502,7 +511,6 @@ export default function HomePage() {
                 )}
               </div>
 
-              {/* Luxury-styled search shell */}
               <div className="search-shell">
                 <form className="search-row" onSubmit={handleSearch}>
                   <input
@@ -511,6 +519,7 @@ export default function HomePage() {
                     value={loc}
                     onChange={(e) => setLoc(e.target.value)}
                   />
+
                   <input
                     className="pill"
                     placeholder="Min ₦/night"
@@ -518,6 +527,7 @@ export default function HomePage() {
                     value={minN}
                     onChange={(e) => setMinN(e.target.value)}
                   />
+
                   <input
                     className="pill"
                     placeholder="Max ₦/night"
@@ -525,6 +535,7 @@ export default function HomePage() {
                     value={maxN}
                     onChange={(e) => setMaxN(e.target.value)}
                   />
+
                   <button type="submit" className="btn-gold">
                     Search
                   </button>
@@ -538,17 +549,10 @@ export default function HomePage() {
         <section className="container" style={section(32)}>
           <h2 className="section-title">Featured stays</h2>
           <p className="section-sub">
-            Sponsored homes that highlight the Nesta standard — design-led, professionally cleaned and
+            Featured homes that highlight the Nesta standard — design-led, professionally cleaned and
             ready when you arrive.
           </p>
 
-          {/*
-            IMPORTANT: Homepage should never look empty.
-            FeaturedCarousel will:
-              - show featured if available
-              - otherwise fallback to a curated/latest set
-              - never render "No featured stays yet" on homepage
-          */}
           <FeaturedCarousel fallbackMode="latest" limit={8} hideEmptyState />
         </section>
 
@@ -594,6 +598,7 @@ export default function HomePage() {
               >
                 Start your hosting journey
               </h3>
+
               <p style={{ color: "#c9d2e3", marginTop: 8, fontSize: 14 }}>
                 Turn your space into a premium stay with verified guests, pro photography and dedicated
                 Nesta host support.
@@ -633,6 +638,7 @@ export default function HomePage() {
               >
                 Scale as a Verified Partner
               </h3>
+
               <p style={{ color: "#c9d2e3", marginTop: 8, fontSize: 14 }}>
                 Grow premium portfolios with unified commission tracking, payouts and performance
                 analytics — all in one calm Nesta dashboard.

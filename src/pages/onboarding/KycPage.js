@@ -1,6 +1,6 @@
 // src/pages/onboarding/KycPage.js
-import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { db, storage } from "../../firebase";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
@@ -23,22 +23,45 @@ function isAllowedFile(file) {
   return (
     t.startsWith("image/") ||
     t === "application/pdf" ||
-    t === "application/octet-stream" // some phones
+    t === "application/octet-stream"
   );
 }
 
 function prettyStatus(status) {
-  const s = String(status || "").toUpperCase();
+  const s = String(status || "").toUpperCase().trim();
   if (["APPROVED", "VERIFIED", "COMPLETE"].includes(s)) return "Approved";
   if (["SUBMITTED", "PENDING"].includes(s)) return "Pending";
   if (s === "MORE_INFO_REQUIRED") return "More info";
   if (s === "REJECTED") return "Rejected";
+  if (s === "DRAFT") return "Draft";
   return "Not submitted";
 }
 
+function normalizeIntent(v) {
+  const s = String(v || "").toLowerCase().trim();
+  if (s === "partner") return "partner";
+  return "host";
+}
+
+function normalizeRole(raw) {
+  const r = String(raw || "").toLowerCase().trim();
+  if (r === "verified_host") return "host";
+  if (r === "verified_partner") return "partner";
+  if (!r) return "guest";
+  return r;
+}
+
 export default function KycPage() {
-  const { user } = useAuth();
+  const nav = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { user, profile } = useAuth();
+
   const uid = user?.uid;
+
+  const role = useMemo(
+    () => normalizeRole(profile?.role || profile?.type),
+    [profile?.role, profile?.type]
+  );
 
   const [kyc, setKyc] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +80,33 @@ export default function KycPage() {
   const [declAccepted, setDeclAccepted] = useState(false);
   const [signature, setSignature] = useState("");
 
+  // Intent
+  const [intent, setIntent] = useState(() => {
+    try {
+      const qpIntent = searchParams.get("intent");
+      if (qpIntent) return normalizeIntent(qpIntent);
+
+      const saved = localStorage.getItem("nesta_kyc_intent");
+      return normalizeIntent(saved);
+    } catch {
+      return "host";
+    }
+  });
+
+  useEffect(() => {
+    try {
+      const qpIntent = searchParams.get("intent");
+      const nextIntent = qpIntent
+        ? normalizeIntent(qpIntent)
+        : normalizeIntent(localStorage.getItem("nesta_kyc_intent"));
+
+      setIntent(nextIntent);
+      localStorage.setItem("nesta_kyc_intent", nextIntent);
+    } catch {
+      setIntent("host");
+    }
+  }, [searchParams]);
+
   // ---- Load kycProfiles/{uid}
   useEffect(() => {
     if (!uid) return;
@@ -67,10 +117,10 @@ export default function KycPage() {
       try {
         const refDoc = doc(db, "kycProfiles", uid);
         const snap = await getDoc(refDoc);
+
         if (!live) return;
 
         if (!snap.exists()) {
-          // create initial stub so admins/users have a consistent doc
           await setDoc(
             refDoc,
             {
@@ -80,28 +130,46 @@ export default function KycPage() {
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
               uploads: {},
+              intent,
             },
             { merge: true }
           );
+
           const snap2 = await getDoc(refDoc);
-          setKyc(snap2.exists() ? { id: snap2.id, ...snap2.data() } : null);
+          const next = snap2.exists() ? { id: snap2.id, ...snap2.data() } : null;
+          setKyc(next);
+
+          if (next?.declaration?.accepted) {
+            setDeclAccepted(true);
+            setSignature(next?.declaration?.signature || "");
+          }
         } else {
-          setKyc({ id: snap.id, ...snap.data() });
+          const next = { id: snap.id, ...snap.data() };
+          setKyc(next);
+
+          if (next?.declaration?.accepted) {
+            setDeclAccepted(true);
+            setSignature(next?.declaration?.signature || "");
+          }
         }
       } catch (e) {
         console.error(e);
+        if (live) setError("Could not load KYC profile.");
       } finally {
         if (live) setLoading(false);
       }
     })();
 
-    return () => (live = false);
-  }, [uid, user?.email]);
+    return () => {
+      live = false;
+    };
+  }, [uid, user?.email, intent]);
 
-  // ---- Refresh storage files (root + subfolders)
-  const refreshFiles = async () => {
+  // ---- Refresh storage files
+  const refreshFiles = useCallback(async () => {
     if (!uid) return;
     setFilesLoading(true);
+
     try {
       const rootRef = ref(storage, `kyc/${uid}`);
       const rootRes = await listAll(rootRef);
@@ -133,26 +201,24 @@ export default function KycPage() {
     } finally {
       setFilesLoading(false);
     }
-  };
+  }, [uid]);
 
   useEffect(() => {
     refreshFiles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid]);
+  }, [refreshFiles]);
 
   const status = useMemo(() => String(kyc?.status || ""), [kyc]);
 
-  // uploads map: uploads.{docType} = {url,path,name,uploadedAtMs,...}
+  const isApproved = useMemo(() => {
+    const s = String(status || "").toUpperCase().trim();
+    return ["APPROVED", "VERIFIED", "COMPLETE"].includes(s);
+  }, [status]);
+
   const uploadsByType = useMemo(() => {
     const u = kyc?.uploads || {};
     return u && typeof u === "object" ? u : {};
   }, [kyc]);
 
-  /* ✅ NEW: detect uploaded doc by Storage folder too
-     A doc is considered present if:
-     - Firestore uploads map has URL
-     - OR Storage has any file under /kyc/{uid}/{docType}/
-  */
   const storageHasDocType = (docType) => {
     if (!Array.isArray(files) || files.length === 0) return false;
     const needle = `kyc/${uid}/${docType}/`;
@@ -172,10 +238,19 @@ export default function KycPage() {
     }
     if (!declAccepted || !String(signature || "").trim()) missing.push("declaration");
     return missing;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadsByType, files, declAccepted, signature]);
 
-  // ---- Upload doc to Storage, then record in Firestore as MAP (no arrays)
+  const nextApprovedPath = useMemo(() => {
+    if (intent === "partner") {
+      if (role === "partner") return "/partner";
+      return "/onboarding/partner";
+    }
+
+    if (role === "host") return "/host";
+    return "/onboarding/kyc/apply";
+  }, [intent, role]);
+
+  // ---- Upload doc
   const uploadDoc = async (docType, file) => {
     if (!uid || !file) return;
     setError("");
@@ -185,6 +260,7 @@ export default function KycPage() {
       setError("Only images or PDFs allowed.");
       return;
     }
+
     if (file.size > 20 * 1024 * 1024) {
       setError("Max file size is 20MB.");
       return;
@@ -216,7 +292,6 @@ export default function KycPage() {
 
       const url = await getDownloadURL(fileRef);
 
-      // ✅ store as a MAP entry (safe): uploads.<docType> = {...}
       const kycRef = doc(db, "kycProfiles", uid);
       await setDoc(
         kycRef,
@@ -224,6 +299,7 @@ export default function KycPage() {
           uid,
           email: user?.email || "",
           status: "PENDING",
+          intent,
           updatedAt: serverTimestamp(),
           [`uploads.${docType}`]: {
             docType,
@@ -238,7 +314,6 @@ export default function KycPage() {
         { merge: true }
       );
 
-      // ✅ Refresh both Firestore + Storage after upload so UI updates instantly
       const nextSnap = await getDoc(kycRef);
       setKyc(nextSnap.exists() ? { id: nextSnap.id, ...nextSnap.data() } : null);
 
@@ -254,7 +329,7 @@ export default function KycPage() {
     }
   };
 
-  // ---- Submit for review (creates onboarding/{uid} so Admin sees it)
+  // ---- Submit for review
   const submitForReview = async () => {
     if (!uid) return;
     setError("");
@@ -266,16 +341,20 @@ export default function KycPage() {
     }
 
     try {
-      // kycProfiles: mark submitted + declaration
+      const signatureValue = String(signature || "").trim();
+
       await setDoc(
         doc(db, "kycProfiles", uid),
         {
+          uid,
+          email: user?.email || "",
+          intent,
           status: "SUBMITTED",
           submittedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
           declaration: {
             accepted: true,
-            signature: String(signature || "").trim(),
+            signature: signatureValue,
             acceptedAtMs: Date.now(),
           },
           compliance: {
@@ -287,14 +366,13 @@ export default function KycPage() {
         { merge: true }
       );
 
-      // onboarding queue doc (Admin reads this)
       await setDoc(
         doc(db, "onboarding", uid),
         {
           userId: uid,
           uid,
           email: user?.email || "",
-          type: "host", // adjust if you have role detection
+          type: intent, // ✅ host or partner
           status: "PENDING",
           submittedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -302,14 +380,15 @@ export default function KycPage() {
         { merge: true }
       );
 
-      // mirror status into users/{uid} for gating
       await setDoc(
         doc(db, "users", uid),
         {
           kycStatus: "submitted",
+          kycIntent: intent,
           kyc: {
             status: "submitted",
             submittedAt: serverTimestamp(),
+            intent,
           },
           updatedAt: serverTimestamp(),
         },
@@ -326,12 +405,22 @@ export default function KycPage() {
     }
   };
 
+  useEffect(() => {
+    if (!uid || !isApproved) return;
+
+    try {
+      localStorage.setItem("nesta_kyc_last_approved_intent", intent);
+    } catch {
+      // ignore
+    }
+  }, [uid, isApproved, intent]);
+
   if (!user) return null;
 
   return (
     <main className="min-h-screen bg-[#0d1013] text-white pt-24 pb-16">
       <div className="max-w-5xl mx-auto px-4">
-        <div className="flex items-start justify-between mb-6">
+        <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
           <div>
             <p className="uppercase text-xs tracking-[0.25em] text-slate-400">
               Nesta • Identity Verification
@@ -340,6 +429,9 @@ export default function KycPage() {
             <p className="text-slate-300/80 mt-3 max-w-xl">
               Upload required documents and submit for review. For launch, we enforce ID,
               selfie, proof of address, and declaration.
+            </p>
+            <p className="text-xs text-slate-400 mt-2">
+              Application intent: <span className="font-semibold text-white/80 capitalize">{intent}</span>
             </p>
           </div>
 
@@ -369,7 +461,7 @@ export default function KycPage() {
                   key={d.key}
                   label={d.label}
                   docType={d.key}
-                  has={hasDoc(d.key)} // ✅ FIXED
+                  has={hasDoc(d.key)}
                   uploading={uploadingKey === d.key}
                   progress={uploadingKey === d.key ? progress : 0}
                   onUpload={uploadDoc}
@@ -384,7 +476,7 @@ export default function KycPage() {
                   key={d.key}
                   label={d.label}
                   docType={d.key}
-                  has={hasDoc(d.key)} // ✅ FIXED
+                  has={hasDoc(d.key)}
                   uploading={uploadingKey === d.key}
                   progress={uploadingKey === d.key ? progress : 0}
                   onUpload={uploadDoc}
@@ -394,6 +486,7 @@ export default function KycPage() {
 
             <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
               <div className="font-bold text-sm">Declaration (required)</div>
+
               <label className="flex items-start gap-3 text-sm text-white/80">
                 <input
                   type="checkbox"
@@ -421,23 +514,29 @@ export default function KycPage() {
             <div className="flex flex-wrap items-center gap-3">
               <button
                 onClick={submitForReview}
-                disabled={hardMissing.length > 0}
+                disabled={hardMissing.length > 0 || isApproved}
                 className={`px-5 py-2.5 rounded-xl font-semibold ${
-                  hardMissing.length > 0
+                  hardMissing.length > 0 || isApproved
                     ? "bg-white/10 text-white/60 cursor-not-allowed"
                     : "bg-amber-400 text-black"
                 }`}
               >
-                Submit for review
+                {isApproved ? "Already approved" : "Submit for review"}
               </button>
 
               {hardMissing.length > 0 && (
                 <div className="text-xs text-white/60">Missing: {hardMissing.join(", ")}</div>
               )}
 
-              {String(status || "").toUpperCase() === "APPROVED" && (
-                <Link to="/host" className="text-sm text-amber-300 underline font-semibold">
-                  Go to Host Dashboard →
+              {isApproved && (
+                <Link to={nextApprovedPath} className="text-sm text-amber-300 underline font-semibold">
+                  {intent === "partner"
+                    ? role === "partner"
+                      ? "Go to Partner Dashboard →"
+                      : "Continue Partner Onboarding →"
+                    : role === "host"
+                    ? "Go to Host Dashboard →"
+                    : "Continue Host Application →"}
                 </Link>
               )}
             </div>
@@ -470,6 +569,21 @@ export default function KycPage() {
             </div>
           </div>
         </section>
+
+        {isApproved ? (
+          <div className="mt-6 rounded-xl border border-emerald-400/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+            Your KYC is approved. Continue to the next step for your{" "}
+            <span className="font-semibold capitalize">{intent}</span> journey.
+            <div className="mt-2">
+              <button
+                onClick={() => nav(nextApprovedPath)}
+                className="px-4 py-2 rounded-xl bg-amber-400 text-black font-semibold"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </main>
   );

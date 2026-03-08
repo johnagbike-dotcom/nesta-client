@@ -67,19 +67,37 @@ function compactRef(v) {
 
 function prettyStatus(status) {
   const s = safeLower(status);
+
   if (!s) return "Pending";
   if (s === "paid") return "Paid";
   if (s === "confirmed") return "Confirmed";
+  if (s === "paid_pending_release") return "Paid — awaiting check-in";
+  if (s === "checked_in") return "Checked in";
+  if (s === "released") return "Stay active";
   if (s === "cancelled") return "Cancelled";
   if (s === "refunded") return "Refunded";
   if (s === "failed") return "Failed";
-  return s.charAt(0).toUpperCase() + s.slice(1);
+
+  return s
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
 function statusTone(status) {
   const s = safeLower(status);
-  if (s === "confirmed" || s === "paid") return "good";
+
+  if (
+    s === "confirmed" ||
+    s === "paid" ||
+    s === "paid_pending_release" ||
+    s === "checked_in" ||
+    s === "released"
+  ) {
+    return "good";
+  }
+
   if (s === "cancelled" || s === "refunded" || s === "failed") return "bad";
+
   return "warn";
 }
 
@@ -102,6 +120,7 @@ function Badge({ status = "" }) {
 /* map firestore doc -> render row */
 function mapBookingDoc(d) {
   const data = d.data ? d.data() : d;
+
   return {
     id: d.id || data.id,
     ...data,
@@ -112,9 +131,10 @@ function mapBookingDoc(d) {
   };
 }
 
-/** Deduplicate by id, keep the newest version (prefer later updatedAt/createdAt) */
+/** Deduplicate by id, keep the newest version */
 function mergeUniqueById(existing, incoming) {
   const byId = new Map();
+
   const put = (row) => {
     if (!row?.id) return;
     const prev = byId.get(row.id);
@@ -138,33 +158,34 @@ function mergeUniqueById(existing, incoming) {
 
     const prevMs = prevTs?.getTime?.() || 0;
     const nextMs = nextTs?.getTime?.() || 0;
+
     if (nextMs >= prevMs) byId.set(row.id, { ...prev, ...row });
   };
 
   existing.forEach(put);
   incoming.forEach(put);
 
-  // sort newest first (createdAt desc)
   const out = Array.from(byId.values());
   out.sort((a, b) => {
     const ta = (toDateObj(a.createdAt) || toDateObj(a.updatedAt) || new Date(0)).getTime();
     const tb = (toDateObj(b.createdAt) || toDateObj(b.updatedAt) || new Date(0)).getTime();
     return tb - ta;
   });
+
   return out;
 }
 
 export default function GuestBookings() {
   const { user } = useAuth();
-  const { profile } = useUserProfile(user?.uid);
+  const { profile } = useUserProfile();
   const nav = useNavigate();
   const { showToast: toast } = useToast();
 
   const role = safeLower(profile?.role);
-  const isGuest = !role || role === "guest"; // treat undefined as guest browsing
+  const isGuest = !role || role === "guest";
 
   /* state */
-  const [tab, setTab] = useState("all"); // 'all' | 'upcoming' | 'past'
+  const [tab, setTab] = useState("all"); // all | upcoming | past
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -173,7 +194,7 @@ export default function GuestBookings() {
   const [loadingMore, setLoadingMore] = useState(false);
   const lastDocRef = useRef(null);
 
-  const [selected, setSelected] = useState(null); // details modal
+  const [selected, setSelected] = useState(null);
   const [editOpen, setEditOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
 
@@ -181,7 +202,7 @@ export default function GuestBookings() {
   const [newCheckIn, setNewCheckIn] = useState("");
   const [newCheckOut, setNewCheckOut] = useState("");
 
-  // light “Luxe” controls
+  /* filters */
   const [qText, setQText] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
@@ -189,6 +210,7 @@ export default function GuestBookings() {
   const baseCol = useMemo(() => collection(db, "bookings"), []);
   const liveQuery = useMemo(() => {
     if (!user?.uid) return null;
+
     return query(
       baseCol,
       where("guestId", "==", user.uid),
@@ -214,13 +236,11 @@ export default function GuestBookings() {
       (snap) => {
         const list = snap.docs.map(mapBookingDoc);
 
-        // merge with any older pages we may have loaded
         setRows((cur) => mergeUniqueById(cur, list));
 
         const last = snap.docs[snap.docs.length - 1] || null;
         lastDocRef.current = last;
 
-        // ✅ hasMore should be “page is full” and we have a cursor
         setHasMore(Boolean(last) && snap.size === PAGE);
         setLoading(false);
       },
@@ -252,15 +272,10 @@ export default function GuestBookings() {
       );
 
       const more = snap.docs.map(mapBookingDoc);
-
-      // advance cursor
       const last = snap.docs[snap.docs.length - 1] || null;
       lastDocRef.current = last;
 
-      // ✅ same rule: page full + cursor
       setHasMore(Boolean(last) && snap.size === PAGE);
-
-      // merge to prevent duplicates
       setRows((cur) => mergeUniqueById(cur, more));
     } catch (e) {
       console.error(e);
@@ -298,32 +313,36 @@ export default function GuestBookings() {
   const canEdit = (b) => {
     const s = safeLower(b.status);
     const future = !isPastDate(b._rawCheckIn ?? b.checkIn);
-    return s === "confirmed" && future && isGuest;
+    return (s === "confirmed" || s === "paid" || s === "paid_pending_release") && future && isGuest;
   };
 
   const canCancel = (b) => {
     const s = safeLower(b.status);
     const future = !isPastDate(b._rawCheckIn ?? b.checkIn);
-    return s === "confirmed" && future && isGuest && !b.cancellationRequested;
+    return (
+      (s === "confirmed" || s === "paid" || s === "paid_pending_release") &&
+      future &&
+      isGuest &&
+      !b.cancellationRequested
+    );
   };
 
   const canChat = (b) => {
     const s = safeLower(b.status);
-    return isGuest && (s === "confirmed" || s === "paid");
+    return isGuest && ["confirmed", "paid", "paid_pending_release", "checked_in", "released"].includes(s);
   };
 
   const canSeeCheckinGuide = (b) => {
     const s = safeLower(b.status);
-    return isGuest && (s === "confirmed" || s === "paid");
+    return isGuest && ["confirmed", "paid", "paid_pending_release", "checked_in", "released"].includes(s);
   };
 
-  /* Booking → luxury chat (guest side) */
+  /* Booking → guest chat */
   function openChatFromBooking(bk) {
     if (!bk || !bk.id) return;
 
     const listingId = bk.listingId || bk.listing?.id || null;
     const listingTitle = bk.title || bk.listingTitle || bk.listing?.title || "Listing";
-
     const hostId = bk.hostId || bk.ownerId || bk.partnerUid || bk.listingOwner || null;
 
     if (!listingId || !hostId) {
@@ -362,7 +381,6 @@ export default function GuestBookings() {
       return;
     }
 
-    // simple client guard: check-out after check-in
     if (newCheckOut <= newCheckIn) {
       toast("Check-out must be after check-in.", "warning");
       return;
@@ -512,7 +530,7 @@ export default function GuestBookings() {
             </div>
           </div>
 
-          {/* Luxe filter bar */}
+          {/* Filter bar */}
           <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
@@ -538,6 +556,9 @@ export default function GuestBookings() {
                 <option value="all">All</option>
                 <option value="confirmed">Confirmed</option>
                 <option value="paid">Paid</option>
+                <option value="paid_pending_release">Paid — awaiting check-in</option>
+                <option value="checked_in">Checked in</option>
+                <option value="released">Stay active</option>
                 <option value="pending">Pending</option>
                 <option value="cancelled">Cancelled</option>
                 <option value="refunded">Refunded</option>
@@ -604,6 +625,7 @@ export default function GuestBookings() {
               {filtered.map((b) => {
                 const title = b.title || b.listingTitle || "Listing";
                 const location = b.listingLocation || b.city || b.area || "";
+                const amount = b.amountN ?? b.amountLockedN ?? b.total ?? 0;
 
                 return (
                   <li
@@ -617,7 +639,10 @@ export default function GuestBookings() {
                           <p className="text-sm text-white/55 truncate">{location}</p>
 
                           <div className="mt-2 text-[11px] text-white/45">
-                            Ref: <span className="text-white/70">{compactRef(b.reference || b.ref || b.id)}</span>
+                            Ref:{" "}
+                            <span className="text-white/70">
+                              {compactRef(b.reference || b.ref || b.id)}
+                            </span>
                           </div>
 
                           {b.cancellationRequested && (
@@ -645,9 +670,7 @@ export default function GuestBookings() {
                         <div className="text-sm text-white/65">
                           Guests: <span className="text-white/90 font-semibold">{b.guests || 1}</span>
                         </div>
-                        <div className="text-lg font-semibold text-white">
-                          {ngn(b.amountN ?? b.total)}
-                        </div>
+                        <div className="text-lg font-semibold text-white">{ngn(amount)}</div>
                       </div>
 
                       <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
@@ -733,7 +756,10 @@ export default function GuestBookings() {
               <div className="mt-2 text-[11px] text-white/45">
                 Provider: <span className="text-white/70">{selected.provider || "—"}</span>
                 <span className="mx-2 text-white/20">•</span>
-                Ref: <span className="text-white/70">{compactRef(selected.reference || selected.ref || selected.id)}</span>
+                Ref:{" "}
+                <span className="text-white/70">
+                  {compactRef(selected.reference || selected.ref || selected.id)}
+                </span>
               </div>
             </div>
             <Badge status={selected.status} />
@@ -749,13 +775,34 @@ export default function GuestBookings() {
           <div className="mt-4 rounded-2xl bg-black/25 border border-white/10 p-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-white/65">Amount</span>
-              <span className="font-semibold">{ngn(selected.amountN ?? selected.total)}</span>
+              <span className="font-semibold">
+                {ngn(selected.amountN ?? selected.amountLockedN ?? selected.total ?? 0)}
+              </span>
             </div>
+
             {(selected.dateChangeRequested || selected.cancellationRequested) && (
               <div className="mt-2 text-[11px] text-amber-200/90">
                 {selected.dateChangeRequested ? "Date change requested." : null}
                 {selected.dateChangeRequested && selected.cancellationRequested ? " " : null}
                 {selected.cancellationRequested ? "Cancellation requested." : null}
+              </div>
+            )}
+
+            {safeLower(selected.status) === "paid_pending_release" && (
+              <div className="mt-2 text-[11px] text-amber-200/90">
+                Your booking is paid and awaiting host check-in confirmation.
+              </div>
+            )}
+
+            {safeLower(selected.status) === "checked_in" && (
+              <div className="mt-2 text-[11px] text-sky-200/90">
+                Check-in has been confirmed for this stay.
+              </div>
+            )}
+
+            {safeLower(selected.status) === "released" && (
+              <div className="mt-2 text-[11px] text-emerald-200/90">
+                Your stay is active and payout processing is underway in the background.
               </div>
             )}
           </div>
@@ -807,7 +854,7 @@ export default function GuestBookings() {
         </Modal>
       )}
 
-      {/* EDIT (DATE CHANGE) MODAL */}
+      {/* EDIT MODAL */}
       {editOpen && selected && (
         <Modal onClose={() => setEditOpen(false)} title="Request date change">
           <p className="text-sm text-white/60 mt-1">
@@ -888,9 +935,8 @@ export default function GuestBookings() {
   );
 }
 
-/* ------------- Luxe UI atoms ------------- */
+/* ------------- UI atoms ------------- */
 function Modal({ children, onClose, title }) {
-  // ESC to close
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") onClose?.();

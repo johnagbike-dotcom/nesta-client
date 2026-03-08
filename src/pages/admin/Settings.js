@@ -1,24 +1,33 @@
 // src/pages/admin/Settings.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import axios from "axios";
 import AdminHeader from "../../components/AdminHeader";
-import { useToast } from "../../components/Toast";
+import LuxeBtn from "../../components/LuxeBtn";
+import { useToast } from "../../context/ToastContext";
 import { getAuth } from "firebase/auth";
 
 /* ------------------------------ axios base ------------------------------ */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   withCredentials: false,
   timeout: 15000,
 });
 
 // Attach Firebase ID token automatically (admin-protected routes)
 api.interceptors.request.use(async (config) => {
-  const auth = getAuth();
-  const user = auth.currentUser;
-  if (user) {
-    const token = await user.getIdToken();
-    config.headers.Authorization = `Bearer ${token}`;
+  try {
+    const auth = getAuth();
+    const user = auth.currentUser;
+    if (user) {
+      const token = await user.getIdToken();
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  } catch {
+    // ignore
   }
   return config;
 });
@@ -39,7 +48,14 @@ function Row({ label, children, hint }) {
       <div>
         <div style={{ fontWeight: 900, color: "#f8fafc" }}>{label}</div>
         {hint ? (
-          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4, lineHeight: 1.35 }}>
+          <div
+            style={{
+              fontSize: 12,
+              color: "#94a3b8",
+              marginTop: 4,
+              lineHeight: 1.35,
+            }}
+          >
             {hint}
           </div>
         ) : null}
@@ -49,51 +65,16 @@ function Row({ label, children, hint }) {
   );
 }
 
-function LuxeBtn({ kind = "slate", disabled, onClick, children }) {
-  const tones = {
-    gold: {
-      bg: "linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c)",
-      text: "#1b1608",
-      ring: "rgba(255,210,64,.75)",
-    },
-    slate: {
-      bg: "rgba(255,255,255,.08)",
-      text: "#e6e9ef",
-      ring: "rgba(255,255,255,.18)",
-    },
-  };
-  const t = tones[kind] || tones.slate;
-
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        borderRadius: 12,
-        padding: "10px 16px",
-        fontWeight: 900,
-        fontSize: 13,
-        background: t.bg,
-        color: t.text,
-        border: `1px solid ${t.ring}`,
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,.06)",
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.6 : 1,
-        transition: "filter .15s ease, transform .04s ease",
-      }}
-      onMouseDown={(e) => (e.currentTarget.style.transform = "translateY(1px)")}
-      onMouseUp={(e) => (e.currentTarget.style.transform = "translateY(0)")}
-      onMouseEnter={(e) => !disabled && (e.currentTarget.style.filter = "brightness(1.05)")}
-      onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
-    >
-      {children}
-    </button>
-  );
-}
-
 function Toggle({ checked, onChange, label }) {
   return (
-    <label style={{ display: "flex", alignItems: "center", gap: 12, color: "#e5e7eb" }}>
+    <label
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        color: "#e5e7eb",
+      }}
+    >
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span style={{ fontWeight: 700 }}>{label}</span>
     </label>
@@ -102,13 +83,18 @@ function Toggle({ checked, onChange, label }) {
 
 /* --------------------------------- page --------------------------------- */
 export default function Settings() {
-  const toast = useToast();
-  const notify = (msg, type = "success") => {
-    if (toast?.show) return toast.show(msg, type);
-    if (type === "error" && toast?.error) return toast.error(msg);
-    if (type === "success" && toast?.success) return toast.success(msg);
-    alert(msg);
-  };
+  const { showToast } = useToast();
+
+  const notify = useCallback(
+    (msg, type = "success") => {
+      try {
+        showToast?.(msg, type);
+      } catch {
+        // no-op
+      }
+    },
+    [showToast]
+  );
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -123,14 +109,16 @@ export default function Settings() {
     return Number.isFinite(n) && n >= 1 && n <= 50;
   }, [featuredCarouselLimit]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await api.get("/admin/settings");
-      const cfg = res.data || {};
+      const cfg = res?.data || {};
 
       setMaintenanceMode(!!cfg.maintenanceMode);
-      setRequireKycForNewHosts(!!cfg.requireKycForNewHosts);
+      setRequireKycForNewHosts(
+        cfg.requireKycForNewHosts === undefined ? true : !!cfg.requireKycForNewHosts
+      );
 
       const lim = Number(cfg.featuredCarouselLimit ?? 10);
       setFeaturedCarouselLimit(Number.isFinite(lim) ? lim : 10);
@@ -142,10 +130,13 @@ export default function Settings() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [notify]);
 
   const save = async () => {
-    if (!canSave) return notify("Featured carousel limit must be between 1 and 50.", "error");
+    if (!canSave) {
+      notify("Featured carousel limit must be between 1 and 50.", "error");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -156,7 +147,7 @@ export default function Settings() {
       };
 
       const res = await api.put("/admin/settings", payload);
-      setUpdatedAt(res.data?.updatedAt || new Date().toISOString());
+      setUpdatedAt(res?.data?.updatedAt || new Date().toISOString());
       notify("Settings saved.", "success");
     } catch (e) {
       console.error("Settings save failed:", e?.response?.data || e.message);
@@ -168,13 +159,17 @@ export default function Settings() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
   return (
     <div style={{ padding: 16 }}>
       <h1 style={{ fontWeight: 800, fontSize: 28, margin: "6px 0 18px" }}>Admin</h1>
-      <AdminHeader back title="Settings" subtitle="Global controls for the luxury platform" />
+
+      <AdminHeader
+        back
+        title="Settings"
+        subtitle="Global controls for the luxury platform"
+      />
 
       <div
         style={{
@@ -222,7 +217,7 @@ export default function Settings() {
             label="Featured carousel limit"
             hint="Maximum number of featured listings shown in the homepage carousel (1–50)."
           >
-            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               <input
                 type="number"
                 min={1}
@@ -239,6 +234,7 @@ export default function Settings() {
                   width: 160,
                 }}
               />
+
               {!canSave ? (
                 <span style={{ fontSize: 12, color: "#fca5a5", fontWeight: 700 }}>
                   Enter a value from 1 to 50
@@ -247,11 +243,30 @@ export default function Settings() {
             </div>
           </Row>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
-            <LuxeBtn kind="gold" onClick={save} disabled={loading || saving || !canSave}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginTop: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <LuxeBtn
+              kind="gold"
+              onClick={save}
+              disabled={loading || saving || !canSave}
+              loading={saving}
+            >
               {saving ? "Saving…" : "Save Changes"}
             </LuxeBtn>
-            <LuxeBtn onClick={load} disabled={loading || saving}>
+
+            <LuxeBtn
+              kind="slate"
+              onClick={load}
+              disabled={loading || saving}
+              loading={loading}
+            >
               {loading ? "Loading…" : "Reload"}
             </LuxeBtn>
 

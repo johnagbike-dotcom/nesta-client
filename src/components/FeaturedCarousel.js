@@ -30,10 +30,10 @@ function getSponsoredUntilMs(v) {
 function pickHeroImage(curr) {
   if (!curr) return null;
   return (
+    curr.primaryImageUrl ||
     (Array.isArray(curr.photos) && curr.photos[0]) ||
     (Array.isArray(curr.images) && curr.images[0]) ||
     (Array.isArray(curr.imageUrls) && curr.imageUrls[0]) ||
-    curr.primaryImageUrl ||
     curr.coverImage ||
     curr.coverUrl ||
     curr.imageUrl ||
@@ -52,15 +52,6 @@ function prefetchImage(url) {
   }
 }
 
-/**
-* ✅ Your schema (from screenshots):
-* - status: "active"
-* - sponsored: boolean
-* - featured: boolean
-* - sponsoredUntil: timestamp | null
-*
-* Therefore homepage eligibility is simply: status === "active"
-*/
 function isListingEligibleForHomepage(r) {
   if (!r) return false;
   return String(r.status || "").toLowerCase() === "active";
@@ -72,11 +63,94 @@ function clamp(n, min, max) {
   return Math.min(Math.max(v, min), max);
 }
 
-/* Swipe threshold (px). Increase for stronger swipe requirement */
+function safeNum(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function pickRating(curr) {
+  if (!curr) return null;
+  const candidates = [
+    curr.ratingAvg,
+    curr.averageRating,
+    curr.avgRating,
+    curr.rating,
+    curr.reviewScore,
+    curr.starRating,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return Math.min(n, 5);
+  }
+  return null;
+}
+
+function pickRatingCount(curr) {
+  if (!curr) return null;
+  const candidates = [
+    curr.ratingCount,
+    curr.reviewCount,
+    curr.reviewsCount,
+    curr.totalReviews,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n >= 0) return Math.round(n);
+  }
+  return null;
+}
+
+function pickBedrooms(curr) {
+  if (!curr) return null;
+  const candidates = [curr.bedrooms, curr.bedroomCount];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return null;
+}
+
+function pickBathrooms(curr) {
+  if (!curr) return null;
+  const candidates = [curr.bathrooms, curr.bathroomCount];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return null;
+}
+
+function pickBeds(curr) {
+  if (!curr) return null;
+  const candidates = [curr.beds, curr.bedCount, curr.numberOfBeds];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return null;
+}
+
+function pickGuests(curr) {
+  if (!curr) return null;
+  const candidates = [
+    curr.maxGuests,
+    curr.guests,
+    curr.guestCapacity,
+    curr.capacity,
+    curr.sleeps,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return null;
+}
+
+/* Swipe threshold */
 const SWIPE_TRIGGER = 90;
 
 export default function FeaturedCarousel({
-  fallbackMode = "latest", // "latest" | "none"
+  fallbackMode = "latest",
   limit = 12,
   hideEmptyState = false,
 }) {
@@ -86,10 +160,9 @@ export default function FeaturedCarousel({
   const [items, setItems] = useState([]);
   const [i, setI] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [dir, setDir] = useState(1); // 1 next, -1 prev
+  const [dir, setDir] = useState(1);
   const [paused, setPaused] = useState(false);
-  const [mode, setMode] = useState("featured"); // "featured" | "recommended"
-
+  const [mode, setMode] = useState("featured");
   const autoplayRef = useRef(null);
 
   const LIMIT = clamp(limit, 1, 24);
@@ -104,8 +177,6 @@ export default function FeaturedCarousel({
       try {
         const now = Date.now();
 
-        // 1) Best query: sponsored + featured + sponsoredUntil > now
-        // (May require composite index.)
         const bestQ = query(
           collection(db, "listings"),
           where("sponsored", "==", true),
@@ -115,14 +186,12 @@ export default function FeaturedCarousel({
           firestoreLimit(LIMIT)
         );
 
-        // 2) Index-safe pull to filter client-side if composite index is missing
         const fallbackFeaturedQ = query(
           collection(db, "listings"),
           orderBy("updatedAt", "desc"),
           firestoreLimit(120)
         );
 
-        // 3) Latest listings fallback (homepage should not look empty)
         const latestQ = query(
           collection(db, "listings"),
           orderBy("updatedAt", "desc"),
@@ -132,7 +201,6 @@ export default function FeaturedCarousel({
         let rows = [];
         let pickedMode = "featured";
 
-        // Try best featured query
         try {
           const snap = await getDocs(bestQ);
           if (!alive) return;
@@ -149,14 +217,13 @@ export default function FeaturedCarousel({
             })
             .slice(0, LIMIT);
 
-          pickedMode = rows.length ? "featured" : "featured";
+          pickedMode = "featured";
         } catch (bestErr) {
           console.warn(
             "[FeaturedCarousel] Best query failed (index likely missing). Falling back:",
             bestErr?.message || bestErr
           );
 
-          // Fall back: pull recent and filter locally
           const snap = await getDocs(fallbackFeaturedQ);
           if (!alive) return;
 
@@ -172,10 +239,9 @@ export default function FeaturedCarousel({
             })
             .slice(0, LIMIT);
 
-          pickedMode = rows.length ? "featured" : "featured";
+          pickedMode = "featured";
         }
 
-        // If no featured found, use latest active listings (recommended) if allowed
         if ((!rows || rows.length === 0) && fallbackMode === "latest") {
           try {
             const snap = await getDocs(latestQ);
@@ -186,7 +252,7 @@ export default function FeaturedCarousel({
               .filter((r) => isListingEligibleForHomepage(r))
               .slice(0, LIMIT);
 
-            pickedMode = rows.length ? "recommended" : "recommended";
+            pickedMode = "recommended";
           } catch (e) {
             console.warn("[FeaturedCarousel] Latest fallback failed:", e?.message || e);
           }
@@ -209,6 +275,7 @@ export default function FeaturedCarousel({
     }
 
     loadFS();
+
     return () => {
       alive = false;
     };
@@ -225,6 +292,7 @@ export default function FeaturedCarousel({
   const startAutoplay = useCallback(() => {
     clearAutoplay();
     if (!total) return;
+
     autoplayRef.current = setInterval(() => {
       if (paused) return;
       setDir(1);
@@ -237,7 +305,6 @@ export default function FeaturedCarousel({
     return () => clearAutoplay();
   }, [startAutoplay, clearAutoplay]);
 
-  // keep index in range
   useEffect(() => {
     if (!total) {
       setI(0);
@@ -291,6 +358,7 @@ export default function FeaturedCarousel({
 
   const onDragEnd = (_e, info) => {
     const offsetX = info?.offset?.x ?? 0;
+
     if (offsetX < -SWIPE_TRIGGER) {
       setDir(1);
       setI((v) => (v + 1) % (total || 1));
@@ -298,6 +366,7 @@ export default function FeaturedCarousel({
       setDir(-1);
       setI((v) => (v - 1 + (total || 1)) % (total || 1));
     }
+
     window.setTimeout(() => setPaused(false), 650);
   };
 
@@ -310,7 +379,6 @@ export default function FeaturedCarousel({
     );
   }
 
-  // Homepage-safe: if empty, show skeleton instead of a "dead platform" message
   if (!curr) {
     if (hideEmptyState) {
       return (
@@ -320,14 +388,13 @@ export default function FeaturedCarousel({
       );
     }
 
-    // Keep explicit empty state for any non-home pages where you prefer it
     return (
       <div className="carousel">
         <div className="carousel-card empty">
           <div className="meta">
             <div className="title">No featured stays yet</div>
             <div className="sub">
-              Premium listings will appear here once spotlight plans are active.
+              Premium listings will appear here once featured placements are active.
             </div>
           </div>
         </div>
@@ -341,7 +408,29 @@ export default function FeaturedCarousel({
   const area = curr.area || curr.neighbourhood || "—";
   const city = curr.city || "Nigeria";
 
-  // Badge text adjusts subtly based on source
+  const rating = pickRating(curr);
+  const ratingCount = pickRatingCount(curr);
+  const bedrooms = pickBedrooms(curr);
+  const bathrooms = pickBathrooms(curr);
+  const beds = pickBeds(curr);
+  const guests = pickGuests(curr);
+
+  const topLine = [
+    rating ? `⭐ ${rating.toFixed(1)}` : null,
+    rating && ratingCount && ratingCount > 0 ? `(${ratingCount})` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const detailsLine = [
+    bedrooms ? `${bedrooms} ${bedrooms === 1 ? "bedroom" : "bedrooms"}` : null,
+    bathrooms ? `${bathrooms} ${bathrooms === 1 ? "bathroom" : "bathrooms"}` : null,
+    beds ? `${beds} ${beds === 1 ? "bed" : "beds"}` : null,
+    guests ? `${guests} ${guests === 1 ? "guest" : "guests"}` : null,
+  ]
+    .filter(Boolean)
+    .join(" • ");
+
   const badgeText = mode === "featured" ? "Featured" : "Nesta Recommended";
 
   /* ───────────── motion variants ───────────── */
@@ -371,7 +460,6 @@ export default function FeaturedCarousel({
 
   return (
     <div className="carousel">
-      {/* Local polish: focus ring + safe click area */}
       <style>{`
         .fc-focus:focus-visible {
           outline: 2px solid rgba(255, 199, 64, .95);
@@ -418,12 +506,19 @@ export default function FeaturedCarousel({
                 onDragEnd={onDragEnd}
                 style={{ width: "100%", height: "100%" }}
               >
-                {heroImage ? <img src={heroImage} alt={title} /> : <div className="media-fallback" />}
+                {heroImage ? (
+                  <img
+                    src={heroImage}
+                    alt={title}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
+                ) : (
+                  <div className="media-fallback" />
+                )}
               </motion.div>
             </motion.div>
           </AnimatePresence>
 
-          {/* badge */}
           <div
             style={{
               position: "absolute",
@@ -447,7 +542,6 @@ export default function FeaturedCarousel({
             {badgeText}
           </div>
 
-          {/* hint */}
           <div
             style={{
               position: "absolute",
@@ -485,8 +579,35 @@ export default function FeaturedCarousel({
               }
             >
               <div className="title">{title}</div>
-              <div className="sub">
-                ₦{Number(price || 0).toLocaleString()}/night · {area} · {city}
+
+              {topLine ? (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 13,
+                    color: "rgba(255,255,255,0.90)",
+                    fontWeight: 700,
+                  }}
+                >
+                  {topLine}
+                </div>
+              ) : null}
+
+              {detailsLine ? (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 13,
+                    color: "rgba(255,255,255,0.82)",
+                    fontWeight: 600,
+                  }}
+                >
+                  {detailsLine}
+                </div>
+              ) : null}
+
+              <div className="sub" style={{ marginTop: 4 }}>
+                ₦{safeNum(price, 0).toLocaleString()}/night · {area} · {city}
               </div>
             </motion.div>
           </AnimatePresence>
@@ -522,4 +643,4 @@ export default function FeaturedCarousel({
       )}
     </div>
   );
-} 
+}

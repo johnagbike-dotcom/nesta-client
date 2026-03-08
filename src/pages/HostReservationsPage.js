@@ -35,8 +35,12 @@ const toDateObj = (v) => {
 
 const fmtDate = (v, fallback = "—") => {
   const d = toDateObj(v);
-  if (!d || isNaN(d.getTime())) return fallback;
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  if (!d || Number.isNaN(d.getTime())) return fallback;
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 };
 
 const isPast = (checkOut) => {
@@ -105,7 +109,14 @@ const normalizeBooking = (docSnap) => {
   const guestEmail = data.guestEmail || data.userEmail || data.email || "—";
 
   const amount =
-    Number(data.amountLockedN ?? data.amountN ?? data.total ?? data.totalAmount ?? data.amount ?? 0) || 0;
+    Number(
+      data.amountLockedN ??
+        data.amountN ??
+        data.total ??
+        data.totalAmount ??
+        data.amount ??
+        0
+    ) || 0;
 
   return {
     id,
@@ -116,7 +127,6 @@ const normalizeBooking = (docSnap) => {
     checkIn: data.checkIn ?? data.checkin ?? data.startDate ?? data.from,
     checkOut: data.checkOut ?? data.checkout ?? data.endDate ?? data.to,
     createdAt: data.createdAt ?? data.created ?? data.created_on,
-
     listingId: data.listingId ?? data.listing?.id ?? data.listingID ?? null,
     guestUid: data.guestUid ?? data.userId ?? data.guestId ?? data.uid ?? null,
   };
@@ -226,11 +236,34 @@ export default function HostReservationsPage({
     rows.forEach((r) => {
       const s = safeLower(r.status || "");
 
-      // ✅ Confirmed bucket includes the new lifecycle
-      if (["confirmed", "paid", "completed", "paid_pending_release", "released"].includes(s)) confirmed += 1;
-      else if (["pending", "hold", "reserved_unpaid", "awaiting_payment", "pending_payment", "initialized"].includes(s)) pending += 1;
-      else if (["cancelled", "canceled"].includes(s)) cancelled += 1;
-      else if (s === "refunded") refunded += 1;
+      // ✅ Confirmed bucket includes current lifecycle
+      if (
+        [
+          "confirmed",
+          "paid",
+          "completed",
+          "paid_pending_release",
+          "checked_in",
+          "released",
+        ].includes(s)
+      ) {
+        confirmed += 1;
+      } else if (
+        [
+          "pending",
+          "hold",
+          "reserved_unpaid",
+          "awaiting_payment",
+          "pending_payment",
+          "initialized",
+        ].includes(s)
+      ) {
+        pending += 1;
+      } else if (["cancelled", "canceled"].includes(s)) {
+        cancelled += 1;
+      } else if (s === "refunded") {
+        refunded += 1;
+      }
 
       if (isAttentionStatus(s, r)) attention += 1;
     });
@@ -269,7 +302,6 @@ export default function HostReservationsPage({
 
   /**
    * ✅ Confirm/Stamp endpoint should ONLY be offered after payment is paid.
-   * In your model, webhooks set status=paid_pending_release, so confirm is optional “stamp”.
    */
   const handleConfirm = async (row) => {
     if (!row?.id) return;
@@ -283,8 +315,7 @@ export default function HostReservationsPage({
       return;
     }
 
-    // We only allow this stamp in sensible states (prevents confusion)
-    if (!["paid_pending_release", "paid", "confirmed", "released", "completed"].includes(s)) {
+    if (!["paid_pending_release", "paid", "confirmed", "checked_in", "released", "completed"].includes(s)) {
       toast("This booking is not in a confirmable state.", "info");
       return;
     }
@@ -369,23 +400,25 @@ export default function HostReservationsPage({
     }
   };
 
-  // ✅ check-in + release payout (server-side)
+  // ✅ check-in schedules release server-side
   const handleCheckinRelease = async (row) => {
     if (!row?.id) return;
 
     const s = safeLower(row.status || "");
     const payStatus = safeLower(row.paymentStatus || "");
+    const isPaid = payStatus === "paid" || row.paid === true;
+
     const eligible =
       s === "paid_pending_release" &&
-      (payStatus === "paid" || row.paid === true) &&
+      isPaid &&
       isTodayOrPast(row.checkIn);
 
     if (!eligible) {
-      toast("Not eligible for release yet (must be paid & check-in date reached).", "info");
+      toast("Not eligible yet. Booking must be paid and the check-in date must be today or earlier.", "info");
       return;
     }
 
-    if (!window.confirm("Confirm guest check-in and RELEASE payout now?")) return;
+    if (!window.confirm("Confirm guest check-in and schedule payout release?")) return;
 
     markBusy(row.id, true);
     try {
@@ -396,16 +429,24 @@ export default function HostReservationsPage({
         token = "";
       }
 
-      await apiPost(`/bookings/${row.id}/checkin`, token, {});
+      const payload = await apiPost(`/bookings/${row.id}/checkin`, token, {});
 
       closeDrawer();
       await reload();
 
-      toast("Check-in confirmed & payout released ✅", "success");
-      await redirectToDashboardRefresh(tab, "released");
+      if (payload?.scheduledRelease) {
+        toast("Guest check-in confirmed ✅ Payout release scheduled.", "success");
+        await redirectToDashboardRefresh(tab, "checked_in");
+      } else if (payload?.alreadyScheduled) {
+        toast("Release was already scheduled for this booking.", "info");
+      } else if (payload?.alreadyReleased) {
+        toast("Payout has already been released for this booking.", "info");
+      } else {
+        toast("Check-in updated ✅", "success");
+      }
     } catch (e) {
       console.error("[HostReservations] checkin release failed:", e);
-      toast(e?.message || "Could not release payout. Please try again.", "error");
+      toast(e?.message || "Could not update check-in. Please try again.", "error");
     } finally {
       markBusy(row.id, false);
     }
@@ -445,7 +486,7 @@ export default function HostReservationsPage({
               {pageTitle || "Host reservations"}
             </h1>
             <p className="text-sm text-white/70 mt-1">
-              Review guest bookings, manage check-in & payout release, and handle exceptions from one place.
+              Review guest bookings, manage check-in and payout release, and handle exceptions from one place.
             </p>
           </div>
           <button
@@ -524,7 +565,7 @@ export default function HostReservationsPage({
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-semibold truncate">{row.listingTitle}</p>
                         <StatusChip status={s} row={row} />
                         {showAttentionBadge && (
@@ -604,9 +645,14 @@ function StatusChip({ status, row }) {
   const attention = isAttentionStatus(s, row);
 
   let classes = "border-slate-400/50 text-slate-200 bg-slate-500/10";
+  let label = s || "pending";
 
   if (s === "paid_pending_release") {
     classes = "border-amber-400/60 text-amber-200 bg-amber-500/10";
+    label = "paid pending release";
+  } else if (s === "checked_in") {
+    classes = "border-sky-400/60 text-sky-200 bg-sky-500/10";
+    label = "checked in";
   } else if (["released", "confirmed", "paid", "completed"].includes(s)) {
     classes = "border-emerald-400/60 text-emerald-200 bg-emerald-500/10";
   } else if (["cancelled", "canceled"].includes(s)) {
@@ -619,7 +665,7 @@ function StatusChip({ status, row }) {
 
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] capitalize border ${classes}`}>
-      {s || "pending"}
+      {label}
     </span>
   );
 }
@@ -659,22 +705,32 @@ function BookingDetailDrawer({
   const payStatus = safeLower(booking.paymentStatus || "");
   const isPaid = payStatus === "paid" || booking.paid === true;
 
-  // ✅ confirm stamp only if paid
   const canStampConfirm =
-    isPaid && ["paid_pending_release", "paid", "confirmed", "released", "completed"].includes(s);
+    isPaid &&
+    ["paid_pending_release", "paid", "confirmed", "checked_in", "released", "completed"].includes(s);
 
-  // ✅ eligible for release on/after check-in date
-  const canRelease =
-    s === "paid_pending_release" && isPaid && isTodayOrPast(booking.checkIn);
+  const canScheduleRelease =
+    s === "paid_pending_release" &&
+    isPaid &&
+    isTodayOrPast(booking.checkIn);
 
-  const isRefundable = ["confirmed", "paid", "released", "paid_pending_release"].includes(s);
+  const alreadyCheckedIn = s === "checked_in";
+  const alreadyReleased = s === "released";
+
+  const isRefundable = ["confirmed", "paid", "released", "checked_in", "paid_pending_release"].includes(s);
   const isCancelable = ["pending", "hold", "reserved_unpaid", "confirmed", "paid", "paid_pending_release"].includes(s);
 
   const datesLabel = () => {
     const ci = toDateObj(booking.checkIn);
     const co = toDateObj(booking.checkOut);
     const fmt = (d) =>
-      d ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+      d
+        ? d.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })
+        : "—";
     return `${fmt(ci)} → ${fmt(co)}`;
   };
 
@@ -713,7 +769,7 @@ function BookingDetailDrawer({
           payload?.message ||
           payload?.error ||
           (res.status === 403
-            ? "Contact details are locked right now (timing/subscription/KYC rule)."
+            ? "Contact details are locked right now."
             : "Could not fetch contact details.");
         setContactErr(msg);
         setContact(null);
@@ -721,7 +777,9 @@ function BookingDetailDrawer({
       }
 
       setContact({ phone: payload?.phone || null, email: payload?.email || null });
-      if (!payload?.phone && !payload?.email) setContactErr("No contact details found for this booking.");
+      if (!payload?.phone && !payload?.email) {
+        setContactErr("No contact details found for this booking.");
+      }
     } catch (e) {
       console.error("fetchContact failed:", e);
       setContactErr("Network error: could not fetch contact details.");
@@ -777,11 +835,21 @@ function BookingDetailDrawer({
 
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
             <div className="text-xs text-white/60">Status</div>
-            <div className="mt-1 inline-flex items-center gap-2">
+            <div className="mt-1 inline-flex items-center gap-2 flex-wrap">
               <StatusChip status={s} row={booking} />
               {s === "paid_pending_release" ? (
                 <span className="px-2 py-1 rounded-md border border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-200">
-                  Paid — release after check-in
+                  Paid — waiting for check-in
+                </span>
+              ) : null}
+              {s === "checked_in" ? (
+                <span className="px-2 py-1 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200">
+                  Check-in confirmed — release scheduled
+                </span>
+              ) : null}
+              {s === "released" ? (
+                <span className="px-2 py-1 rounded-md border border-emerald-400/40 bg-emerald-500/10 text-[11px] text-emerald-200">
+                  Payout released
                 </span>
               ) : null}
             </div>
@@ -792,7 +860,7 @@ function BookingDetailDrawer({
               <div>
                 <div className="text-xs text-white/60">Contact details</div>
                 <div className="text-[11px] text-white/45 mt-1">
-                  Locked until eligible (confirmed booking + timing/subscription/KYC rules).
+                  Locked until eligible booking rules are met.
                 </div>
               </div>
 
@@ -852,7 +920,7 @@ function BookingDetailDrawer({
           </div>
 
           <div className="flex flex-wrap gap-2 ml-auto">
-            {canRelease && onCheckinRelease && (
+            {canScheduleRelease && onCheckinRelease && (
               <button
                 onClick={onCheckinRelease}
                 disabled={busy}
@@ -862,8 +930,20 @@ function BookingDetailDrawer({
                     : "bg-amber-500 text-black border-amber-400 hover:brightness-110"
                 }`}
               >
-                {busy ? "Releasing…" : "Check-in & Release payout"}
+                {busy ? "Scheduling…" : "Confirm check-in"}
               </button>
+            )}
+
+            {alreadyCheckedIn && (
+              <span className="px-3 py-1.5 rounded-xl text-xs border border-sky-400/40 bg-sky-500/10 text-sky-200">
+                Release scheduled
+              </span>
+            )}
+
+            {alreadyReleased && (
+              <span className="px-3 py-1.5 rounded-xl text-xs border border-emerald-400/40 bg-emerald-500/10 text-emerald-200">
+                Already released
+              </span>
             )}
 
             {canStampConfirm && onConfirm && (

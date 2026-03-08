@@ -1,36 +1,53 @@
 // src/pages/onboarding/HostOnboarding.js
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import useUserProfile from "../../hooks/useUserProfile";
 
 function normalizeRole(raw) {
-  const r = String(raw || "").toLowerCase();
+  const r = String(raw || "").toLowerCase().trim();
+
   if (r === "verified_host") return "host";
   if (r === "verified_partner") return "partner";
   if (!r) return "guest";
+
   return r;
+}
+
+function normalizeKycStatus(profile = {}) {
+  return String(
+    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || ""
+  )
+    .toLowerCase()
+    .trim();
 }
 
 export default function OnboardingHost() {
   const nav = useNavigate();
   const { user } = useAuth();
-  const { profile } = useUserProfile(user?.uid);
+  const { profile } = useUserProfile();
 
-  const role = normalizeRole(profile?.role || profile?.type);
+  const role = useMemo(
+    () => normalizeRole(profile?.role || profile?.type),
+    [profile?.role, profile?.type]
+  );
 
-  const kycStatus = String(
-    profile?.kycStatus || profile?.kyc?.status || profile?.kyc?.state || ""
-  ).toLowerCase();
+  const kycStatus = useMemo(() => normalizeKycStatus(profile), [profile]);
 
   const isKycApproved =
     kycStatus === "approved" ||
     kycStatus === "verified" ||
     kycStatus === "complete";
 
-  // ✅ If already approved + role is host, do NOT show onboarding again
+  const primaryLabel = useMemo(() => {
+    if (role === "host" && isKycApproved) return "Go to host dashboard";
+    if (isKycApproved) return "Continue host application";
+    return "Complete KYC to continue";
+  }, [role, isKycApproved]);
+
   useEffect(() => {
     if (!user) return;
+
     if (role === "host" && isKycApproved) {
       nav("/host", { replace: true });
     }
@@ -42,21 +59,19 @@ export default function OnboardingHost() {
       return;
     }
 
-    // ✅ If they are already a host and KYC approved, send to dashboard
     if (role === "host" && isKycApproved) {
       nav("/host");
       return;
     }
 
-    // If KYC not approved, push them into KYC flow
+    // Keep intent for downstream onboarding/KYC routing
+    localStorage.setItem("nesta_kyc_intent", "host");
+
     if (!isKycApproved) {
-      localStorage.setItem("nesta_kyc_intent", "host");
       nav("/onboarding/kyc");
       return;
     }
 
-    // KYC approved but role not host yet → continue application wizard
-    localStorage.setItem("nesta_kyc_intent", "host");
     nav("/onboarding/kyc/apply");
   };
 
@@ -87,11 +102,7 @@ export default function OnboardingHost() {
                   onClick={handleStartHostApplication}
                   className="px-5 py-2.5 rounded-xl font-semibold text-sm md:text-base bg-amber-400 text-black hover:bg-amber-300"
                 >
-                  {role === "host" && isKycApproved
-                    ? "Go to host dashboard"
-                    : isKycApproved
-                    ? "Continue host application"
-                    : "Complete KYC to continue"}
+                  {primaryLabel}
                 </button>
 
                 {role === "host" && (
@@ -114,6 +125,7 @@ export default function OnboardingHost() {
             <div className="w-full md:w-60 lg:w-64">
               <div className="rounded-2xl bg-black/40 border border-white/10 p-4 space-y-2">
                 <div className="text-xs font-semibold text-white/60">Your status</div>
+
                 <div className="text-sm">
                   <span className="text-white/70">Account: </span>
                   <span className="font-semibold">
@@ -124,12 +136,14 @@ export default function OnboardingHost() {
                       : "Guest"}
                   </span>
                 </div>
+
                 <div className="text-sm">
                   <span className="text-white/70">KYC: </span>
                   <span className="font-semibold capitalize">
                     {kycStatus || "not started"}
                   </span>
                 </div>
+
                 <div className="mt-2 text-[11px] text-white/55">
                   KYC is required to protect hosts, guests, and partners.
                 </div>
@@ -156,7 +170,10 @@ export default function OnboardingHost() {
               s: "Once approved, you can publish your first home and access the host dashboard.",
             },
           ].map((x) => (
-            <div key={x.n} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div
+              key={x.n}
+              className="rounded-2xl border border-white/10 bg-white/5 p-4"
+            >
               <div className="text-xs text-white/60 mb-1">{x.n}</div>
               <div className="font-extrabold text-base md:text-lg">{x.t}</div>
               <p className="text-sm text-white/75 mt-1">{x.s}</p>

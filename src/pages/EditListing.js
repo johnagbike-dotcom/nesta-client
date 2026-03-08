@@ -15,17 +15,16 @@ import {
   limit,
   onSnapshot,
 } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { db, storage } from "../firebase";
+import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
 import ListingMap from "../components/ListingMap";
+import ImageUploader from "../components/ImageUploader";
 
 /* ───────────────────────── config ───────────────────────── */
 const PAYSTACK_PUBLIC_KEY = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "";
 
 /* ───────────────────────── helpers ───────────────────────── */
-
 function normalizeRole(raw) {
   const r = String(raw || "").toLowerCase();
   if (r === "verified_host") return "host";
@@ -36,13 +35,11 @@ function normalizeRole(raw) {
 
 function canEditListing(user, profile, listing) {
   if (!user || !listing) return false;
-
   const role = normalizeRole(profile?.role || profile?.type);
   const isAdmin = profile?.isAdmin === true || role === "admin";
   if (isAdmin) return true;
 
   const uid = user.uid;
-
   const ownerCandidates = [
     listing.ownerUid,
     listing.ownerId,
@@ -69,12 +66,35 @@ function pickPhotos(data) {
   return a.filter(Boolean);
 }
 
-/* ───────────────────────── plans ───────────────────────── */
+function toNullableNumber(v) {
+  if (v === "" || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
+/* ───────────────────────── plans ───────────────────────── */
 const FEATURE_PLANS = {
-  spotlight: { key: "spotlight", label: "Spotlight · 24 hours", price: 20000, durationDays: 1, tagline: "Great for last-minute boosts" },
-  premium: { key: "premium", label: "Premium · 7 days", price: 70000, durationDays: 7, tagline: "Week-long visibility in peak areas" },
-  signature: { key: "signature", label: "Signature · 30 days", price: 250000, durationDays: 30, tagline: "Flagship placement for serious hosts" },
+  spotlight: {
+    key: "spotlight",
+    label: "Spotlight · 24 hours",
+    price: 20000,
+    durationDays: 1,
+    tagline: "Great for last-minute boosts",
+  },
+  premium: {
+    key: "premium",
+    label: "Premium · 7 days",
+    price: 70000,
+    durationDays: 7,
+    tagline: "Week-long visibility in peak areas",
+  },
+  signature: {
+    key: "signature",
+    label: "Signature · 30 days",
+    price: 250000,
+    durationDays: 30,
+    tagline: "Flagship placement for serious hosts",
+  },
 };
 
 function Section({ title, children }) {
@@ -87,7 +107,6 @@ function Section({ title, children }) {
 }
 
 /* ───────────────────────── Feature plan modal ───────────────────────── */
-
 function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotlight" }) {
   const [choice, setChoice] = useState(initialPlanKey || "spotlight");
 
@@ -105,9 +124,12 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
       >
         <div className="flex items-start gap-3 mb-4">
           <div className="flex-1">
-            <h3 className="text-lg font-semibold text-white">Boost this listing in the Nesta carousel</h3>
+            <h3 className="text-lg font-semibold text-white">
+              Boost this listing in the Nesta carousel
+            </h3>
             <p className="text-xs text-white/60 mt-1">
-              Choose a spotlight plan. Admin reviews first. After approval, you’ll pay securely and admin activates your placement.
+              Choose a spotlight plan. Admin reviews first. After approval, you’ll pay securely and
+              admin activates your placement.
             </p>
           </div>
         </div>
@@ -127,11 +149,17 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
                 }`}
               >
                 <div className="text-[11px] uppercase tracking-[0.18em] text-white/60 mb-1">
-                  {plan.key === "spotlight" ? "Entry" : plan.key === "premium" ? "Popular" : "Flagship"}
+                  {plan.key === "spotlight"
+                    ? "Entry"
+                    : plan.key === "premium"
+                    ? "Popular"
+                    : "Flagship"}
                 </div>
                 <div className="text-sm font-semibold text-white mb-1">{plan.label}</div>
                 <div className="text-[11px] text-white/60 mb-2">{plan.tagline}</div>
-                <div className="mt-auto text-xs font-semibold text-amber-300">₦{plan.price.toLocaleString()}</div>
+                <div className="mt-auto text-xs font-semibold text-amber-300">
+                  ₦{plan.price.toLocaleString()}
+                </div>
               </button>
             );
           })}
@@ -152,7 +180,9 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
           >
             Submit request
           </button>
-          <div className="md:ml-auto text-[11px] text-white/55">Admin approves → you pay → admin activates.</div>
+          <div className="md:ml-auto text-[11px] text-white/55">
+            Admin approves → you pay → admin activates.
+          </div>
         </div>
       </div>
     </div>
@@ -160,7 +190,6 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
 }
 
 /* ───────────────────────── component ───────────────────────── */
-
 export default function EditListing() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -173,8 +202,8 @@ export default function EditListing() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [featureBusy, setFeatureBusy] = useState(false);
-
   const [listing, setListing] = useState(null);
+
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -187,6 +216,7 @@ export default function EditListing() {
     type: "apartment",
     bedrooms: "",
     bathrooms: "",
+    beds: "",
     maxGuests: "",
     amenities: [],
     photos: [],
@@ -198,9 +228,6 @@ export default function EditListing() {
     lng: null,
   });
 
-  const [newPhotos, setNewPhotos] = useState([]);
-
-  // live feature request (latest)
   const [featureReq, setFeatureReq] = useState(null);
   const [planModalOpen, setPlanModalOpen] = useState(false);
 
@@ -220,11 +247,11 @@ export default function EditListing() {
           navigate("/host");
           return;
         }
+
         const data = snap.data();
         const photos = pickPhotos(data);
 
         setListing({ id: snap.id, ...data });
-
         setForm({
           title: data.title || "",
           description: data.description || "",
@@ -235,9 +262,10 @@ export default function EditListing() {
           nightlyRate: data.nightlyRate ?? data.pricePerNight ?? "",
           pricePerNight: data.pricePerNight ?? data.nightlyRate ?? "",
           type: data.type || "apartment",
-          bedrooms: data.bedrooms || "",
-          bathrooms: data.bathrooms || "",
-          maxGuests: data.maxGuests || "",
+          bedrooms: data.bedrooms ?? "",
+          bathrooms: data.bathrooms ?? "",
+          beds: data.beds ?? data.bedCount ?? data.numberOfBeds ?? "",
+          maxGuests: data.maxGuests ?? "",
           amenities: Array.isArray(data.amenities) ? data.amenities : [],
           photos,
           instantBook: !!data.instantBook,
@@ -288,7 +316,6 @@ export default function EditListing() {
   }, [id]);
 
   /* ───────────────────────── helpers ───────────────────────── */
-
   const updateField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
 
   const amenitiesOptions = [
@@ -305,38 +332,20 @@ export default function EditListing() {
   const toggleAmenity = (amenity) =>
     setForm((f) => {
       const has = f.amenities.includes(amenity);
-      return { ...f, amenities: has ? f.amenities.filter((x) => x !== amenity) : [...f.amenities, amenity] };
+      return {
+        ...f,
+        amenities: has ? f.amenities.filter((x) => x !== amenity) : [...f.amenities, amenity],
+      };
     });
 
-  const handleFileChange = (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-    setNewPhotos(files);
-  };
-
-  const uploadNewPhotos = async () => {
-    if (!newPhotos.length) return [];
-    const uploaded = [];
-    for (const file of newPhotos) {
-      const storageRef = ref(storage, `listingPhotos/${id}/${Date.now()}-${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      uploaded.push(url);
-    }
-    return uploaded;
-  };
-
   /* ───────────────────────── save / delete ───────────────────────── */
-
   const handleSave = async (e) => {
     e?.preventDefault?.();
     if (!canSave) return;
 
     setBusy(true);
     try {
-      const photoUrls = await uploadNewPhotos();
-      const mergedPhotos = [...(form.photos || []), ...photoUrls].filter(Boolean);
-
+      const mergedPhotos = [...(form.photos || [])].filter(Boolean);
       const nightly = Number(form.nightlyRate || form.pricePerNight || 0);
 
       const payload = {
@@ -347,28 +356,27 @@ export default function EditListing() {
         neighbourhood: String(form.neighbourhood || "").trim(),
         address: String(form.address || "").trim(),
 
-        // Pricing consistency
         nightlyRate: nightly || "",
         pricePerNight: nightly || "",
 
         type: form.type,
-        bedrooms: Number(form.bedrooms) || "",
-        bathrooms: Number(form.bathrooms) || "",
-        maxGuests: Number(form.maxGuests) || "",
+        bedrooms: toNullableNumber(form.bedrooms),
+        bathrooms: toNullableNumber(form.bathrooms),
+        beds: toNullableNumber(form.beds),
+        maxGuests: toNullableNumber(form.maxGuests),
+
         amenities: form.amenities,
 
-        // Images compatibility
         photos: mergedPhotos,
         images: mergedPhotos,
         imageUrls: mergedPhotos,
         primaryImageUrl: mergedPhotos[0] || listing?.primaryImageUrl || null,
 
         instantBook: !!form.instantBook,
-
         ownerUid: form.ownerUid || listing?.ownerUid || user?.uid || "",
         partnerUid: form.partnerUid || listing?.partnerUid || "",
-
         sponsored: !!form.sponsored,
+
         lat: typeof form.lat === "number" ? form.lat : null,
         lng: typeof form.lng === "number" ? form.lng : null,
 
@@ -388,6 +396,7 @@ export default function EditListing() {
 
   const handleDelete = async () => {
     if (!window.confirm("Delete this listing permanently?")) return;
+
     try {
       await deleteDoc(doc(db, "listings", id));
       window.alert("Listing deleted.");
@@ -398,8 +407,7 @@ export default function EditListing() {
     }
   };
 
-  /* ───────────────────────── featured workflow (luxury standard) ───────────────────────── */
-
+  /* ───────────────────────── featured workflow ───────────────────────── */
   const featureStatus = String(featureReq?.status || "").toLowerCase();
 
   const planLabel = useMemo(() => {
@@ -410,14 +418,71 @@ export default function EditListing() {
     return "Custom plan";
   }, [featureReq]);
 
-  const {
-    requestSummary,
-    requestHelpText,
-    requestButtonLabel,
-    requestButtonDisabled,
-    showPayNowAction,
-  } = useMemo(() => {
-    if (!featureReq) {
+  const { requestSummary, requestHelpText, requestButtonLabel, requestButtonDisabled, showPayNowAction } =
+    useMemo(() => {
+      if (!featureReq) {
+        return {
+          requestSummary: "No featured request yet.",
+          requestHelpText: "Boost visibility by appearing in the homepage Featured carousel.",
+          requestButtonLabel: "Request Featured",
+          requestButtonDisabled: false,
+          showPayNowAction: false,
+        };
+      }
+
+      if (featureStatus === "pending") {
+        return {
+          requestSummary: `Featured request: Pending — ${planLabel}`,
+          requestHelpText:
+            "Admin is reviewing your request. After approval, it becomes ‘Awaiting payment’.",
+          requestButtonLabel: "Request pending",
+          requestButtonDisabled: true,
+          showPayNowAction: false,
+        };
+      }
+
+      if (featureStatus === "awaiting-payment") {
+        return {
+          requestSummary: `Featured request: Awaiting payment — ${planLabel}`,
+          requestHelpText: "Admin approved and locked your plan. Complete payment to proceed.",
+          requestButtonLabel: "Pay now",
+          requestButtonDisabled: false,
+          showPayNowAction: true,
+        };
+      }
+
+      if (featureStatus === "paid" || featureStatus === "paid-needs-review") {
+        return {
+          requestSummary: `Payment received — ${planLabel}`,
+          requestHelpText:
+            "Payment is recorded. Admin will activate your placement after final checks.",
+          requestButtonLabel: "Paid (awaiting activation)",
+          requestButtonDisabled: true,
+          showPayNowAction: false,
+        };
+      }
+
+      if (featureStatus === "active") {
+        return {
+          requestSummary: `Featured placement active — ${planLabel}`,
+          requestHelpText:
+            "Your property is currently eligible for the homepage Featured carousel.",
+          requestButtonLabel: "Currently featured",
+          requestButtonDisabled: true,
+          showPayNowAction: false,
+        };
+      }
+
+      if (featureStatus === "rejected") {
+        return {
+          requestSummary: `Featured request: Rejected — ${planLabel}`,
+          requestHelpText: featureReq?.adminNote || "You can submit a new request when ready.",
+          requestButtonLabel: "Request again",
+          requestButtonDisabled: false,
+          showPayNowAction: false,
+        };
+      }
+
       return {
         requestSummary: "No featured request yet.",
         requestHelpText: "Boost visibility by appearing in the homepage Featured carousel.",
@@ -425,70 +490,13 @@ export default function EditListing() {
         requestButtonDisabled: false,
         showPayNowAction: false,
       };
-    }
-
-    if (featureStatus === "pending") {
-      return {
-        requestSummary: `Featured request: Pending — ${planLabel}`,
-        requestHelpText: "Admin is reviewing your request. After approval, it becomes ‘Awaiting payment’.",
-        requestButtonLabel: "Request pending",
-        requestButtonDisabled: true,
-        showPayNowAction: false,
-      };
-    }
-
-    if (featureStatus === "awaiting-payment") {
-      return {
-        requestSummary: `Featured request: Awaiting payment — ${planLabel}`,
-        requestHelpText: "Admin approved and locked your plan. Complete payment to proceed.",
-        requestButtonLabel: "Pay now",
-        requestButtonDisabled: false,
-        showPayNowAction: true,
-      };
-    }
-
-    if (featureStatus === "paid" || featureStatus === "paid-needs-review") {
-      return {
-        requestSummary: `Payment received — ${planLabel}`,
-        requestHelpText: "Payment is recorded. Admin will activate your placement after final checks.",
-        requestButtonLabel: "Paid (awaiting activation)",
-        requestButtonDisabled: true,
-        showPayNowAction: false,
-      };
-    }
-
-    if (featureStatus === "active") {
-      return {
-        requestSummary: `Featured placement active — ${planLabel}`,
-        requestHelpText: "Your property is currently eligible for the homepage Featured carousel.",
-        requestButtonLabel: "Currently featured",
-        requestButtonDisabled: true,
-        showPayNowAction: false,
-      };
-    }
-
-    if (featureStatus === "rejected") {
-      return {
-        requestSummary: `Featured request: Rejected — ${planLabel}`,
-        requestHelpText: featureReq?.adminNote || "You can submit a new request when ready.",
-        requestButtonLabel: "Request again",
-        requestButtonDisabled: false,
-        showPayNowAction: false,
-      };
-    }
-
-    // fallback
-    return {
-      requestSummary: "No featured request yet.",
-      requestHelpText: "Boost visibility by appearing in the homepage Featured carousel.",
-      requestButtonLabel: "Request Featured",
-      requestButtonDisabled: false,
-      showPayNowAction: false,
-    };
-  }, [featureReq, featureStatus, planLabel]);
+    }, [featureReq, featureStatus, planLabel]);
 
   const handleOpenPlanModal = () => {
-    if (featureReq && ["pending", "awaiting-payment", "paid", "paid-needs-review", "active"].includes(featureStatus)) {
+    if (
+      featureReq &&
+      ["pending", "awaiting-payment", "paid", "paid-needs-review", "active"].includes(featureStatus)
+    ) {
       window.alert("You already have a featured request in progress for this listing.");
       return;
     }
@@ -502,7 +510,6 @@ export default function EditListing() {
     }
 
     const plan = FEATURE_PLANS[planKey] || FEATURE_PLANS.spotlight;
-
     const primaryImageUrl =
       (Array.isArray(form.photos) && form.photos[0]) ||
       (Array.isArray(listing.photos) && listing.photos[0]) ||
@@ -514,26 +521,18 @@ export default function EditListing() {
       await addDoc(collection(db, "featureRequests"), {
         kind: "listing-feature",
         type: "featured-carousel",
-
         listingId: id,
         listingTitle: form.title || listing.title || "",
-
         hostUid: listing.ownerUid || listing.ownerId || user.uid,
         hostEmail: user.email || profile?.email || "",
         requesterRole: profile?.role || "",
-
-        // start pending; admin will approve -> awaiting-payment and lock terms if needed
         status: "pending",
         archived: false,
-
-        // initial terms (admin may override/lock)
         planId: plan.key,
         planLabel: plan.label,
         price: plan.price,
         durationDays: plan.durationDays,
-
         primaryImageUrl,
-
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -565,6 +564,7 @@ export default function EditListing() {
         window.alert("No featured request found for this listing.");
         return;
       }
+
       if (String(featureReq.status || "").toLowerCase() !== "awaiting-payment") {
         window.alert("This request is not approved for payment yet.");
         return;
@@ -591,10 +591,7 @@ export default function EditListing() {
         email: (featureReq.hostEmail || user?.email || "").trim() || "host@nestaapp.ng",
         amount: amountKobo,
         currency: "NGN",
-
-        // reference is used as your idempotency key in webhook
         ref: featureRequestId,
-
         metadata: {
           type: "featured",
           featureRequestId,
@@ -602,17 +599,13 @@ export default function EditListing() {
           planId: featureReq.planId || featureReq.planKey || "custom",
           planLabel: featureReq.planLabel || "",
         },
-
         callback: (response) => {
-          // IMPORTANT: do NOT activate listing here.
-          // Webhook will mark PAID; admin activates after QC.
           (async () => {
             try {
               await updateDoc(doc(db, "featureRequests", featureRequestId), {
                 paymentAttemptRef: response.reference,
                 paymentAttemptedAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
-                // do not set paid:true here; webhook is source of truth
               });
 
               window.alert(
@@ -627,10 +620,7 @@ export default function EditListing() {
             }
           })();
         },
-
-        onClose: () => {
-          // optional: no alert
-        },
+        onClose: () => {},
       });
 
       handler.openIframe();
@@ -641,7 +631,6 @@ export default function EditListing() {
   };
 
   /* ───────────────────────── render guards ───────────────────────── */
-
   if (loading) {
     return <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">Loading listing…</main>;
   }
@@ -660,7 +649,6 @@ export default function EditListing() {
   }
 
   /* ───────────────────────── main render ───────────────────────── */
-
   return (
     <>
       <main className="max-w-5xl mx-auto px-4 py-8 text-white">
@@ -685,6 +673,7 @@ export default function EditListing() {
             >
               Delete
             </button>
+
             <button
               type="button"
               disabled={!canSave}
@@ -787,16 +776,21 @@ export default function EditListing() {
                     <input
                       className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs"
                       value={form.lat ?? ""}
-                      onChange={(e) => updateField("lat", e.target.value === "" ? null : Number(e.target.value))}
+                      onChange={(e) =>
+                        updateField("lat", e.target.value === "" ? null : Number(e.target.value))
+                      }
                       placeholder="Click map or paste"
                     />
                   </div>
+
                   <div>
                     <label className="block text-xs text-white/60 mb-1">Longitude</label>
                     <input
                       className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs"
                       value={form.lng ?? ""}
-                      onChange={(e) => updateField("lng", e.target.value === "" ? null : Number(e.target.value))}
+                      onChange={(e) =>
+                        updateField("lng", e.target.value === "" ? null : Number(e.target.value))
+                      }
                       placeholder="Click map or paste"
                     />
                   </div>
@@ -809,8 +803,20 @@ export default function EditListing() {
 
               <div className="mt-1">
                 <ListingMap
-                  lat={typeof form.lat === "number" ? form.lat : typeof listing.lat === "number" ? listing.lat : null}
-                  lng={typeof form.lng === "number" ? form.lng : typeof listing.lng === "number" ? listing.lng : null}
+                  lat={
+                    typeof form.lat === "number"
+                      ? form.lat
+                      : typeof listing.lat === "number"
+                      ? listing.lat
+                      : null
+                  }
+                  lng={
+                    typeof form.lng === "number"
+                      ? form.lng
+                      : typeof listing.lng === "number"
+                      ? listing.lng
+                      : null
+                  }
                   editable
                   onChange={(pos) => {
                     updateField("lat", pos.lat);
@@ -822,7 +828,7 @@ export default function EditListing() {
           </Section>
 
           <Section title="Pricing & capacity">
-            <div className="grid md:grid-cols-4 gap-4">
+            <div className="grid md:grid-cols-5 gap-4">
               <div>
                 <label className="block text-sm text-white/70 mb-1">Nightly rate (₦)</label>
                 <input
@@ -853,6 +859,16 @@ export default function EditListing() {
                   className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
                   value={form.bathrooms}
                   onChange={(e) => updateField("bathrooms", e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-white/70 mb-1">Beds</label>
+                <input
+                  type="number"
+                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
+                  value={form.beds}
+                  onChange={(e) => updateField("beds", e.target.value)}
                 />
               </div>
 
@@ -891,24 +907,18 @@ export default function EditListing() {
           </Section>
 
           <Section title="Photos">
-            <div className="grid md:grid-cols-4 gap-3 mb-4">
-              {(form.photos || []).map((url, idx) => (
-                <div key={idx} className="relative rounded-xl overflow-hidden border border-white/10 bg-white/5 aspect-video">
-                  <img src={url} alt={`Photo ${idx + 1}`} className="w-full h-full object-cover" />
-                </div>
-              ))}
-
-              {(form.photos || []).length === 0 && (
-                <div className="text-sm text-white/60">
-                  No photos yet. Upload at least one high-quality image for best results.
-                </div>
-              )}
-            </div>
-
-            <input type="file" multiple accept="image/*" onChange={handleFileChange} className="text-sm" />
-            {newPhotos.length > 0 && (
-              <div className="text-xs text-white/60 mt-1">{newPhotos.length} new photo(s) will upload on save.</div>
-            )}
+            <ImageUploader
+              value={form.photos}
+              onChange={(next) => {
+                if (typeof next === "function") {
+                  setForm((prev) => ({ ...prev, photos: next(prev.photos || []) }));
+                } else {
+                  setForm((prev) => ({ ...prev, photos: Array.isArray(next) ? next : [] }));
+                }
+              }}
+              userId={user?.uid}
+              disabled={!user?.uid}
+            />
           </Section>
 
           <Section title="Booking options">

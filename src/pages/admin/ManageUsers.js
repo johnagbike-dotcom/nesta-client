@@ -53,10 +53,10 @@ const Badge = ({ label, tone = "slate" }) => {
     amber: { bg: "#d19b00", text: "#fff7e0", ring: "#a77a00" },
     slate: { bg: "#6b7280", text: "#eef2ff", ring: "#555b66" },
     blue: { bg: "#2563eb", text: "#dbeafe", ring: "#1d4ed8" },
-    purple: { bg: "#7c3aed", text: "#f3e8ff", ring: "#6d28d9" }, // super admin
-    gold: { bg: "#b58b2a", text: "#fff4d6", ring: "#8e6b16" }, // verified badge
-    teal: { bg: "#0f766e", text: "#d1fae5", ring: "#115e59" }, // application approved
-    rose: { bg: "#be123c", text: "#ffe4e6", ring: "#9f1239" }, // application rejected
+    purple: { bg: "#7c3aed", text: "#f3e8ff", ring: "#6d28d9" },
+    gold: { bg: "#b58b2a", text: "#fff4d6", ring: "#8e6b16" },
+    teal: { bg: "#0f766e", text: "#d1fae5", ring: "#115e59" },
+    rose: { bg: "#be123c", text: "#ffe4e6", ring: "#9f1239" },
   };
   const c = map[tone] || map.slate;
 
@@ -112,8 +112,11 @@ const toneForApplication = (appStatus) => {
 /* ─────────────── Action menu ─────────────── */
 function ActionMenu({
   row,
-  isSuperAdmin,
   busy,
+  isSuperAdmin,
+  canManageUsers,
+  canReviewApplications,
+  canVerifyUsers,
   onSetAccountType,
   onToggleStatus,
   onMakeAdminStaff,
@@ -177,6 +180,11 @@ function ActionMenu({
   const appStatus = safeLower(row.applicationStatus);
   const hasPendingApp = appStatus === "pending";
 
+  const showAccountTypeSection = canManageUsers;
+  const showVerificationSection = canVerifyUsers;
+  const showApplicationSection = canReviewApplications && hasPendingApp;
+  const showSuperAdminSection = isSuperAdmin;
+
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
       <button
@@ -204,101 +212,72 @@ function ActionMenu({
             zIndex: 50,
           }}
         >
-          <div
-            style={{
-              padding: "8px 10px",
-              fontSize: 11,
-              letterSpacing: ".04em",
-              textTransform: "uppercase",
-              color: "rgba(255,255,255,.55)",
-              borderBottom: "1px solid rgba(255,255,255,.06)",
-            }}
-          >
-            Account type
-          </div>
+          {showAccountTypeSection && (
+            <>
+              <div
+                style={{
+                  padding: "8px 10px",
+                  fontSize: 11,
+                  letterSpacing: ".04em",
+                  textTransform: "uppercase",
+                  color: "rgba(255,255,255,.55)",
+                  borderBottom: "1px solid rgba(255,255,255,.06)",
+                }}
+              >
+                Account type
+              </div>
 
-          {[
-            { key: "host", label: "Host" },
-            { key: "partner", label: "Partner" },
-            { key: "guest", label: "Guest" },
-          ].map((opt) => (
-            <button
-              key={opt.key}
-              disabled={busy || isRowAdmin}
-              onClick={() => {
-                onSetAccountType(opt.key);
-                setOpen(false);
-              }}
-              style={menuBtn}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              title={isRowAdmin ? "Admins are locked. Use Admin controls to demote." : ""}
-            >
-              Set: {opt.label}
-            </button>
-          ))}
+              {[
+                { key: "host", label: "Host" },
+                { key: "partner", label: "Partner" },
+                { key: "guest", label: "Guest" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  disabled={busy || isRowAdmin}
+                  onClick={() => {
+                    onSetAccountType(opt.key);
+                    setOpen(false);
+                  }}
+                  style={menuBtn}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  title={isRowAdmin ? "Admins are locked. Use Admin controls to demote." : ""}
+                >
+                  Set: {opt.label}
+                </button>
+              ))}
 
-          <div style={{ borderTop: "1px solid rgba(255,255,255,.06)", padding: 8 }}>
-            <button
-              disabled={busy || isRowAdmin}
-              onClick={() => {
-                onToggleStatus();
-                setOpen(false);
-              }}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: 10,
-                fontWeight: 900,
-                border: "1px solid rgba(255,255,255,.10)",
-                background:
-                  row.status === "active"
-                    ? "linear-gradient(180deg,#ff8a8a,#ff5959)"
-                    : "linear-gradient(180deg,#34d399,#10b981)",
-                color: "#1a1414",
-                cursor: busy ? "not-allowed" : "pointer",
-                opacity: busy ? 0.6 : 1,
-              }}
-              title={isRowAdmin ? "Admins are locked by backend PATCH" : ""}
-            >
-              {row.status === "active" ? "Disable" : "Enable"}
-            </button>
-          </div>
+              <div style={{ borderTop: "1px solid rgba(255,255,255,.06)", padding: 8 }}>
+                <button
+                  disabled={busy || isRowAdmin}
+                  onClick={() => {
+                    onToggleStatus();
+                    setOpen(false);
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    fontWeight: 900,
+                    border: "1px solid rgba(255,255,255,.10)",
+                    background:
+                      row.status === "active"
+                        ? "linear-gradient(180deg,#ff8a8a,#ff5959)"
+                        : "linear-gradient(180deg,#34d399,#10b981)",
+                    color: "#1a1414",
+                    cursor: busy ? "not-allowed" : "pointer",
+                    opacity: busy ? 0.6 : 1,
+                  }}
+                  title={isRowAdmin ? "Admins are locked by backend PATCH" : ""}
+                >
+                  {row.status === "active" ? "Disable" : "Enable"}
+                </button>
+              </div>
+            </>
+          )}
 
-          {/* Verification */}
-          <div
-            style={{
-              padding: "10px 10px",
-              fontSize: 11,
-              letterSpacing: ".04em",
-              textTransform: "uppercase",
-              color: "rgba(255,255,255,.55)",
-              borderTop: "1px solid rgba(255,255,255,.06)",
-            }}
-          >
-            Verification
-          </div>
-
-          <button
-            disabled={busy || isRowAdmin}
-            onClick={() => {
-              onToggleVerify();
-              setOpen(false);
-            }}
-            style={{
-              ...menuBtn,
-              color: isVerified ? "#ffd5d5" : "#d1fae5",
-              fontWeight: 900,
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-            title={isRowAdmin ? "Admins do not use verification badge." : ""}
-          >
-            {isVerified ? "Mark Unverified (Remove Badge)" : "Mark Verified (Grant Badge)"}
-          </button>
-
-          {/* Application */}
-          {hasPendingApp && (
+          {showVerificationSection && (
             <>
               <div
                 style={{
@@ -307,7 +286,45 @@ function ActionMenu({
                   letterSpacing: ".04em",
                   textTransform: "uppercase",
                   color: "rgba(255,255,255,.55)",
-                  borderTop: "1px solid rgba(255,255,255,.06)",
+                  borderTop: showAccountTypeSection ? "1px solid rgba(255,255,255,.06)" : "none",
+                }}
+              >
+                Verification
+              </div>
+
+              <button
+                disabled={busy || isRowAdmin}
+                onClick={() => {
+                  onToggleVerify();
+                  setOpen(false);
+                }}
+                style={{
+                  ...menuBtn,
+                  color: isVerified ? "#ffd5d5" : "#d1fae5",
+                  fontWeight: 900,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.06)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                title={isRowAdmin ? "Admins do not use verification badge." : ""}
+              >
+                {isVerified ? "Mark Unverified (Remove Badge)" : "Mark Verified (Grant Badge)"}
+              </button>
+            </>
+          )}
+
+          {showApplicationSection && (
+            <>
+              <div
+                style={{
+                  padding: "10px 10px",
+                  fontSize: 11,
+                  letterSpacing: ".04em",
+                  textTransform: "uppercase",
+                  color: "rgba(255,255,255,.55)",
+                  borderTop:
+                    showAccountTypeSection || showVerificationSection
+                      ? "1px solid rgba(255,255,255,.06)"
+                      : "none",
                 }}
               >
                 Application
@@ -342,8 +359,7 @@ function ActionMenu({
             </>
           )}
 
-          {/* SUPER ADMIN ONLY */}
-          {isSuperAdmin && (
+          {showSuperAdminSection && (
             <>
               <div
                 style={{
@@ -352,7 +368,10 @@ function ActionMenu({
                   letterSpacing: ".04em",
                   textTransform: "uppercase",
                   color: "rgba(255,255,255,.55)",
-                  borderTop: "1px solid rgba(255,255,255,.06)",
+                  borderTop:
+                    showAccountTypeSection || showVerificationSection || showApplicationSection
+                      ? "1px solid rgba(255,255,255,.06)"
+                      : "none",
                 }}
               >
                 Admin controls
@@ -411,6 +430,15 @@ function ActionMenu({
               )}
             </>
           )}
+
+          {!showAccountTypeSection &&
+            !showVerificationSection &&
+            !showApplicationSection &&
+            !showSuperAdminSection && (
+              <div style={{ padding: "12px 14px", color: "rgba(255,255,255,.65)", fontSize: 13 }}>
+                No actions available.
+              </div>
+            )}
         </div>
       )}
     </div>
@@ -422,7 +450,17 @@ export default function ManageUsers() {
   const { user } = useAuth();
   const { profile } = useUserProfile(user?.uid);
 
-  const isSuperAdmin = safeLower(profile?.adminLevel) === "super";
+  const viewerAccountType = safeLower(profile?.accountType || "");
+  const viewerRole = safeLower(profile?.role || "");
+  const viewerAdminLevel = safeLower(profile?.adminLevel || "");
+  const viewerIsAdmin = viewerAccountType === "admin" || profile?.isAdmin === true;
+
+  const isSuperAdmin = viewerIsAdmin && viewerAdminLevel === "super";
+  const isOperationsAdmin = viewerIsAdmin && viewerRole === "operations" && viewerAdminLevel !== "super";
+
+  const canManageUsers = isSuperAdmin; // only super admin can change account type / disable users
+  const canVerifyUsers = isSuperAdmin || isOperationsAdmin; // operations can manage verification
+  const canReviewApplications = isSuperAdmin || isOperationsAdmin; // operations can approve/reject applications
 
   const [range, setRange] = useState({ from: "", to: "" });
   const [rows, setRows] = useState([]);
@@ -432,18 +470,11 @@ export default function ManageUsers() {
   const [q, setQ] = useState("");
   const [roleTab, setRoleTab] = useState("all");
   const [statusTab, setStatusTab] = useState("any");
-  const [verifyTab, setVerifyTab] = useState("any"); // any | verified | unverified
+  const [verifyTab, setVerifyTab] = useState("any");
 
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  /**
-   * ✅ Key change:
-   * - accountType comes from u.accountType first (preferred),
-   *   then u.role (fallback), but NEVER u.type (because u.type is often "application type")
-   * - applicationType/status are separated
-   * - verificationStatus separated
-   */
   const normalizeUser = (u) => {
     const accountType = safeLower(u.accountType || u.role || "guest");
     const adminLevel = safeLower(u.adminLevel || "");
@@ -461,10 +492,10 @@ export default function ManageUsers() {
       accountType,
       adminLevel,
 
-      applicationType, // host | partner | ""
-      applicationStatus, // pending | approved | rejected | ""
+      applicationType,
+      applicationStatus,
 
-      verificationStatus, // verified | unverified
+      verificationStatus,
 
       status: safeLower(u.disabled ? "disabled" : "active"),
       disabled: !!u.disabled,
@@ -487,7 +518,7 @@ export default function ManageUsers() {
       console.error("ManageUsers load failed:", e);
       const code = e?.response?.status;
       if (code === 401 || code === 403) {
-        window.alert("Unauthorized. Confirm your Firestore users/{uid}.role='admin' and adminLevel='super'.");
+        window.alert("Unauthorized. Confirm your role/claims are correct.");
       }
     } finally {
       setLoading(false);
@@ -533,6 +564,16 @@ export default function ManageUsers() {
     };
     rows.forEach((r) => {
       if (c[r.accountType] !== undefined) c[r.accountType] += 1;
+      if (safeLower(r.accountType) === "admin" && safeLower(r.name) !== "operations" && safeLower(r.email).includes("chidera.ogor@nestanaija.com") === false) {
+        // no-op, keep original count behaviour
+      }
+      if (safeLower(r.accountType) === "admin" && safeLower(r.applicationType) === "operations") {
+        c.operations += 1;
+      }
+      if (safeLower(r.accountType) === "admin" && safeLower(r.applicationType) !== "operations" && safeLower(r.role) === "operations") {
+        c.operations += 1;
+      }
+
       if (r.status === "active") c.active++;
       else c.disabled++;
 
@@ -570,7 +611,7 @@ export default function ManageUsers() {
   };
 
   const setAccountType = async (row, accountType) => {
-    if (!row?.id) return;
+    if (!row?.id || !canManageUsers) return;
     if (accountType === "admin") return;
 
     setBusyId(row.id);
@@ -578,7 +619,6 @@ export default function ManageUsers() {
 
     setRows(rows.map((r) => (r.id === row.id ? { ...r, accountType } : r)));
 
-    // ✅ Use accountType (not role)
     const ok = await patchUser(row.id, { accountType });
     if (!ok) setRows(prev);
 
@@ -586,7 +626,7 @@ export default function ManageUsers() {
   };
 
   const setStatus = async (row, status) => {
-    if (!row?.id) return;
+    if (!row?.id || !canManageUsers) return;
 
     setBusyId(row.id);
     const prev = rows.slice();
@@ -601,7 +641,7 @@ export default function ManageUsers() {
   };
 
   const toggleVerify = async (row) => {
-    if (!row?.id) return;
+    if (!row?.id || !canVerifyUsers) return;
 
     const next = row.verificationStatus === "verified" ? "unverified" : "verified";
 
@@ -610,7 +650,6 @@ export default function ManageUsers() {
 
     setRows(rows.map((r) => (r.id === row.id ? { ...r, verificationStatus: next } : r)));
 
-    // ✅ Nested verification payload
     const ok = await patchUser(row.id, { verification: { status: next } });
     if (!ok) setRows(prev);
 
@@ -618,20 +657,17 @@ export default function ManageUsers() {
   };
 
   const approveApplication = async (row) => {
-    if (!row?.id) return;
+    if (!row?.id || !canReviewApplications) return;
 
     setBusyId(row.id);
     const prev = rows.slice();
 
-    // optimistic update:
     setRows(
       rows.map((r) =>
         r.id === row.id ? { ...r, applicationStatus: "approved" } : r
       )
     );
 
-    // ✅ Application approval should set application.status ONLY
-    // (do NOT auto-verify here)
     const ok = await patchUser(row.id, { application: { status: "approved" } });
     if (!ok) setRows(prev);
 
@@ -639,7 +675,7 @@ export default function ManageUsers() {
   };
 
   const rejectApplication = async (row) => {
-    if (!row?.id) return;
+    if (!row?.id || !canReviewApplications) return;
 
     setBusyId(row.id);
     const prev = rows.slice();
@@ -706,7 +742,6 @@ export default function ManageUsers() {
     await load();
   };
 
-  /* ✅ token-safe CSV export */
   const exportUsersCsv = async () => {
     try {
       const url = withRangeParams("/admin/users/export.csv", range);
@@ -749,7 +784,18 @@ export default function ManageUsers() {
       {label}
     </button>
   );
-
+  console.log("PROFILE DEBUG", profile);
+console.log("PERMISSION DEBUG", {
+  viewerAccountType,
+  viewerRole,
+  viewerAdminLevel,
+  viewerIsAdmin,
+  isSuperAdmin,
+  isOperationsAdmin,
+  canManageUsers,
+  canVerifyUsers,
+  canReviewApplications,
+});
   return (
     <AdminLayout
       title="Manage Users"
@@ -885,6 +931,25 @@ export default function ManageUsers() {
         </LuxeBtn>
       </div>
 
+      {(isOperationsAdmin || isSuperAdmin) && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: "12px 14px",
+            borderRadius: 14,
+            border: "1px solid rgba(255,255,255,.10)",
+            background: "rgba(255,255,255,.04)",
+            color: "#d8dee8",
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          {isSuperAdmin
+            ? "Super Admin mode: you can manage account types, disable users, review applications, verify users, and control admin promotions."
+            : "Operations mode: you can review applications and manage verification badges, but you cannot change account types, disable users, or access super admin controls."}
+        </div>
+      )}
+
       <div
         style={{
           borderRadius: 16,
@@ -984,8 +1049,11 @@ export default function ManageUsers() {
                       <td style={{ padding: "12px 16px" }}>
                         <ActionMenu
                           row={r}
-                          isSuperAdmin={isSuperAdmin}
                           busy={busyId === r.id}
+                          isSuperAdmin={isSuperAdmin}
+                          canManageUsers={canManageUsers}
+                          canReviewApplications={canReviewApplications}
+                          canVerifyUsers={canVerifyUsers}
                           onSetAccountType={(accountType) => setAccountType(r, accountType)}
                           onToggleStatus={() => setStatus(r, r.status === "active" ? "disabled" : "active")}
                           onToggleVerify={() => toggleVerify(r)}

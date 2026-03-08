@@ -1,26 +1,63 @@
 // src/pages/admin/ManageListings.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import dayjs from "dayjs";
+import { getAuth } from "firebase/auth";
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
 import { useToast } from "../../components/Toast";
 
 /* ───────────────────────────── axios base ───────────────────────────── */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   timeout: 15000,
+  withCredentials: false,
+});
+
+// ✅ attach Firebase token for admin routes
+api.interceptors.request.use(async (config) => {
+  const user = getAuth().currentUser;
+  if (user) {
+    const token = await user.getIdToken();
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
 
 /* ─────────────────────────── Luxe chips ─────────────────────────── */
 const chip = {
   pill: (tone) => {
     const map = {
-      active:   { bg: "rgba(16,185,129,.22)",  text: "#a7f3d0", ring: "rgba(16,185,129,.35)" },
-      inactive: { bg: "rgba(148,163,184,.22)", text: "#e2e8f0", ring: "rgba(148,163,184,.35)" },
-      review:   { bg: "rgba(245,158,11,.18)",  text: "#fde68a", ring: "rgba(245,158,11,.32)" },
-      grade:    { bg: "rgba(59,130,246,.20)",  text: "#dbeafe", ring: "rgba(59,130,246,.35)" },
+      active: {
+        bg: "rgba(16,185,129,.22)",
+        text: "#a7f3d0",
+        ring: "rgba(16,185,129,.35)",
+      },
+      inactive: {
+        bg: "rgba(148,163,184,.22)",
+        text: "#e2e8f0",
+        ring: "rgba(148,163,184,.35)",
+      },
+      review: {
+        bg: "rgba(245,158,11,.18)",
+        text: "#fde68a",
+        ring: "rgba(245,158,11,.32)",
+      },
+      rejected: {
+        bg: "rgba(239,68,68,.18)",
+        text: "#fecaca",
+        ring: "rgba(248,113,113,.32)",
+      },
+      grade: {
+        bg: "rgba(59,130,246,.20)",
+        text: "#dbeafe",
+        ring: "rgba(59,130,246,.35)",
+      },
     };
     const c = map[tone] || map.inactive;
     return {
@@ -50,7 +87,6 @@ function GradeModal({ open, onClose, listing, onSave }) {
 
   useEffect(() => {
     if (!open) return;
-    // Admin routes default grade to "Standard" if missing
     setGrade(listing?.grade || "Standard");
     setNote(listing?.gradeNote || listing?.qualityNote || "");
   }, [open, listing]);
@@ -149,26 +185,58 @@ function GradeModal({ open, onClose, listing, onSave }) {
 
 /* ───────────────────────────── helpers ────────────────────────────── */
 const money = (n) =>
-  typeof n === "number"
-    ? n.toLocaleString("en-NG", { style: "currency", currency: "NGN" })
-    : String(n || 0);
+  Number(n || 0).toLocaleString("en-NG", {
+    style: "currency",
+    currency: "NGN",
+    maximumFractionDigits: 0,
+  });
 
 const toArray = (data) => {
   if (!data) return [];
   if (Array.isArray(data)) return data;
   if (Array.isArray(data.items)) return data.items;
   if (Array.isArray(data.data)) return data.data;
+  if (Array.isArray(data.rows)) return data.rows;
   return [];
 };
+
+function safeDate(v) {
+  if (!v) return null;
+
+  if (typeof v?.toDate === "function") {
+    try {
+      return v.toDate();
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof v?.seconds === "number") {
+    const ms = v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+const safeLower = (v) => String(v || "").trim().toLowerCase();
+
+function rowIdOf(r) {
+  return r?.id || r?._id || r?.publicId || null;
+}
 
 /* ═══════════════════════════ component ════════════════════════════ */
 export default function ManageListings() {
   const navigate = useNavigate();
   const toast = useToast() || {};
+
   const tOk = (m) =>
-    toast.show ? toast.show(m, "success") : toast.success ? toast.success(m) : alert(m);
+    toast.showToast ? toast.showToast(m, "success") : toast.show ? toast.show(m, "success") : toast.success ? toast.success(m) : alert(m);
+
   const tErr = (m) =>
-    toast.show ? toast.show(m, "error") : toast.error ? toast.error(m) : alert(m);
+    toast.showToast ? toast.showToast(m, "error") : toast.show ? toast.show(m, "error") : toast.error ? toast.error(m) : alert(m);
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -177,21 +245,20 @@ export default function ManageListings() {
   // Filters
   const [q, setQ] = useState("");
   const [city, setCity] = useState("Any city");
-  const [status, setStatus] = useState("Any status"); // active | inactive | review
-  const [grade, setGrade] = useState("Any grade"); // Elite | Premium | Standard | Needs Improvement | Rejected
+  const [status, setStatus] = useState("Any status");
+  const [grade, setGrade] = useState("Any grade");
   const [onlyFeatured, setOnlyFeatured] = useState(false);
 
   const [gradeOpen, setGradeOpen] = useState(false);
   const [gradeRow, setGradeRow] = useState(null);
 
-  /* load listings (admin endpoint, server supports filters) */
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = {};
       if (q.trim()) params.q = q.trim();
       if (city !== "Any city") params.city = city;
-      if (status !== "Any status") params.status = status; // active/inactive/review
+      if (status !== "Any status") params.status = status;
       if (grade !== "Any grade") params.grade = grade;
       if (onlyFeatured) params.featured = true;
 
@@ -200,19 +267,25 @@ export default function ManageListings() {
       setRows(arr);
     } catch (e) {
       console.error("ManageListings load failed:", e?.response?.data || e.message);
-      tErr("Failed to load listings.");
+      tErr(e?.response?.data?.error || "Failed to load listings.");
       setRows([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [q, city, status, grade, onlyFeatured]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
-  // Client-side fallback filtering (keeps UI responsive while typing)
+  const cityOptions = useMemo(() => {
+    const values = rows
+      .map((r) => String(r.city || "").trim())
+      .filter(Boolean);
+
+    return ["Any city", ...Array.from(new Set(values)).sort((a, b) => a.localeCompare(b))];
+  }, [rows]);
+
   const filtered = useMemo(() => {
     let list = rows.slice();
 
@@ -220,12 +293,14 @@ export default function ManageListings() {
 
     if (city !== "Any city") {
       const k = city.toLowerCase();
-      list = list.filter((r) => `${r.city || ""} ${r.area || ""}`.toLowerCase().includes(k));
+      list = list.filter((r) =>
+        `${r.city || ""} ${r.area || ""}`.toLowerCase().includes(k)
+      );
     }
 
     if (status !== "Any status") {
-      const want = String(status).toLowerCase();
-      list = list.filter((r) => String(r.status || "active").toLowerCase() === want);
+      const want = safeLower(status);
+      list = list.filter((r) => safeLower(r.status || "active") === want);
     }
 
     if (grade !== "Any grade") {
@@ -235,7 +310,7 @@ export default function ManageListings() {
     const kw = q.trim().toLowerCase();
     if (kw) {
       list = list.filter((r) =>
-        `${r.title || ""} ${r.city || ""} ${r.area || ""} ${r.hostEmail || ""} ${r.id || ""}`
+        `${r.title || ""} ${r.city || ""} ${r.area || ""} ${r.hostEmail || ""} ${rowIdOf(r) || ""}`
           .toLowerCase()
           .includes(kw)
       );
@@ -246,44 +321,46 @@ export default function ManageListings() {
 
   /* ───────────────────────── actions ───────────────────────── */
   const toggleFeature = async (row, makeFeatured) => {
-    const id = row.id || row._id || row.publicId;
+    const id = rowIdOf(row);
     if (!id) return;
 
     setBusyId(id);
     const prev = rows.slice();
 
-    setRows(rows.map((r) => ((r.id || r._id) === id ? { ...r, featured: !!makeFeatured } : r)));
+    setRows((cur) =>
+      cur.map((r) => (rowIdOf(r) === id ? { ...r, featured: !!makeFeatured } : r))
+    );
 
     try {
-      // ✅ adminRoutes.js uses PATCH /admin/listings/:id with { featured }
-      await api.patch(`/admin/listings/${id}`, { featured: !!makeFeatured });
+      await api.patch(`/admin/listings/${encodeURIComponent(id)}`, { featured: !!makeFeatured });
       tOk(makeFeatured ? "Listing is now featured." : "Listing unfeatured.");
     } catch (e) {
       console.error("toggleFeature failed:", e?.response?.data || e.message);
       setRows(prev);
-      tErr("Failed to update feature state.");
+      tErr(e?.response?.data?.error || "Failed to update feature state.");
     } finally {
       setBusyId(null);
     }
   };
 
   const setStatusFn = async (row, next) => {
-    const id = row.id || row._id || row.publicId;
+    const id = rowIdOf(row);
     if (!id) return;
 
     setBusyId(id);
     const prev = rows.slice();
 
-    setRows(rows.map((r) => ((r.id || r._id) === id ? { ...r, status: next } : r)));
+    setRows((cur) =>
+      cur.map((r) => (rowIdOf(r) === id ? { ...r, status: next } : r))
+    );
 
     try {
-      // ✅ adminRoutes.js uses PATCH /admin/listings/:id with { status }
-      await api.patch(`/admin/listings/${id}`, { status: next });
+      await api.patch(`/admin/listings/${encodeURIComponent(id)}`, { status: next });
       tOk(`Listing status updated to ${next}.`);
     } catch (e) {
       console.error("setStatusFn failed:", e?.response?.data || e.message);
       setRows(prev);
-      tErr("Failed to update status.");
+      tErr(e?.response?.data?.error || "Failed to update status.");
     } finally {
       setBusyId(null);
     }
@@ -301,50 +378,70 @@ export default function ManageListings() {
 
   const saveGrade = async ({ grade, note }) => {
     if (!gradeRow) return;
-    const id = gradeRow.id || gradeRow._id || gradeRow.publicId;
+    const id = rowIdOf(gradeRow);
     if (!id) return;
 
     setBusyId(id);
     const prev = rows.slice();
 
-    setRows(rows.map((r) => ((r.id || r._id) === id ? { ...r, grade, gradeNote: note } : r)));
+    setRows((cur) =>
+      cur.map((r) =>
+        rowIdOf(r) === id ? { ...r, grade, gradeNote: note } : r
+      )
+    );
 
     try {
-      // ✅ adminRoutes.js uses PATCH /admin/listings/:id/grade with { grade, note }
-      await api.patch(`/admin/listings/${id}/grade`, { grade, note });
+      await api.patch(`/admin/listings/${encodeURIComponent(id)}/grade`, { grade, note });
       tOk("Grade & note updated.");
       closeGrade();
     } catch (e) {
       console.error("saveGrade failed:", e?.response?.data || e.message);
       setRows(prev);
-      tErr("Failed to save grade.");
+      tErr(e?.response?.data?.error || "Failed to save grade.");
     } finally {
       setBusyId(null);
     }
   };
 
   const openListing = (row) => {
-    const id = row.id || row._id || row.publicId;
-    if (!id) return alert("Missing listing id.");
+    const id = rowIdOf(row);
+    if (!id) {
+      alert("Missing listing id.");
+      return;
+    }
     navigate(`/listing/${id}`);
   };
 
-  // Local CSV export (works regardless of backend)
   const exportCSV = () => {
     try {
-      const header = ["id", "title", "city", "area", "pricePerNight", "status", "featured", "grade", "gradeNote", "updatedAt"];
-      const body = filtered.map((r) => [
-        r.id || r._id || "",
-        (r.title || "").replaceAll('"', '""'),
-        r.city || "",
-        r.area || "",
-        Number(r.pricePerNight || r.price || 0),
-        r.status || "",
-        r.featured ? "yes" : "no",
-        r.grade || "Standard",
-        (r.gradeNote || r.qualityNote || "").replaceAll('"', '""'),
-        r.updatedAt ? dayjs(r.updatedAt).format("YYYY-MM-DD HH:mm") : "",
-      ]);
+      const header = [
+        "id",
+        "title",
+        "city",
+        "area",
+        "pricePerNight",
+        "status",
+        "featured",
+        "grade",
+        "gradeNote",
+        "updatedAt",
+      ];
+
+      const body = filtered.map((r) => {
+        const updated = safeDate(r.updatedAt);
+        return [
+          rowIdOf(r) || "",
+          String(r.title || "").replaceAll('"', '""'),
+          r.city || "",
+          r.area || "",
+          Number(r.pricePerNight || r.price || 0),
+          r.status || "",
+          r.featured ? "yes" : "no",
+          r.grade || "Standard",
+          String(r.gradeNote || r.qualityNote || "").replaceAll('"', '""'),
+          updated ? dayjs(updated).format("YYYY-MM-DD HH:mm") : "",
+        ];
+      });
 
       const lines = [header, ...body]
         .map((cols) => cols.map((c) => `"${String(c)}"`).join(","))
@@ -422,7 +519,7 @@ export default function ManageListings() {
             padding: "0 10px",
           }}
         >
-          {["Any city", ...Array.from(new Set(rows.map((r) => r.city).filter(Boolean)))].map((c) => (
+          {cityOptions.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -441,7 +538,7 @@ export default function ManageListings() {
             padding: "0 10px",
           }}
         >
-          {["Any status", "active", "inactive", "review"].map((s) => (
+          {["Any status", "active", "inactive", "review", "rejected"].map((s) => (
             <option key={s} value={s}>
               {s}
             </option>
@@ -467,7 +564,15 @@ export default function ManageListings() {
           ))}
         </select>
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#cfd3da", fontWeight: 700 }}>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#cfd3da",
+            fontWeight: 700,
+          }}
+        >
           <input
             type="checkbox"
             checked={onlyFeatured}
@@ -477,7 +582,8 @@ export default function ManageListings() {
           Featured only
         </label>
 
-        <LuxeBtn kind="cobalt" small onClick={load} disabled={loading}>
+        {/* ✅ use supported button kind */}
+        <LuxeBtn kind="slate" small onClick={load} disabled={loading}>
           Apply
         </LuxeBtn>
       </div>
@@ -492,7 +598,14 @@ export default function ManageListings() {
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "14px 16px", fontWeight: 800, fontSize: 18, borderBottom: "1px solid rgba(255,255,255,.08)" }}>
+        <div
+          style={{
+            padding: "14px 16px",
+            fontWeight: 800,
+            fontSize: 18,
+            borderBottom: "1px solid rgba(255,255,255,.08)",
+          }}
+        >
           Listings
         </div>
 
@@ -527,19 +640,21 @@ export default function ManageListings() {
 
               {!loading &&
                 filtered.map((r) => {
-                  const id = r.id || r._id || r.publicId;
-                  const statusChip = String(r.status || "active").toLowerCase();
-                  const updated = r.updatedAt ? dayjs(r.updatedAt).format("YYYY-MM-DD") : "-";
+                  const id = rowIdOf(r);
+                  const statusChip = safeLower(r.status || "active");
+                  const updated = safeDate(r.updatedAt);
                   const rowBusy = busyId === id;
 
                   return (
-                    <tr key={id || Math.random()}>
+                    <tr key={id}>
                       <td style={{ padding: "12px 16px" }}>
                         <div style={{ fontWeight: 800 }}>{r.title || "-"}</div>
                         <div style={{ opacity: 0.7, fontSize: 12 }}>ID: {id || "-"}</div>
                       </td>
 
-                      <td style={{ padding: "12px 16px" }}>{(r.city || "-") + (r.area ? ` / ${r.area}` : "")}</td>
+                      <td style={{ padding: "12px 16px" }}>
+                        {(r.city || "-") + (r.area ? ` / ${r.area}` : "")}
+                      </td>
 
                       <td style={{ padding: "12px 16px" }}>{r.type || "-"}</td>
 
@@ -558,14 +673,18 @@ export default function ManageListings() {
                           disabled={rowBusy}
                           onChange={(e) => toggleFeature(r, e.target.checked)}
                         />
-                        <span style={{ marginLeft: 8, color: "#cfd3da" }}>{r.featured ? "Featured" : "—"}</span>
+                        <span style={{ marginLeft: 8, color: "#cfd3da" }}>
+                          {r.featured ? "Featured" : "—"}
+                        </span>
                       </td>
 
                       <td style={{ padding: "12px 16px" }}>
                         <span style={chip.pill("grade")}>{r.grade || "Standard"}</span>
                       </td>
 
-                      <td style={{ padding: "12px 16px" }}>{updated}</td>
+                      <td style={{ padding: "12px 16px" }}>
+                        {updated ? dayjs(updated).format("YYYY-MM-DD") : "-"}
+                      </td>
 
                       <td
                         style={{
@@ -596,7 +715,8 @@ export default function ManageListings() {
                               Unfeature
                             </LuxeBtn>
                           ) : (
-                            <LuxeBtn kind="sky" small disabled={rowBusy} onClick={() => toggleFeature(r, true)}>
+                            // ✅ use supported button kind
+                            <LuxeBtn kind="gold" small disabled={rowBusy} onClick={() => toggleFeature(r, true)}>
                               Feature
                             </LuxeBtn>
                           )}

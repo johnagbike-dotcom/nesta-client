@@ -4,18 +4,22 @@ import dayjs from "dayjs";
 import axios from "axios";
 import { getAuth } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
-import { db, storage } from "../../firebase"; // ✅ storage added
+import { db, storage } from "../../firebase";
 
-import { ref as sRef, listAll, getDownloadURL } from "firebase/storage"; // ✅ storage helpers
+import { ref as sRef, listAll, getDownloadURL } from "firebase/storage";
 
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
 import { useToast } from "../../components/Toast";
 
-/* ------------------------------ axios base ------------------------------ */
+/* ------------------------------ axios base (normalized) ------------------------------ */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   timeout: 20000,
+  withCredentials: false,
 });
 
 // Attach Firebase ID token automatically
@@ -23,6 +27,7 @@ api.interceptors.request.use(async (config) => {
   const user = getAuth().currentUser;
   if (user) {
     const token = await user.getIdToken();
+    config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
@@ -30,16 +35,12 @@ api.interceptors.request.use(async (config) => {
 
 /* ------------------------------ helpers ------------------------------ */
 const safeLower = (v) => String(v || "").trim().toLowerCase();
+const safeUpper = (v) => String(v || "").trim().toUpperCase();
 
 function safeDateLoose(v) {
   if (!v) return null;
 
-  if (typeof v === "string") {
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? null : d;
-  }
-
-  if (typeof v === "number") {
+  if (typeof v === "string" || typeof v === "number") {
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d;
   }
@@ -66,11 +67,17 @@ const tone = {
   pending: { bg: "rgba(234,179,8,.18)", text: "#facc15", ring: "rgba(250,204,21,.35)" },
   approved: { bg: "rgba(22,163,74,.20)", text: "#a7f3d0", ring: "rgba(34,197,94,.35)" },
   rejected: { bg: "rgba(239,68,68,.20)", text: "#fecaca", ring: "rgba(248,113,113,.35)" },
+  more_info_required: {
+    bg: "rgba(59,130,246,.18)",
+    text: "#bfdbfe",
+    ring: "rgba(96,165,250,.35)",
+  },
 };
 
 function StatusPill({ value }) {
   const v = safeLower(value || "pending");
   const t = tone[v] || tone.pending;
+
   return (
     <span
       style={{
@@ -91,7 +98,7 @@ function StatusPill({ value }) {
         boxShadow: "inset 0 0 0 1px rgba(255,255,255,.04)",
       }}
     >
-      {v}
+      {String(v).replace(/_/g, " ")}
     </span>
   );
 }
@@ -110,7 +117,8 @@ function pickFilename(disposition, fallback) {
 
 async function downloadCsv(href, fallbackName) {
   const res = await api.get(href, { responseType: "blob" });
-  const disposition = res.headers?.["content-disposition"] || res.headers?.["Content-Disposition"];
+  const disposition =
+    res.headers?.["content-disposition"] || res.headers?.["Content-Disposition"];
   const filename = pickFilename(disposition, fallbackName);
 
   const blob = new Blob([res.data], { type: "text/csv;charset=utf-8" });
@@ -127,11 +135,6 @@ async function downloadCsv(href, fallbackName) {
 }
 
 /* ------------------------------ Docs extraction ------------------------------ */
-/**
- * Preferred: your admin API returns kycProfiles rows with:
- *  - uploads: { docType: { url, name, ... } }
- *  - documents: { docType: [ { url, name }, ... ] }
- */
 function docsFromApiRow(row) {
   const out = [];
 
@@ -164,7 +167,6 @@ function docsFromApiRow(row) {
     });
   }
 
-  // Deduplicate by url
   const seen = new Set();
   return out.filter((d) => {
     if (!d.url) return false;
@@ -174,27 +176,37 @@ function docsFromApiRow(row) {
   });
 }
 
-/**
- * Firestore fallback: kycProfiles/{uid}.documents
- * documents: { docType: [{name,url,...}, ...] }
- */
 function docsFromKycProfilesDoc(data) {
   const out = [];
-  const documents = data?.documents && typeof data.documents === "object" ? data.documents : null;
-  if (!documents) return out;
 
-  Object.entries(documents).forEach(([docType, arr]) => {
-    const list = Array.isArray(arr) ? arr : [];
-    list.forEach((x, idx) => {
-      if (x?.url) {
+  const uploads = data?.uploads && typeof data.uploads === "object" ? data.uploads : null;
+  if (uploads) {
+    Object.entries(uploads).forEach(([docType, entry]) => {
+      if (entry?.url) {
         out.push({
-          name: `${docType}: ${x?.name || `file_${idx + 1}`}`,
-          url: x.url,
-          source: "firestore_kycProfiles",
+          name: `${docType}: ${entry?.name || "file"}`,
+          url: entry.url,
+          source: "firestore_kycProfiles_uploads",
         });
       }
     });
-  });
+  }
+
+  const documents = data?.documents && typeof data.documents === "object" ? data.documents : null;
+  if (documents) {
+    Object.entries(documents).forEach(([docType, arr]) => {
+      const list = Array.isArray(arr) ? arr : [];
+      list.forEach((x, idx) => {
+        if (x?.url) {
+          out.push({
+            name: `${docType}: ${x?.name || `file_${idx + 1}`}`,
+            url: x.url,
+            source: "firestore_kycProfiles_documents",
+          });
+        }
+      });
+    });
+  }
 
   const seen = new Set();
   return out.filter((d) => {
@@ -205,13 +217,10 @@ function docsFromKycProfilesDoc(data) {
   });
 }
 
-/**
- * Legacy Firestore fallback: kyc/{uid}.files
- * files: [{name,url,path,uploadedAt}, ...]
- */
 function docsFromLegacyKycDoc(data) {
   const out = [];
   const files = Array.isArray(data?.files) ? data.files : [];
+
   files.forEach((f, idx) => {
     if (f?.url) {
       out.push({
@@ -231,19 +240,20 @@ function docsFromLegacyKycDoc(data) {
   });
 }
 
-/* ------------------------------ Storage fallback (NEW) ------------------------------ */
+/* ------------------------------ Storage fallback ------------------------------ */
 async function listAllFilesRecursively(folderRef) {
   const res = await listAll(folderRef);
   let files = [...res.items];
+
   for (const subfolder of res.prefixes) {
     const subFiles = await listAllFilesRecursively(subfolder);
     files = files.concat(subFiles);
   }
+
   return files;
 }
 
 function niceDocNameFromPath(fullPath) {
-  // fullPath: kyc/{uid}/governmentId/filename.png
   const parts = String(fullPath || "").split("/").filter(Boolean);
   const label = parts.length >= 2 ? parts[parts.length - 2] : "document";
   const file = parts.length ? parts[parts.length - 1] : "file";
@@ -253,6 +263,7 @@ function niceDocNameFromPath(fullPath) {
 /* ------------------------------ Modal ------------------------------ */
 function Modal({ open, onClose, title, children }) {
   if (!open) return null;
+
   return (
     <div
       onClick={onClose}
@@ -303,11 +314,13 @@ function Modal({ open, onClose, title, children }) {
 /* ------------------------------ Page ------------------------------ */
 export default function KycReviewPage() {
   const toast = useToast();
+
   const notify = (msg, type = "success") => {
+    if (toast?.showToast) return toast.showToast(msg, type);
     if (toast?.show) return toast.show(msg, type);
     if (type === "error" && toast?.error) return toast.error(msg);
     if (type === "success" && toast?.success) return toast.success(msg);
-    alert(msg);
+    return alert(msg);
   };
 
   const [rows, setRows] = useState([]);
@@ -315,7 +328,8 @@ export default function KycReviewPage() {
   const [busyId, setBusyId] = useState(null);
 
   const [q, setQ] = useState("");
-  const [tab, setTab] = useState("all"); // all|pending|approved|rejected
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [tab, setTab] = useState("all"); // all|pending|approved|rejected|more_info_required
 
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
@@ -328,6 +342,15 @@ export default function KycReviewPage() {
   const [docsNote, setDocsNote] = useState("");
   const [docsLoading, setDocsLoading] = useState(false);
 
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQ(q.trim());
+      setPage(1);
+    }, 250);
+
+    return () => clearTimeout(t);
+  }, [q]);
+
   const lastPage = Math.max(1, Math.ceil((total || 0) / perPage));
 
   const load = useCallback(async () => {
@@ -335,7 +358,7 @@ export default function KycReviewPage() {
     try {
       const params = { page, limit: perPage };
       if (tab !== "all") params.status = tab;
-      if (q.trim()) params.q = q.trim();
+      if (debouncedQ) params.q = debouncedQ;
 
       const res = await api.get("/admin/kyc", { params });
       const arr = Array.isArray(res.data?.data) ? res.data.data : [];
@@ -351,26 +374,20 @@ export default function KycReviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, perPage, tab, q]); // eslint-disable-line
+  }, [page, perPage, tab, debouncedQ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();
   }, [load]);
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setPage(1);
-      load();
-    }, 250);
-    return () => clearTimeout(t);
-  }, [q, load]);
-
   const counts = useMemo(() => {
-    const c = { all: total || 0, pending: 0, approved: 0, rejected: 0 };
+    const c = { all: total || 0, pending: 0, approved: 0, rejected: 0, more_info_required: 0 };
+
     rows.forEach((r) => {
       const s = safeLower(r.status || "pending");
       if (c[s] !== undefined) c[s] += 1;
     });
+
     return c;
   }, [rows, total]);
 
@@ -392,29 +409,24 @@ export default function KycReviewPage() {
     setDocsLoading(true);
 
     try {
-      // 1) Prefer API docs (fast)
       const fromApi = docsFromApiRow(row);
       if (fromApi.length) {
         setDocs(fromApi);
-        setDocsLoading(false);
         return;
       }
 
       const uid = resolveUidFromRow(row);
       if (!uid) {
         setDocsNote("Missing userId on this record — cannot resolve document location.");
-        setDocsLoading(false);
         return;
       }
 
-      // 2) Firestore fallback: kycProfiles/{uid}
       try {
         const snap = await getDoc(doc(db, "kycProfiles", uid));
         if (snap.exists()) {
           const fromProfiles = docsFromKycProfilesDoc(snap.data());
           if (fromProfiles.length) {
             setDocs(fromProfiles);
-            setDocsLoading(false);
             return;
           }
         }
@@ -422,14 +434,12 @@ export default function KycReviewPage() {
         console.warn("[KycReviewPage] kycProfiles read failed:", e?.message || e);
       }
 
-      // 3) Legacy Firestore fallback: kyc/{uid}
       try {
         const snap2 = await getDoc(doc(db, "kyc", uid));
         if (snap2.exists()) {
           const fromLegacy = docsFromLegacyKycDoc(snap2.data());
           if (fromLegacy.length) {
             setDocs(fromLegacy);
-            setDocsLoading(false);
             return;
           }
         }
@@ -437,7 +447,6 @@ export default function KycReviewPage() {
         console.warn("[KycReviewPage] legacy kyc read failed:", e?.message || e);
       }
 
-      // 4) ✅ Storage fallback: list under kyc/{uid}/** (recursive)
       try {
         const folder = sRef(storage, `kyc/${uid}`);
         const allRefs = await listAllFilesRecursively(folder);
@@ -451,10 +460,8 @@ export default function KycReviewPage() {
             }))
           );
 
-          // stable sort
           storageDocs.sort((a, b) => a.name.localeCompare(b.name));
           setDocs(storageDocs);
-          setDocsLoading(false);
           return;
         }
       } catch (e) {
@@ -462,7 +469,15 @@ export default function KycReviewPage() {
       }
 
       setDocsNote(
-        `No documents found for this KYC.\n\nChecked:\n• API row.uploads / row.documents\n• Firestore: kycProfiles/${uid}.documents\n• Firestore: kyc/${uid}.files\n• Storage: kyc/${uid}/**\n\nIf Storage has files but this still fails, your admin user may be missing the custom claim (admin=true) and Storage rules will block access.`
+        `No documents found for this KYC.
+
+Checked:
+• API row.uploads / row.documents
+• Firestore: kycProfiles/${uid}
+• Firestore: kyc/${uid}
+• Storage: kyc/${uid}/**
+
+If Storage has files but this still fails, your admin user may be missing the custom claim (admin=true) and Storage rules may be blocking access.`
       );
     } finally {
       setDocsLoading(false);
@@ -471,14 +486,22 @@ export default function KycReviewPage() {
 
   const setStatus = async (row, nextStatus) => {
     const id = row?.id;
-    if (!id) return notify("Missing KYC record ID.", "error");
+    if (!id) {
+      notify("Missing KYC record ID.", "error");
+      return;
+    }
 
     setBusyId(id);
     try {
       await api.patch(`/admin/kyc/${id}/status`, { status: nextStatus });
 
-      // optimistic update
-      setRows((prev) => prev.map((x) => (x.id === id ? { ...x, status: nextStatus } : x)));
+      setRows((prev) =>
+        prev.map((x) => (x.id === id ? { ...x, status: nextStatus } : x))
+      );
+
+      if (sel?.id === id) {
+        setSel((prev) => (prev ? { ...prev, status: nextStatus } : prev));
+      }
 
       notify(`KYC marked as ${nextStatus}.`, "success");
     } catch (e) {
@@ -493,7 +516,7 @@ export default function KycReviewPage() {
     try {
       const params = new URLSearchParams();
       if (tab !== "all") params.set("status", tab);
-      if (q.trim()) params.set("q", q.trim());
+      if (debouncedQ) params.set("q", debouncedQ);
 
       const href = `/admin/kyc/export.csv?${params.toString()}`;
       await downloadCsv(href, `kyc-${Date.now()}.csv`);
@@ -526,7 +549,7 @@ export default function KycReviewPage() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "auto auto auto auto 1fr",
+          gridTemplateColumns: "auto auto auto auto auto 1fr",
           gap: 10,
           alignItems: "center",
           marginTop: 12,
@@ -538,6 +561,7 @@ export default function KycReviewPage() {
           { k: "pending", label: `Pending (page) ${counts.pending}` },
           { k: "approved", label: `Approved (page) ${counts.approved}` },
           { k: "rejected", label: `Rejected (page) ${counts.rejected}` },
+          { k: "more_info_required", label: `More info (page) ${counts.more_info_required}` },
         ].map((t) => (
           <button
             key={t.k}
@@ -622,7 +646,9 @@ export default function KycReviewPage() {
                 </tr>
               ) : (
                 rows.map((r) => {
-                  const submitted = safeDateLoose(r.submittedAt || r.createdAt || r.created_at || r.updatedAt);
+                  const submitted = safeDateLoose(
+                    r.submittedAt || r.createdAt || r.created_at || r.updatedAt
+                  );
                   const uid = r.userId || r.uid || r.id || "—";
                   const status = safeLower(r.status || "pending");
 
@@ -632,7 +658,7 @@ export default function KycReviewPage() {
                         {submitted ? dayjs(submitted).format("YYYY-MM-DD HH:mm") : "—"}
                       </td>
                       <td style={{ padding: "12px 16px", color: "#f8fafc", fontWeight: 700 }}>
-                        {r.name || "—"}
+                        {r.name || r.fullName || "—"}
                       </td>
                       <td style={{ padding: "12px 16px", color: "#cbd5e1" }}>
                         {r.email || "—"}
@@ -656,10 +682,19 @@ export default function KycReviewPage() {
                           >
                             Approve
                           </LuxeBtn>
-                          <LuxeBtn small kind="ruby" disabled={busyId === r.id} onClick={() => setStatus(r, "rejected")}>
+                          <LuxeBtn
+                            small
+                            kind="ruby"
+                            disabled={busyId === r.id}
+                            onClick={() => setStatus(r, "rejected")}
+                          >
                             Reject
                           </LuxeBtn>
-                          <LuxeBtn small disabled={busyId === r.id} onClick={() => setStatus(r, "pending")}>
+                          <LuxeBtn
+                            small
+                            disabled={busyId === r.id}
+                            onClick={() => setStatus(r, "pending")}
+                          >
                             Reset
                           </LuxeBtn>
                         </div>
@@ -760,6 +795,9 @@ export default function KycReviewPage() {
               <div style={{ color: "#94a3b8", fontWeight: 700 }}>Type</div>
               <div style={{ color: "#e5e7eb", fontWeight: 800 }}>{sel.type || "—"}</div>
 
+              <div style={{ color: "#94a3b8", fontWeight: 700 }}>Name</div>
+              <div style={{ color: "#e5e7eb" }}>{sel.name || sel.fullName || "—"}</div>
+
               <div style={{ color: "#94a3b8", fontWeight: 700 }}>Email</div>
               <div style={{ color: "#e5e7eb" }}>{sel.email || "—"}</div>
 
@@ -790,7 +828,13 @@ export default function KycReviewPage() {
                   {docsNote || "No documents attached to this record."}
                 </div>
               ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+                    gap: 10,
+                  }}
+                >
                   {docs.map((a) => (
                     <a
                       key={a.url}
@@ -832,7 +876,9 @@ export default function KycReviewPage() {
                       >
                         <span style={{ fontSize: 12, opacity: 0.75 }}>Open</span>
                       </div>
-                      <div style={{ marginTop: 8, fontSize: 11, opacity: 0.6 }}>source: {a.source}</div>
+                      <div style={{ marginTop: 8, fontSize: 11, opacity: 0.6 }}>
+                        source: {a.source}
+                      </div>
                     </a>
                   ))}
                 </div>

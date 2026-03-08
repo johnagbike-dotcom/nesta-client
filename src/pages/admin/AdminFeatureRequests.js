@@ -7,48 +7,56 @@ import axios from "axios";
 import { getAuth } from "firebase/auth";
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../context/ToastContext";
 
 dayjs.extend(relativeTime);
 
-/* ───────────────────────── Luxury plans (single source) ───────────────────────── */
+/* ───────────────────────── Luxury plans ───────────────────────── */
 const FEATURE_PLANS = [
   { id: "spotlight", label: "Spotlight • 24 hours", price: 20000, durationDays: 1 },
   { id: "premium", label: "Premium • 7 days", price: 70000, durationDays: 7 },
   { id: "signature", label: "Signature • 30 days", price: 250000, durationDays: 30 },
 ];
 
-/* ───────────────────────── axios base (admin API) ───────────────────────── */
+/* ───────────────────────── axios base ───────────────────────── */
+const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
+const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
+
 const api = axios.create({
-  baseURL: (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, ""),
+  baseURL: API_BASE,
   timeout: 20000,
+  withCredentials: false,
 });
 
-// Attach Firebase ID token automatically
 api.interceptors.request.use(async (config) => {
-  const user = getAuth().currentUser;
-  if (user) {
-    const token = await user.getIdToken();
-    config.headers.Authorization = `Bearer ${token}`;
+  try {
+    const user = getAuth().currentUser;
+    if (user) {
+      const token = await user.getIdToken();
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  } catch {
+    // ignore
   }
   return config;
 });
 
-/* ───────────────────────── Helpers ───────────────────────── */
+/* ───────────────────────── helpers ───────────────────────── */
 function asDate(v) {
   if (!v) return null;
   if (typeof v?.toDate === "function") return v.toDate();
   if (typeof v?.seconds === "number") {
     const ms = v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
     const d = new Date(ms);
-    return isNaN(+d) ? null : d;
+    return Number.isNaN(+d) ? null : d;
   }
   if (typeof v === "number") {
     const d = new Date(v);
-    return isNaN(+d) ? null : d;
+    return Number.isNaN(+d) ? null : d;
   }
   const d = new Date(v);
-  return isNaN(+d) ? null : d;
+  return Number.isNaN(+d) ? null : d;
 }
 
 function clip(s, n = 24) {
@@ -66,26 +74,69 @@ function money(n) {
   });
 }
 
+function getErrMsg(e, fallback = "Request failed.") {
+  return (
+    e?.response?.data?.error ||
+    e?.response?.data?.message ||
+    e?.message ||
+    fallback
+  );
+}
+
 const tone = (status, archived) => {
   const s = String(status || "pending").toLowerCase();
-  if (archived)
-    return { bg: "rgba(148,163,184,.16)", text: "#e2e8f0", ring: "rgba(148,163,184,.30)" };
 
-  if (s === "active")
-    return { bg: "rgba(16,185,129,.18)", text: "#a7f3d0", ring: "rgba(16,185,129,.32)" };
-  if (s === "awaiting-payment")
-    return { bg: "rgba(245,158,11,.18)", text: "#fde68a", ring: "rgba(245,158,11,.32)" };
-  if (s === "paid")
-    return { bg: "rgba(59,130,246,.18)", text: "#bfdbfe", ring: "rgba(59,130,246,.32)" };
-  if (s === "rejected")
-    return { bg: "rgba(239,68,68,.18)", text: "#fecaca", ring: "rgba(239,68,68,.32)" };
+  if (archived) {
+    return {
+      bg: "rgba(148,163,184,.16)",
+      text: "#e2e8f0",
+      ring: "rgba(148,163,184,.30)",
+    };
+  }
 
-  return { bg: "rgba(99,102,241,.18)", text: "#c7d2fe", ring: "rgba(99,102,241,.30)" };
+  if (s === "active") {
+    return {
+      bg: "rgba(16,185,129,.18)",
+      text: "#a7f3d0",
+      ring: "rgba(16,185,129,.32)",
+    };
+  }
+
+  if (s === "awaiting-payment") {
+    return {
+      bg: "rgba(245,158,11,.18)",
+      text: "#fde68a",
+      ring: "rgba(245,158,11,.32)",
+    };
+  }
+
+  if (s === "paid") {
+    return {
+      bg: "rgba(59,130,246,.18)",
+      text: "#bfdbfe",
+      ring: "rgba(59,130,246,.32)",
+    };
+  }
+
+  if (s === "rejected") {
+    return {
+      bg: "rgba(239,68,68,.18)",
+      text: "#fecaca",
+      ring: "rgba(239,68,68,.32)",
+    };
+  }
+
+  return {
+    bg: "rgba(99,102,241,.18)",
+    text: "#c7d2fe",
+    ring: "rgba(99,102,241,.30)",
+  };
 };
 
-const Pill = ({ status, archived }) => {
+function Pill({ status, archived }) {
   const t = tone(status, archived);
   const label = archived ? "archived" : String(status || "pending");
+
   return (
     <span
       style={{
@@ -108,10 +159,11 @@ const Pill = ({ status, archived }) => {
       {label}
     </span>
   );
-};
+}
 
 function Modal({ open, title, onClose, children }) {
   if (!open) return null;
+
   return (
     <div
       onClick={onClose}
@@ -154,13 +206,13 @@ function Modal({ open, title, onClose, children }) {
             </LuxeBtn>
           </div>
         </div>
+
         <div style={{ padding: 16 }}>{children}</div>
       </div>
     </div>
   );
 }
 
-/* ───────────────────────── Component ───────────────────────── */
 export default function AdminFeatureRequests() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -168,38 +220,32 @@ export default function AdminFeatureRequests() {
   const [tab, setTab] = useState("all");
   const [q, setQ] = useState("");
 
-  // Review modal
   const [open, setOpen] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
 
-  // approval lock controls
   const [planId, setPlanId] = useState("spotlight");
   const [price, setPrice] = useState(20000);
   const [durationDays, setDurationDays] = useState(1);
 
-  // listing preview
   const [listingPreview, setListingPreview] = useState(null);
   const [busyId, setBusyId] = useState(null);
 
-  // payment reference input (reconciliation tool)
   const [paymentRefInput, setPaymentRefInput] = useState("");
 
   const nav = useNavigate();
-  const toast = useToast();
+  const { showToast } = useToast();
 
   const notify = (msg, type = "success") => {
-    if (toast?.show) return toast.show(msg, type);
-    if (type === "error" && toast?.error) return toast.error(msg);
-    if (type === "success" && toast?.success) return toast.success(msg);
-    window.alert(msg);
+    try {
+      showToast?.(msg, type);
+    } catch {
+      window.alert(msg);
+    }
   };
 
   const normalize = (r) => {
     const createdAt = r.createdAt || r.submittedAt || null;
-
     const plan = FEATURE_PLANS.find((p) => p.id === (r.planId || r.planKey)) || null;
-    const lockedPrice = r.price ?? r.planPrice ?? plan?.price ?? null;
-    const lockedDuration = r.durationDays ?? plan?.durationDays ?? null;
 
     return {
       id: r.id,
@@ -209,18 +255,13 @@ export default function AdminFeatureRequests() {
       hostUid: r.hostUid || r.userId || r.requestedBy || "",
       status: String(r.status || "pending").toLowerCase(),
       archived: !!r.archived,
-
-      // locked commercial terms
       planId: r.planId || r.planKey || plan?.id || "custom",
       planLabel: r.planLabel || plan?.label || "Custom plan",
-      price: lockedPrice,
-      durationDays: lockedDuration,
-
-      // payment fields
+      price: r.price ?? r.planPrice ?? plan?.price ?? null,
+      durationDays: r.durationDays ?? plan?.durationDays ?? null,
       paid: !!r.paid,
       paymentRef: r.paymentRef || r.reference || r.paystackRef || r.flwRef || "",
       paidAt: r.paidAt || null,
-
       sponsoredUntil: r.sponsoredUntil || null,
       primaryImageUrl: r.primaryImageUrl || null,
       description: r.description || "",
@@ -230,22 +271,23 @@ export default function AdminFeatureRequests() {
     };
   };
 
-  /* ───────────────────────── Load (server-gated) ───────────────────────── */
   const load = async () => {
     setLoading(true);
     try {
       const res = await api.get("/admin/feature-requests", {
-        params: {
-          status: "all",
-          q: "",
-        },
+        params: { status: "all", q: "" },
       });
 
-      const arr = Array.isArray(res.data?.data) ? res.data.data : [];
+      const arr = Array.isArray(res.data?.data)
+        ? res.data.data
+        : Array.isArray(res.data)
+        ? res.data
+        : [];
+
       setRows(arr.map(normalize));
     } catch (e) {
       console.error("FeatureRequests load failed:", e?.response?.data || e.message);
-      notify("Failed to load feature requests.", "error");
+      notify(getErrMsg(e, "Failed to load feature requests."), "error");
       setRows([]);
     } finally {
       setLoading(false);
@@ -254,18 +296,26 @@ export default function AdminFeatureRequests() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ───────────────────────── Derived ───────────────────────── */
   const counts = useMemo(() => {
-    const c = { all: 0, pending: 0, "awaiting-payment": 0, paid: 0, active: 0, rejected: 0, archived: 0 };
+    const c = {
+      all: 0,
+      pending: 0,
+      "awaiting-payment": 0,
+      paid: 0,
+      active: 0,
+      rejected: 0,
+      archived: 0,
+    };
+
     rows.forEach((r) => {
       c.all += 1;
       if (r.archived) c.archived += 1;
-      else if (r.status in c) c[r.status] += 1;
+      else if (Object.prototype.hasOwnProperty.call(c, r.status)) c[r.status] += 1;
       else c.pending += 1;
     });
+
     return c;
   }, [rows]);
 
@@ -274,20 +324,23 @@ export default function AdminFeatureRequests() {
     let list = rows.slice();
 
     if (tab !== "all") {
-      if (tab === "archived") list = list.filter((r) => r.archived);
-      else list = list.filter((r) => !r.archived && String(r.status || "pending") === tab);
+      if (tab === "archived") {
+        list = list.filter((r) => r.archived);
+      } else {
+        list = list.filter((r) => !r.archived && String(r.status || "pending") === tab);
+      }
     }
 
     if (kw) {
       list = list.filter((r) => {
-        const hay = `${r.listingTitle} ${r.listingId} ${r.hostEmail} ${r.planLabel} ${r.status} ${r.paymentRef}`.toLowerCase();
+        const hay =
+          `${r.listingTitle} ${r.listingId} ${r.hostEmail} ${r.planLabel} ${r.status} ${r.paymentRef}`.toLowerCase();
         return hay.includes(kw);
       });
     }
+
     return list;
   }, [rows, tab, q]);
-
-  /* ───────────────────────── Actions (server-gated) ───────────────────────── */
 
   const approveToAwaitingPayment = async (row) => {
     try {
@@ -308,7 +361,7 @@ export default function AdminFeatureRequests() {
       setOpen(false);
     } catch (e) {
       console.error("Approve failed:", e?.response?.data || e.message);
-      notify("Failed to approve.", "error");
+      notify(getErrMsg(e, "Failed to approve."), "error");
     } finally {
       setBusyId(null);
     }
@@ -316,6 +369,7 @@ export default function AdminFeatureRequests() {
 
   const reject = async (row) => {
     if (!window.confirm("Reject this request?")) return;
+
     try {
       setBusyId(row.id);
       await api.patch(`/admin/feature-requests/${row.id}`, { status: "rejected" });
@@ -324,7 +378,7 @@ export default function AdminFeatureRequests() {
       setOpen(false);
     } catch (e) {
       console.error("Reject failed:", e?.response?.data || e.message);
-      notify("Failed to reject.", "error");
+      notify(getErrMsg(e, "Failed to reject."), "error");
     } finally {
       setBusyId(null);
     }
@@ -338,7 +392,7 @@ export default function AdminFeatureRequests() {
       await load();
     } catch (e) {
       console.error("Archive failed:", e?.response?.data || e.message);
-      notify("Failed to archive.", "error");
+      notify(getErrMsg(e, "Failed to archive."), "error");
     } finally {
       setBusyId(null);
     }
@@ -346,6 +400,7 @@ export default function AdminFeatureRequests() {
 
   const markPaidOverride = async (row) => {
     if (!window.confirm("Mark as PAID manually?\n\nUse only for bank transfer / reconciliation.")) return;
+
     try {
       setBusyId(row.id);
       await api.patch(`/admin/feature-requests/${row.id}/mark-paid`, {
@@ -355,15 +410,21 @@ export default function AdminFeatureRequests() {
       await load();
     } catch (e) {
       console.error("Mark paid failed:", e?.response?.data || e.message);
-      notify("Failed to mark paid.", "error");
+      notify(getErrMsg(e, "Failed to mark paid."), "error");
     } finally {
       setBusyId(null);
     }
   };
 
   const deactivateFeaturedNow = async (row) => {
-    if (!row.listingId) return notify("Missing listingId.", "error");
-    if (!window.confirm("End this featured placement now?\n\nThis removes it from the homepage carousel immediately.")) return;
+    if (!row.listingId) {
+      notify("Missing listingId.", "error");
+      return;
+    }
+
+    if (!window.confirm("End this featured placement now?\n\nThis removes it from the homepage carousel immediately.")) {
+      return;
+    }
 
     try {
       setBusyId(row.id);
@@ -373,15 +434,22 @@ export default function AdminFeatureRequests() {
       setOpen(false);
     } catch (e) {
       console.error("Deactivate failed:", e?.response?.data || e.message);
-      notify("Failed to deactivate.", "error");
+      notify(getErrMsg(e, "Failed to deactivate."), "error");
     } finally {
       setBusyId(null);
     }
   };
 
   const activateFeatured = async (row) => {
-    if (!row.listingId) return notify("Missing listingId for this request.", "error");
-    if (!row.paid) return notify("This request is not marked paid yet.", "error");
+    if (!row.listingId) {
+      notify("Missing listingId for this request.", "error");
+      return;
+    }
+
+    if (!row.paid) {
+      notify("This request is not marked paid yet.", "error");
+      return;
+    }
 
     const dur = Number(row.durationDays || 1);
     if (!window.confirm(`Activate featured placement for ${dur} day(s)?`)) return;
@@ -394,7 +462,7 @@ export default function AdminFeatureRequests() {
       setOpen(false);
     } catch (e) {
       console.error("Activate failed:", e?.response?.data || e.message);
-      notify("Failed to activate.", "error");
+      notify(getErrMsg(e, "Failed to activate."), "error");
     } finally {
       setBusyId(null);
     }
@@ -408,6 +476,7 @@ export default function AdminFeatureRequests() {
 
     const fallbackPlan = FEATURE_PLANS.find((p) => p.id === row.planId) || FEATURE_PLANS[0];
     const pId = row.planId && row.planId !== "custom" ? row.planId : fallbackPlan.id;
+
     setPlanId(pId);
     setPrice(Number(row.price ?? fallbackPlan.price));
     setDurationDays(Number(row.durationDays ?? fallbackPlan.durationDays));
@@ -416,6 +485,7 @@ export default function AdminFeatureRequests() {
       if (!row.listingId) return;
       const res = await api.get(`/admin/listings/${encodeURIComponent(row.listingId)}`);
       if (res.data?.data) setListingPreview(res.data.data);
+      else if (res.data) setListingPreview(res.data);
     } catch (e) {
       console.warn("Could not load listing preview:", e?.response?.data || e.message);
     }
@@ -430,20 +500,22 @@ export default function AdminFeatureRequests() {
 
   const savePaymentRef = async () => {
     if (!activeRow) return;
+
     try {
       setBusyId(activeRow.id);
-      await api.patch(`/admin/feature-requests/${activeRow.id}`, { paymentRef: String(paymentRefInput || "").trim() });
+      await api.patch(`/admin/feature-requests/${activeRow.id}`, {
+        paymentRef: String(paymentRefInput || "").trim(),
+      });
       notify("Payment reference saved.", "success");
       await load();
     } catch (e) {
       console.error("Save payment ref failed:", e?.response?.data || e.message);
-      notify("Could not save payment reference.", "error");
+      notify(getErrMsg(e, "Could not save payment reference."), "error");
     } finally {
       setBusyId(null);
     }
   };
 
-  /* ───────────────────────── CSV export ───────────────────────── */
   const exportCsv = () => {
     const header = [
       "id",
@@ -462,6 +534,7 @@ export default function AdminFeatureRequests() {
       "paidAt",
       "sponsoredUntil",
     ];
+
     const lines = [header.join(",")];
 
     filtered.forEach((r) => {
@@ -487,6 +560,7 @@ export default function AdminFeatureRequests() {
           return s.includes(",") || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
         })
         .join(",");
+
       lines.push(line);
     });
 
@@ -499,10 +573,10 @@ export default function AdminFeatureRequests() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+
     notify("CSV exported.", "success");
   };
 
-  /* ───────────────────────── Render ───────────────────────── */
   return (
     <div style={{ padding: 16 }}>
       <AdminHeader
@@ -521,7 +595,6 @@ export default function AdminFeatureRequests() {
         }
       />
 
-      {/* Filters */}
       <div
         style={{
           display: "grid",
@@ -555,10 +628,6 @@ export default function AdminFeatureRequests() {
               fontWeight: 900,
               cursor: "pointer",
               whiteSpace: "nowrap",
-              boxShadow:
-                tab === x.k
-                  ? "0 10px 30px rgba(250,204,21,.18), inset 0 1px 0 rgba(255,255,255,.06)"
-                  : "inset 0 1px 0 rgba(255,255,255,.04)",
             }}
           >
             {x.label}
@@ -581,7 +650,6 @@ export default function AdminFeatureRequests() {
         />
       </div>
 
-      {/* Table */}
       <div
         style={{
           borderRadius: 16,
@@ -615,30 +683,28 @@ export default function AdminFeatureRequests() {
             </thead>
 
             <tbody>
-              {loading && (
+              {loading ? (
                 <tr>
                   <td colSpan={7} style={{ padding: 18, color: "#aeb6c2" }}>
                     Loading…
                   </td>
                 </tr>
-              )}
-
-              {!loading && filtered.length === 0 && (
+              ) : filtered.length === 0 ? (
                 <tr>
                   <td colSpan={7} style={{ padding: 18, color: "#aeb6c2" }}>
                     No requests found.
                   </td>
                 </tr>
-              )}
-
-              {!loading &&
+              ) : (
                 filtered.map((r) => {
                   const tCreated = asDate(r.createdAt);
                   const createdLabel = tCreated ? dayjs(tCreated).format("YYYY-MM-DD HH:mm") : "—";
-
-                  const paidLabel = r.paid ? "Paid ✅" : r.status === "awaiting-payment" ? "Awaiting payment" : "Not paid";
+                  const paidLabel = r.paid
+                    ? "Paid ✅"
+                    : r.status === "awaiting-payment"
+                    ? "Awaiting payment"
+                    : "Not paid";
                   const paidAt = r.paidAt ? asDate(r.paidAt) : null;
-
                   const busy = busyId === r.id;
 
                   return (
@@ -678,7 +744,9 @@ export default function AdminFeatureRequests() {
                         <Pill status={r.status} archived={r.archived} />
                       </td>
 
-                      <td style={{ padding: "12px 16px", color: "#cbd5e1", whiteSpace: "nowrap" }}>{createdLabel}</td>
+                      <td style={{ padding: "12px 16px", color: "#cbd5e1", whiteSpace: "nowrap" }}>
+                        {createdLabel}
+                      </td>
 
                       <td
                         style={{
@@ -731,7 +799,8 @@ export default function AdminFeatureRequests() {
                       </td>
                     </tr>
                   );
-                })}
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -741,11 +810,9 @@ export default function AdminFeatureRequests() {
         </div>
       </div>
 
-      {/* Review Modal */}
       <Modal open={open} title="Review & approve featured request" onClose={closeReview}>
-        {!activeRow ? null : (
+        {activeRow && (
           <div style={{ display: "grid", gap: 14 }}>
-            {/* Summary */}
             <div
               style={{
                 display: "grid",
@@ -775,7 +842,6 @@ export default function AdminFeatureRequests() {
               </div>
             </div>
 
-            {/* Listing preview (optional) */}
             {listingPreview ? (
               <div
                 style={{
@@ -795,7 +861,6 @@ export default function AdminFeatureRequests() {
               </div>
             ) : null}
 
-            {/* Payment ref tool (reconciliation) */}
             <div
               style={{
                 border: "1px solid rgba(255,255,255,.10)",
@@ -808,7 +873,7 @@ export default function AdminFeatureRequests() {
             >
               <div style={{ fontWeight: 900, color: "#f8fafc" }}>Payment reference (optional)</div>
               <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                Store transaction reference for audit/reconciliation (Paystack/Flutterwave/bank transfer).
+                Store transaction reference for audit/reconciliation.
               </div>
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -832,7 +897,6 @@ export default function AdminFeatureRequests() {
               </div>
             </div>
 
-            {/* Approval lock */}
             <div
               style={{
                 borderTop: "1px solid rgba(255,255,255,.08)",
@@ -842,9 +906,6 @@ export default function AdminFeatureRequests() {
               }}
             >
               <div style={{ fontWeight: 900, color: "#f8fafc" }}>Approval terms (locked)</div>
-              <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                Approve → lock price & duration → await payment → activate.
-              </div>
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <select
@@ -873,82 +934,92 @@ export default function AdminFeatureRequests() {
                   ))}
                 </select>
 
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <div style={{ color: "#94a3b8", fontSize: 12 }}>Price</div>
-                  <input
-                    type="number"
-                    value={price}
-                    onChange={(e) => setPrice(e.target.value)}
-                    min={0}
-                    style={{
-                      height: 44,
-                      width: 160,
-                      borderRadius: 12,
-                      border: "1px solid rgba(255,255,255,.12)",
-                      background: "rgba(255,255,255,.06)",
-                      color: "#e5e7eb",
-                      padding: "0 12px",
-                    }}
-                  />
-                </div>
+                <input
+                  type="number"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  min={0}
+                  style={{
+                    height: 44,
+                    width: 160,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,.12)",
+                    background: "rgba(255,255,255,.06)",
+                    color: "#e5e7eb",
+                    padding: "0 12px",
+                  }}
+                />
 
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <div style={{ color: "#94a3b8", fontSize: 12 }}>Days</div>
-                  <input
-                    type="number"
-                    value={durationDays}
-                    onChange={(e) => setDurationDays(e.target.value)}
-                    min={1}
-                    style={{
-                      height: 44,
-                      width: 120,
-                      borderRadius: 12,
-                      border: "1px solid rgba(255,255,255,.12)",
-                      background: "rgba(255,255,255,.06)",
-                      color: "#e5e7eb",
-                      padding: "0 12px",
-                    }}
-                  />
-                </div>
+                <input
+                  type="number"
+                  value={durationDays}
+                  onChange={(e) => setDurationDays(e.target.value)}
+                  min={1}
+                  style={{
+                    height: 44,
+                    width: 120,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,.12)",
+                    background: "rgba(255,255,255,.06)",
+                    color: "#e5e7eb",
+                    padding: "0 12px",
+                  }}
+                />
               </div>
 
-              {/* actions */}
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                <LuxeBtn small onClick={closeReview}>
-                  Close
-                </LuxeBtn>
+                <LuxeBtn small onClick={closeReview}>Close</LuxeBtn>
 
-                {!activeRow.archived && activeRow.status !== "rejected" ? (
+                {!activeRow.archived && activeRow.status !== "rejected" && (
                   <LuxeBtn
                     small
                     kind="gold"
                     disabled={busyId === activeRow.id}
                     onClick={() => approveToAwaitingPayment(activeRow)}
-                    title="Approve after review"
                   >
                     Approve → Awaiting payment
                   </LuxeBtn>
-                ) : null}
+                )}
 
-                {!activeRow.archived && activeRow.paid && activeRow.status !== "active" ? (
-                  <LuxeBtn small kind="emerald" disabled={busyId === activeRow.id} onClick={() => activateFeatured(activeRow)}>
+                {!activeRow.archived && activeRow.paid && activeRow.status !== "active" && (
+                  <LuxeBtn
+                    small
+                    kind="emerald"
+                    disabled={busyId === activeRow.id}
+                    onClick={() => activateFeatured(activeRow)}
+                  >
                     Activate
                   </LuxeBtn>
-                ) : null}
+                )}
 
-                {activeRow.status === "active" && !activeRow.archived ? (
-                  <LuxeBtn small kind="ruby" disabled={busyId === activeRow.id} onClick={() => deactivateFeaturedNow(activeRow)}>
+                {activeRow.status === "active" && !activeRow.archived && (
+                  <LuxeBtn
+                    small
+                    kind="ruby"
+                    disabled={busyId === activeRow.id}
+                    onClick={() => deactivateFeaturedNow(activeRow)}
+                  >
                     Deactivate now
                   </LuxeBtn>
-                ) : null}
+                )}
 
-                {!activeRow.archived && activeRow.status !== "rejected" ? (
-                  <LuxeBtn small kind="ruby" disabled={busyId === activeRow.id} onClick={() => reject(activeRow)}>
+                {!activeRow.archived && activeRow.status !== "rejected" && (
+                  <LuxeBtn
+                    small
+                    kind="ruby"
+                    disabled={busyId === activeRow.id}
+                    onClick={() => reject(activeRow)}
+                  >
                     Reject
                   </LuxeBtn>
-                ) : null}
+                )}
 
-                <LuxeBtn small kind="slate" disabled={busyId === activeRow.id} onClick={() => toggleArchive(activeRow)}>
+                <LuxeBtn
+                  small
+                  kind="slate"
+                  disabled={busyId === activeRow.id}
+                  onClick={() => toggleArchive(activeRow)}
+                >
                   {activeRow.archived ? "Unarchive" : "Archive"}
                 </LuxeBtn>
               </div>

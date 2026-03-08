@@ -47,9 +47,40 @@ function toInt(v) {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+function extractError(err, fallback = "Something went wrong.") {
+  return (
+    err?.response?.data?.error ||
+    err?.response?.data?.message ||
+    err?.message ||
+    fallback
+  );
+}
+
 function fmtDateTime(iso) {
   if (!iso) return "—";
   try {
+    if (typeof iso?.toDate === "function") {
+      const d = iso.toDate();
+      return d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+
+    if (typeof iso?.seconds === "number") {
+      const d = new Date(iso.seconds * 1000);
+      return d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "—";
     return d.toLocaleString(undefined, {
@@ -74,6 +105,7 @@ function statusTone(status) {
   if (s === "paid") return "border-emerald-400/50 bg-emerald-500/10 text-emerald-200";
   if (s === "processing") return "border-sky-400/50 bg-sky-500/10 text-sky-200";
   if (s === "failed") return "border-rose-400/50 bg-rose-500/10 text-rose-200";
+  if (s === "cancelled") return "border-white/20 bg-white/5 text-white/70";
   return "border-white/15 bg-white/5 text-white/75"; // pending/default
 }
 
@@ -113,11 +145,11 @@ export default function Withdrawals() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  // ✅ history
+  // history
   const [reqLoading, setReqLoading] = useState(false);
   const [requests, setRequests] = useState([]);
 
-  // Investor-mode micro: pulse on wallet changes
+  // pulse on wallet changes
   const prevRef = useRef({ available: 0, pending: 0 });
   const [pulse, setPulse] = useState({ available: "", pending: "" });
 
@@ -133,7 +165,7 @@ export default function Withdrawals() {
   const needsPayoutSetup = wallet.payoutSetupComplete !== true;
   const needsPayoutVerify = wallet.payoutSetupComplete === true && !payoutVerified;
 
-  // Server policy is the source-of-truth
+  // Server policy is source of truth
   const withdrawalsLockedByPolicy = wallet.canWithdraw === false;
 
   // Allow typing even if invalid; only block submission
@@ -168,15 +200,18 @@ export default function Withdrawals() {
           minWithdrawal: Number(data.minWithdrawal || MIN_WITHDRAWAL_N_FALLBACK),
         };
 
-        // pulse logic (subtle)
         const prev = prevRef.current || { available: 0, pending: 0 };
         const nextAvail = Number(next.available || 0);
         const nextPend = Number(next.pending || 0);
 
         if (nextAvail !== Number(prev.available || 0)) {
-          setPulse((p) => ({ ...p, available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft" }));
+          setPulse((p) => ({
+            ...p,
+            available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft",
+          }));
           setTimeout(() => setPulse((p) => ({ ...p, available: "" })), 520);
         }
+
         if (nextPend !== Number(prev.pending || 0)) {
           setPulse((p) => ({ ...p, pending: "pulseAmber" }));
           setTimeout(() => setPulse((p) => ({ ...p, pending: "" })), 520);
@@ -189,8 +224,7 @@ export default function Withdrawals() {
       }
     } catch (err) {
       console.error("Failed to fetch wallet data", err);
-      const msg = err?.response?.data?.error || "Failed to fetch wallet.";
-      notify(msg, "error");
+      notify(extractError(err, "Failed to fetch wallet."), "error");
     } finally {
       setLoading(false);
     }
@@ -233,17 +267,51 @@ export default function Withdrawals() {
     if (submitting) return { label: "Submitting…", action: null, disabled: true };
     if (loading) return { label: "Loading…", action: null, disabled: true };
 
-    if (!user?.uid) return { label: "Sign in to continue", action: () => nav("/login"), disabled: false };
+    if (!user?.uid) {
+      return {
+        label: "Sign in to continue",
+        action: () => nav("/login"),
+        disabled: false,
+      };
+    }
 
-    if (needsKyc) return { label: "Complete KYC to withdraw", action: () => nav("/onboarding/kyc/gate"), disabled: false };
+    if (needsKyc) {
+      return {
+        label: "Complete KYC to withdraw",
+        action: () => nav("/onboarding/kyc/gate"),
+        disabled: false,
+      };
+    }
 
-    if (needsPayoutSetup) return { label: "Set up payout method", action: () => nav("/payout-setup"), disabled: false };
+    if (needsPayoutSetup) {
+      return {
+        label: "Set up payout method",
+        action: () => nav("/payout-setup"),
+        disabled: false,
+      };
+    }
 
-    if (needsPayoutVerify) return { label: "Payout under review", action: () => nav("/payout-setup"), disabled: false };
+    if (needsPayoutVerify) {
+      return {
+        label: "Payout under review",
+        action: () => nav("/payout-setup"),
+        disabled: false,
+      };
+    }
 
-    if (Number(wallet.available || 0) <= 0) return { label: "No withdrawable balance", action: null, disabled: true };
+    if (Number(wallet.available || 0) <= 0) {
+      return {
+        label: "No withdrawable balance",
+        action: null,
+        disabled: true,
+      };
+    }
 
-    return { label: "Request Withdrawal", action: null, disabled: !canSubmit };
+    return {
+      label: "Request Withdrawal",
+      action: null,
+      disabled: !canSubmit,
+    };
   }, [
     submitting,
     loading,
@@ -268,7 +336,10 @@ export default function Withdrawals() {
     }
 
     if (amountN > Number(wallet.available || 0)) {
-      return notify("Insufficient withdrawable balance. Only Available funds can be withdrawn.", "error");
+      return notify(
+        "Insufficient withdrawable balance. Only Available funds can be withdrawn.",
+        "error"
+      );
     }
 
     setSubmitting(true);
@@ -278,21 +349,25 @@ export default function Withdrawals() {
       if (data?.ok) {
         notify("Withdrawal request submitted.", "success");
 
-        // refresh wallet immediately
         if (data.wallet) {
           const nextAvail = Number(data.wallet.available || 0);
           const nextPend = Number(data.wallet.pending || 0);
 
-          // pulse
           const prev = prevRef.current || { available: 0, pending: 0 };
+
           if (nextAvail !== Number(prev.available || 0)) {
-            setPulse((p) => ({ ...p, available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft" }));
+            setPulse((p) => ({
+              ...p,
+              available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft",
+            }));
             setTimeout(() => setPulse((p) => ({ ...p, available: "" })), 520);
           }
+
           if (nextPend !== Number(prev.pending || 0)) {
             setPulse((p) => ({ ...p, pending: "pulseAmber" }));
             setTimeout(() => setPulse((p) => ({ ...p, pending: "" })), 520);
           }
+
           prevRef.current = { available: nextAvail, pending: nextPend };
 
           setWallet((w) => ({
@@ -304,9 +379,7 @@ export default function Withdrawals() {
           await fetchWallet();
         }
 
-        // refresh history
         await fetchRequests();
-
         setAmount("");
       } else {
         notify(data?.error || "Error submitting withdrawal request.", "error");
@@ -315,10 +388,13 @@ export default function Withdrawals() {
       console.error("Error processing payout request:", err);
 
       const code = err?.response?.data?.code || "";
-      const serverMsg = err?.response?.data?.error;
+      const serverMsg = err?.response?.data?.error || extractError(err, "Error processing withdrawal request.");
 
       if (code === "insufficient_available") {
-        notify("Only Available funds can be withdrawn. Pending funds unlock after check-in.", "warning");
+        notify(
+          "Only Available funds can be withdrawn. Pending funds unlock after check-in.",
+          "warning"
+        );
       } else if (code === "min_withdrawal") {
         notify(serverMsg || `Minimum withdrawal is ${money(minWithdrawal)}.`, "warning");
       } else if (code === "withdrawals_locked") {
@@ -333,7 +409,6 @@ export default function Withdrawals() {
     }
   };
 
-  // Only disable input when user truly cannot progress (policy/kyc/setup) — not because the amount is invalid
   const amountInputDisabled =
     loading ||
     submitting ||
@@ -349,7 +424,6 @@ export default function Withdrawals() {
   return (
     <main className="min-h-screen bg-[#05070a] pt-24 pb-16 px-4 text-white">
       <div className="max-w-xl mx-auto">
-        {/* micro keyframes (local, no global CSS dependency) */}
         <style>{`
           @keyframes pulseGold {
             0% { box-shadow: 0 0 0 rgba(245, 158, 11, 0); transform: translateY(0); }
@@ -388,7 +462,6 @@ export default function Withdrawals() {
           Minimum: <span className="text-white font-semibold">{money(minWithdrawal)}</span>
         </p>
 
-        {/* Policy status box */}
         {!loading ? (
           <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/80">
             <div className="flex items-center justify-between gap-3">
@@ -457,12 +530,12 @@ export default function Withdrawals() {
             </div>
           </div>
 
-          {/* Clear premium explanation */}
           {pendingN > 0 ? (
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70 leading-relaxed">
               <div className="font-semibold text-white/80">About Pending funds</div>
               <div className="mt-1">
-                Pending funds are marketplace-protected and become withdrawable after guest check-in (release).
+                Pending funds are marketplace-protected and become withdrawable after guest check-in
+                and release.
               </div>
             </div>
           ) : null}
@@ -497,7 +570,9 @@ export default function Withdrawals() {
               </div>
 
               {amountN > 0 && amountN < minWithdrawal ? (
-                <p className="mt-1 text-xs text-amber-200/80">Minimum withdrawal is {money(minWithdrawal)}.</p>
+                <p className="mt-1 text-xs text-amber-200/80">
+                  Minimum withdrawal is {money(minWithdrawal)}.
+                </p>
               ) : null}
 
               {amountN > availableN ? (
@@ -512,7 +587,7 @@ export default function Withdrawals() {
               <ul className="list-disc pl-5 space-y-1 text-white/70">
                 <li>Withdrawals are only released to a <b>verified payout method</b> on file.</li>
                 <li>
-                  <b>Available</b> is withdrawable; <b>Pending</b> unlocks after check-in (release).
+                  <b>Available</b> is withdrawable; <b>Pending</b> unlocks after check-in and release.
                 </li>
                 <li>This protects guests, hosts, and the Nesta brand.</li>
               </ul>
@@ -547,12 +622,13 @@ export default function Withdrawals() {
           </div>
         </section>
 
-        {/* ✅ History */}
         <section className="mt-6 rounded-3xl border border-white/10 bg-[#090c12] overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
             <div>
               <h2 className="text-base font-semibold text-white">Recent withdrawal requests</h2>
-              <p className="text-xs text-white/50 mt-1">Track your requests: pending → processing → paid (or failed).</p>
+              <p className="text-xs text-white/50 mt-1">
+                Track your requests: pending → processing → paid (or failed).
+              </p>
             </div>
 
             <button
@@ -599,7 +675,9 @@ export default function Withdrawals() {
                         {fmtDateTime(r.createdAt)} · Ref <span className="font-mono">{shortId(r.id)}</span>
                       </div>
 
-                      {r.note ? <div className="mt-1 text-[11px] text-white/55 truncate">{r.note}</div> : null}
+                      {r.note ? (
+                        <div className="mt-1 text-[11px] text-white/55 truncate">{r.note}</div>
+                      ) : null}
                     </div>
 
                     <div className="text-right text-xs text-white/50">
