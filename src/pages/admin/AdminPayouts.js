@@ -98,15 +98,27 @@ function normalizeListShape(payload) {
 }
 
 function safeDate(row) {
-  const v = row?.createdAt || row?.updatedAt || row?.date || null;
-  if (!v) return null;
-  if (typeof v?.toDate === "function") return v.toDate();
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d;
+  const candidates = [
+    row?.createdAt,
+    row?.updatedAt,
+    row?.reviewedAt,
+    row?.paidAt,
+    row?.failedAt,
+    row?.cancelledAt,
+    row?.date,
+  ];
+
+  for (const v of candidates) {
+    if (!v) continue;
+    if (typeof v?.toDate === "function") return v.toDate();
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
 }
 
 function normalizeStatus(v) {
-  return String(v || "pending").toLowerCase();
+  return String(v || "pending").toLowerCase().trim();
 }
 
 function extractError(e, fallback) {
@@ -127,6 +139,27 @@ function getGatewayTone(v) {
   return "#fcd34d";
 }
 
+function toInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+function looksLegacySynthetic(row) {
+  const note = String(row?.note || "").toLowerCase();
+  const uid = String(row?.uid || "").trim();
+  const amount = toInt(row?.amount || 0);
+  const bankName = String(row?.bankName || "").trim();
+  const bankCode = String(row?.bankCode || "").trim();
+  const acct = String(row?.accountNumberMasked || "").trim();
+
+  if (note.includes("synthetic payout from refunded booking")) return true;
+  if (!uid) return true;
+  if (amount <= 0) return true;
+  if (!bankName && !bankCode && !acct) return true;
+
+  return false;
+}
+
 /* ------------------------------- component ------------------------------- */
 export default function AdminPayouts() {
   const toast = useToast() || {};
@@ -145,62 +178,18 @@ export default function AdminPayouts() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  const filtered = useMemo(() => {
-    let list = Array.isArray(rows) ? rows.slice() : [];
-    const q = String(queryStr || "").trim().toLowerCase();
-
-    if (q) {
-      list = list.filter((r) => {
-        const uid = String(r.uid || "").toLowerCase();
-        const role = String(r.role || "").toLowerCase();
-        const status = String(r.status || "").toLowerCase();
-        const note = String(r.note || "").toLowerCase();
-        const bankCode = String(r.bankCode || "").toLowerCase();
-        const bankName = String(r.bankName || "").toLowerCase();
-        const acct = String(r.accountNumberMasked || "").toLowerCase();
-        const transferRef = String(r.transferRef || "").toLowerCase();
-        const transferCode = String(r.transferCode || "").toLowerCase();
-        const gatewayStatus = String(r.gatewayStatus || "").toLowerCase();
-
-        return (
-          uid.includes(q) ||
-          role.includes(q) ||
-          status.includes(q) ||
-          note.includes(q) ||
-          bankCode.includes(q) ||
-          bankName.includes(q) ||
-          acct.includes(q) ||
-          transferRef.includes(q) ||
-          transferCode.includes(q) ||
-          gatewayStatus.includes(q)
-        );
-      });
-    }
-
-    list.sort((a, b) => {
-      const ta = safeDate(a) ? safeDate(a).getTime() : 0;
-      const tb = safeDate(b) ? safeDate(b).getTime() : 0;
-      return tb - ta;
-    });
-
-    return list;
-  }, [rows, queryStr]);
-
-  const total = filtered.length;
-  const lastPage = Math.max(1, Math.ceil(total / perPage));
-
-  const pageItems = useMemo(() => {
-    const start = (page - 1) * perPage;
-    return filtered.slice(start, start + perPage);
-  }, [filtered, page, perPage]);
-
   const load = async () => {
     setLoading(true);
     try {
+      // Always fetch ALL, then filter client-side.
       const { data } = await api.get("/admin/payouts", {
-        params: { status: tab, q: "" },
+        params: { status: "all" },
       });
-      setRows(normalizeListShape(data));
+
+      const raw = normalizeListShape(data);
+      const cleaned = raw.filter((r) => !looksLegacySynthetic(r));
+
+      setRows(cleaned);
       setPage(1);
     } catch (e) {
       console.error("Failed to load payout_requests", e);
@@ -219,9 +208,67 @@ export default function AdminPayouts() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, []);
 
   useEffect(() => setPage(1), [perPage, tab, queryStr]);
+
+  const filtered = useMemo(() => {
+    let list = Array.isArray(rows) ? rows.slice() : [];
+    const q = String(queryStr || "").trim().toLowerCase();
+
+    // Client-side tab filtering
+    if (tab !== "all") {
+      list = list.filter((r) => normalizeStatus(r.status) === tab);
+    }
+
+    if (q) {
+      list = list.filter((r) => {
+        const id = String(r.id || "").toLowerCase();
+        const uid = String(r.uid || "").toLowerCase();
+        const role = String(r.role || "").toLowerCase();
+        const status = String(r.status || "").toLowerCase();
+        const note = String(r.note || "").toLowerCase();
+        const bankCode = String(r.bankCode || "").toLowerCase();
+        const bankName = String(r.bankName || "").toLowerCase();
+        const acct = String(r.accountNumberMasked || "").toLowerCase();
+        const transferRef = String(r.transferRef || "").toLowerCase();
+        const transferCode = String(r.transferCode || "").toLowerCase();
+        const gatewayStatus = String(r.gatewayStatus || "").toLowerCase();
+        const amount = String(r.amount || "").toLowerCase();
+
+        return (
+          id.includes(q) ||
+          uid.includes(q) ||
+          role.includes(q) ||
+          status.includes(q) ||
+          note.includes(q) ||
+          bankCode.includes(q) ||
+          bankName.includes(q) ||
+          acct.includes(q) ||
+          transferRef.includes(q) ||
+          transferCode.includes(q) ||
+          gatewayStatus.includes(q) ||
+          amount.includes(q)
+        );
+      });
+    }
+
+    list.sort((a, b) => {
+      const ta = safeDate(a) ? safeDate(a).getTime() : 0;
+      const tb = safeDate(b) ? safeDate(b).getTime() : 0;
+      return tb - ta;
+    });
+
+    return list;
+  }, [rows, queryStr, tab]);
+
+  const total = filtered.length;
+  const lastPage = Math.max(1, Math.ceil(total / perPage));
+
+  const pageItems = useMemo(() => {
+    const start = (page - 1) * perPage;
+    return filtered.slice(start, start + perPage);
+  }, [filtered, page, perPage]);
 
   const updateStatus = async (row, nextStatus) => {
     const id = row?.id;
@@ -340,7 +387,6 @@ export default function AdminPayouts() {
         }
       />
 
-      {/* Controls */}
       <div
         style={{
           display: "grid",
@@ -383,7 +429,7 @@ export default function AdminPayouts() {
         <input
           value={queryStr}
           onChange={(e) => setQueryStr(e.target.value)}
-          placeholder="Search uid/role/status/bank/last4/transfer ref/note…"
+          placeholder="Search id/uid/role/status/bank/last4/transfer ref/note…"
           style={{
             height: 44,
             borderRadius: 12,
@@ -396,7 +442,6 @@ export default function AdminPayouts() {
         />
       </div>
 
-      {/* Table */}
       <div
         style={{
           borderRadius: 16,
@@ -435,6 +480,7 @@ export default function AdminPayouts() {
               >
                 {[
                   "Date",
+                  "Request ID",
                   "UID",
                   "Role",
                   "Amount",
@@ -455,7 +501,7 @@ export default function AdminPayouts() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={10} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
                     Loading…
                   </td>
                 </tr>
@@ -463,7 +509,7 @@ export default function AdminPayouts() {
 
               {!loading && pageItems.length === 0 && (
                 <tr>
-                  <td colSpan={10} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
                     No results.
                   </td>
                 </tr>
@@ -491,6 +537,10 @@ export default function AdminPayouts() {
                     <tr key={id}>
                       <td style={{ padding: "12px 16px", whiteSpace: "nowrap" }}>
                         {date ? dayjs(date).format("YYYY-MM-DD, HH:mm") : "-"}
+                      </td>
+
+                      <td style={{ padding: "12px 16px", fontSize: 12, opacity: 0.9 }}>
+                        {id || "-"}
                       </td>
 
                       <td style={{ padding: "12px 16px" }}>{p.uid || "-"}</td>
@@ -618,7 +668,6 @@ export default function AdminPayouts() {
           </table>
         </div>
 
-        {/* Footer */}
         <div
           style={{
             display: "flex",

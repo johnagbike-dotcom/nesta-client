@@ -106,7 +106,7 @@ function statusTone(status) {
   if (s === "processing") return "border-sky-400/50 bg-sky-500/10 text-sky-200";
   if (s === "failed") return "border-rose-400/50 bg-rose-500/10 text-rose-200";
   if (s === "cancelled") return "border-white/20 bg-white/5 text-white/70";
-  return "border-white/15 bg-white/5 text-white/75"; // pending/default
+  return "border-white/15 bg-white/5 text-white/75";
 }
 
 export default function Withdrawals() {
@@ -129,8 +129,6 @@ export default function Withdrawals() {
     available: 0,
     pending: 0,
     currency: "NGN",
-
-    // policy flags from server
     canWithdraw: false,
     reason: "",
     role: "",
@@ -145,17 +143,15 @@ export default function Withdrawals() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  // history
   const [reqLoading, setReqLoading] = useState(false);
   const [requests, setRequests] = useState([]);
 
-  // pulse on wallet changes
   const prevRef = useRef({ available: 0, pending: 0 });
   const [pulse, setPulse] = useState({ available: "", pending: "" });
 
   const amountN = useMemo(() => {
-    const v = Math.round(Number(String(amount || "").replace(/[^\d.]/g, "")));
-    return Number.isFinite(v) ? v : 0;
+    const clean = String(amount || "").replace(/[^\d]/g, "");
+    return toInt(clean);
   }, [amount]);
 
   const minWithdrawal = Number(wallet.minWithdrawal || MIN_WITHDRAWAL_N_FALLBACK);
@@ -164,11 +160,8 @@ export default function Withdrawals() {
   const needsKyc = !isKycApprovedStatus(wallet.kycStatus);
   const needsPayoutSetup = wallet.payoutSetupComplete !== true;
   const needsPayoutVerify = wallet.payoutSetupComplete === true && !payoutVerified;
-
-  // Server policy is source of truth
   const withdrawalsLockedByPolicy = wallet.canWithdraw === false;
 
-  // Allow typing even if invalid; only block submission
   const canSubmit =
     !!user?.uid &&
     !loading &&
@@ -177,48 +170,62 @@ export default function Withdrawals() {
     amountN >= minWithdrawal &&
     amountN <= Number(wallet.available || 0);
 
+  const applyWalletState = useCallback((next) => {
+    const prev = prevRef.current || { available: 0, pending: 0 };
+
+    const nextAvail = Number(next.available || 0);
+    const nextPend = Number(next.pending || 0);
+
+    if (nextAvail !== Number(prev.available || 0)) {
+      setPulse((p) => ({
+        ...p,
+        available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft",
+      }));
+      setTimeout(() => setPulse((p) => ({ ...p, available: "" })), 520);
+    }
+
+    if (nextPend !== Number(prev.pending || 0)) {
+      setPulse((p) => ({ ...p, pending: "pulseAmber" }));
+      setTimeout(() => setPulse((p) => ({ ...p, pending: "" })), 520);
+    }
+
+    prevRef.current = { available: nextAvail, pending: nextPend };
+
+    setWallet((w) => ({
+      ...w,
+      available: nextAvail,
+      pending: nextPend,
+    }));
+  }, []);
+
   const fetchWallet = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get("/payouts/me/wallet");
+      const { data } = await api.get("/payouts/me/wallet", {
+        params: { _t: Date.now() },
+      });
 
       if (data?.ok) {
         const next = {
           available: Number(data.wallet?.available || 0),
           pending: Number(data.wallet?.pending || 0),
           currency: data.wallet?.currency || "NGN",
-
           canWithdraw: data.canWithdraw !== false,
           reason: data.reason || "",
           role: data.role || "",
           kycStatus: data.kycStatus || "",
-
           payoutSetupComplete: data.payoutSetupComplete === true,
           payoutStatus: data.payoutStatus || "",
           payoutPreview: data.payoutPreview || null,
-
           minWithdrawal: Number(data.minWithdrawal || MIN_WITHDRAWAL_N_FALLBACK),
         };
 
-        const prev = prevRef.current || { available: 0, pending: 0 };
-        const nextAvail = Number(next.available || 0);
-        const nextPend = Number(next.pending || 0);
+        applyWalletState(next);
 
-        if (nextAvail !== Number(prev.available || 0)) {
-          setPulse((p) => ({
-            ...p,
-            available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft",
-          }));
-          setTimeout(() => setPulse((p) => ({ ...p, available: "" })), 520);
-        }
-
-        if (nextPend !== Number(prev.pending || 0)) {
-          setPulse((p) => ({ ...p, pending: "pulseAmber" }));
-          setTimeout(() => setPulse((p) => ({ ...p, pending: "" })), 520);
-        }
-
-        prevRef.current = { available: nextAvail, pending: nextPend };
-        setWallet(next);
+        setWallet((w) => ({
+          ...w,
+          ...next,
+        }));
       } else {
         notify(data?.error || "Failed to load wallet.", "error");
       }
@@ -228,15 +235,20 @@ export default function Withdrawals() {
     } finally {
       setLoading(false);
     }
-  }, [notify]);
+  }, [applyWalletState, notify]);
 
   const fetchRequests = useCallback(async () => {
     if (!user?.uid) return;
     setReqLoading(true);
     try {
-      const { data } = await api.get("/payouts/me/requests", { params: { limit: 20 } });
-      if (data?.ok) setRequests(Array.isArray(data.rows) ? data.rows : []);
-      else setRequests([]);
+      const { data } = await api.get("/payouts/me/requests", {
+        params: { limit: 20, _t: Date.now() },
+      });
+      if (data?.ok) {
+        setRequests(Array.isArray(data.rows) ? data.rows : []);
+      } else {
+        setRequests([]);
+      }
     } catch (e) {
       console.error("Failed to fetch payout requests", e);
       setRequests([]);
@@ -260,8 +272,7 @@ export default function Withdrawals() {
       setRequests([]);
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.uid]);
+  }, [user?.uid, fetchWallet, fetchRequests]);
 
   const primaryCta = useMemo(() => {
     if (submitting) return { label: "Submitting…", action: null, disabled: true };
@@ -325,70 +336,77 @@ export default function Withdrawals() {
   ]);
 
   const handleWithdraw = async () => {
-    if (!user?.uid) return notify("Please log in to request a withdrawal.", "info");
+    if (!user?.uid) {
+      notify("Please log in to request a withdrawal.", "info");
+      return;
+    }
 
     if (withdrawalsLockedByPolicy) {
-      return notify(wallet?.reason || "Withdrawals are currently locked.", "warning");
+      notify(wallet?.reason || "Withdrawals are currently locked.", "warning");
+      return;
     }
 
     if (amountN < minWithdrawal) {
-      return notify(`Minimum withdrawal is ${money(minWithdrawal)}.`, "warning");
+      notify(`Minimum withdrawal is ${money(minWithdrawal)}.`, "warning");
+      return;
     }
 
     if (amountN > Number(wallet.available || 0)) {
-      return notify(
+      notify(
         "Insufficient withdrawable balance. Only Available funds can be withdrawn.",
         "error"
       );
+      return;
     }
 
     setSubmitting(true);
+
     try {
-      const { data } = await api.post("/payouts/request", { amount: amountN });
+      const payload = { amount: toInt(amountN) };
 
-      if (data?.ok) {
-        notify("Withdrawal request submitted.", "success");
+      const { data } = await api.post("/payouts/request", payload);
 
-        if (data.wallet) {
-          const nextAvail = Number(data.wallet.available || 0);
-          const nextPend = Number(data.wallet.pending || 0);
-
-          const prev = prevRef.current || { available: 0, pending: 0 };
-
-          if (nextAvail !== Number(prev.available || 0)) {
-            setPulse((p) => ({
-              ...p,
-              available: nextAvail > Number(prev.available || 0) ? "pulseGold" : "pulseSoft",
-            }));
-            setTimeout(() => setPulse((p) => ({ ...p, available: "" })), 520);
-          }
-
-          if (nextPend !== Number(prev.pending || 0)) {
-            setPulse((p) => ({ ...p, pending: "pulseAmber" }));
-            setTimeout(() => setPulse((p) => ({ ...p, pending: "" })), 520);
-          }
-
-          prevRef.current = { available: nextAvail, pending: nextPend };
-
-          setWallet((w) => ({
-            ...w,
-            available: nextAvail,
-            pending: nextPend,
-          }));
-        } else {
-          await fetchWallet();
-        }
-
-        await fetchRequests();
-        setAmount("");
-      } else {
+      if (!data?.ok) {
         notify(data?.error || "Error submitting withdrawal request.", "error");
+        return;
       }
+
+      notify("Withdrawal request submitted.", "success");
+
+      if (data.wallet) {
+        applyWalletState({
+          available: Number(data.wallet.available || 0),
+          pending: Number(data.wallet.pending || 0),
+        });
+      } else {
+        await fetchWallet();
+      }
+
+      if (data.requestId) {
+        setRequests((prev) => [
+          {
+            id: data.requestId,
+            amount: payload.amount,
+            status: "pending",
+            createdAt: new Date().toISOString(),
+            note: "",
+            bankName: wallet?.payoutPreview?.bankName || "",
+            accountNumberMasked: wallet?.payoutPreview?.accountNumberMasked || "",
+          },
+          ...prev.filter((x) => String(x.id) !== String(data.requestId)),
+        ]);
+      }
+
+      setAmount("");
+
+      await Promise.all([fetchWallet(), fetchRequests()]);
     } catch (err) {
       console.error("Error processing payout request:", err);
 
       const code = err?.response?.data?.code || "";
-      const serverMsg = err?.response?.data?.error || extractError(err, "Error processing withdrawal request.");
+      const serverMsg =
+        err?.response?.data?.error ||
+        extractError(err, "Error processing withdrawal request.");
 
       if (code === "insufficient_available") {
         notify(
@@ -547,8 +565,11 @@ export default function Withdrawals() {
               <div className="flex gap-2">
                 <input
                   type="number"
+                  inputMode="numeric"
+                  min={minWithdrawal}
+                  step="1"
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onChange={(e) => setAmount(String(e.target.value || "").replace(/[^\d]/g, ""))}
                   disabled={amountInputDisabled}
                   className={`w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ${
                     amountInputDisabled ? "opacity-60 cursor-not-allowed" : ""
