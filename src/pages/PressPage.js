@@ -17,7 +17,7 @@ export default function PressPage() {
             For Journalists, Media, and Partners
           </h1>
           <p className="mt-4 text-sm md:text-base text-white/70 leading-relaxed max-w-2xl">
-            Nesta is redefining luxury accommodation and hospitality technology 
+            NestaNg is redefining luxury accommodation and hospitality technology 
             across Nigeria. On this page, you’ll find verified company facts, 
             official statements, media assets, and the right channels to reach 
             our communications team.
@@ -30,15 +30,15 @@ export default function PressPage() {
             Company Overview
           </h2>
           <p>
-            Nesta is a premium digital accommodation platform offering curated 
+            NestaNg is a premium digital accommodation platform offering curated 
             apartments, serviced homes, and luxury stays across Nigeria. 
             Designed with a focus on trust, elegance, and seamless technology, 
-            Nesta bridges hospitality and innovation — providing guests, hosts, 
+            NestaNg bridges hospitality and innovation — providing guests, hosts, 
             and partners with a refined and secure experience.
           </p>
           <p>
             Founded with a vision to elevate Africa’s short-stay ecosystem, 
-            Nesta prioritizes quality listings, verified properties, and 
+            NestaNg prioritizes quality listings, verified properties, and 
             exceptional guest service supported by modern tools such as 
             secure payments, host-partner dashboards, and in-app communication.
           </p>
@@ -56,10 +56,10 @@ export default function PressPage() {
             <p>
               <span className="text-white">Email:</span>{" "}
               <a
-                href="mailto:press@nestanaija.com"
+                href="mailto:hello@nestanaija.com"
                 className="underline decoration-amber-400"
               >
-                press@nestanaija.com
+                hello@nestanaija.com
               </a>
             </p>
             <p className="mt-2">
@@ -100,7 +100,7 @@ export default function PressPage() {
           </h2>
 
           <p>
-            Nesta releases formal updates on partnerships, expansions, 
+            NestaNg releases formal updates on partnerships, expansions, 
             policy changes, and major launches. All official statements 
             and press notes will be published on this page or distributed 
             directly to verified media channels.
@@ -126,20 +126,20 @@ export default function PressPage() {
 
           <a
             className="inline-block underline decoration-amber-400 text-white/70"
-            href="mailto:brand@nestanaija.com"
+            href="mailto:hello@nestanaija.com"
           >
-            brand@nestanaija.com
+            hello@nestanaija.com
           </a>
 
           <p className="mt-3 text-xs text-white/60">
-            Usage of Nesta trademarks must comply with our brand guidelines 
+            Usage of  NestaNg trademarks must comply with our brand guidelines 
             and must not imply endorsement without explicit approval.
           </p>
         </section>
 
         {/* FOOTER */}
         <section className="pt-8 border-t border-white/10 text-xs text-white/45">
-          <p>© {year} Nesta Connect Limited — All rights reserved.</p>
+          <p>© {year} NestaNg Connect Limited — All rights reserved.</p>
         </section>
       </div>
     </main>

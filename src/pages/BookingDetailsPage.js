@@ -5,7 +5,7 @@ import { getAuth } from "firebase/auth";
 
 const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000/api").replace(/\/$/, "");
 
-/* ---------- helpers ---------- */
+/* ── helpers ──────────────────────────────────────────────────────────────── */
 function ngn(n) {
   return `₦${Number(n || 0).toLocaleString()}`;
 }
@@ -70,27 +70,53 @@ function lower(v) {
   return String(v || "").toLowerCase().trim();
 }
 
-/**
- * ✅ Only treat as confirmed if payment is actually paid (server truth).
- * This prevents “payment error but booking looks confirmed” on the UI.
- */
 function isPaymentActuallyPaid(booking) {
   if (!booking) return false;
   const pay = lower(booking.paymentStatus);
   const st = lower(booking.status);
   const paidFlag = booking.paid === true;
-
-  // Pay status wins
   if (pay === "paid") return true;
-
-  // Some legacy data may only set status
-  // Keep conservative: only accept "confirmed/paid" if paidFlag is true too
   if ((st === "confirmed" || st === "paid") && paidFlag) return true;
-
   return false;
 }
 
-/* ---------- component ---------- */
+/* ── Inline modal ─────────────────────────────────────────────────────────── */
+function Modal({ open, title, body, confirmLabel = "Confirm", confirmTone = "amber", onConfirm, onCancel, children }) {
+  if (!open) return null;
+  const btnClass =
+    confirmTone === "red"
+      ? "bg-red-600 hover:bg-red-500 text-white border-red-500"
+      : confirmTone === "emerald"
+      ? "bg-emerald-600 hover:bg-emerald-500 text-black border-emerald-500"
+      : "bg-amber-500 hover:bg-amber-400 text-black border-amber-400";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0b0f17] shadow-[0_30px_80px_rgba(0,0,0,0.7)] p-6">
+        <h3 className="text-base font-semibold text-white mb-2">{title}</h3>
+        {body && <p className="text-sm text-white/65 mb-4 leading-relaxed">{body}</p>}
+        {children}
+        <div className="flex justify-end gap-3 mt-4">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded-xl text-sm bg-white/5 border border-white/15 hover:bg-white/10 text-white"
+          >
+            Go back
+          </button>
+          {onConfirm && (
+            <button
+              onClick={onConfirm}
+              className={`px-4 py-2 rounded-xl text-sm font-semibold border ${btnClass}`}
+            >
+              {confirmLabel}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+/* ─────────────────────────────────────────────────────────────────────────── */
+
 export default function BookingDetailsPage() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -99,6 +125,11 @@ export default function BookingDetailsPage() {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+
+  // ── Modal state ──────────────────────────────────────────────────────────
+  const [modal, setModal] = useState(null); // "cancel" | "cancel_error" | "rebook_missing" | "chat_missing"
+  const closeModal = () => setModal(null);
+  // ─────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     let alive = true;
@@ -117,10 +148,7 @@ export default function BookingDetailsPage() {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
-
-        // Your API returns { ok:true, booking: {...} } (based on bookings.js)
         const booking = json?.booking || json?.data || json || null;
-
         if (alive) setData(booking);
       } catch (e) {
         if (alive) setErr("Could not load this booking. Please go back and try again.");
@@ -128,14 +156,11 @@ export default function BookingDetailsPage() {
         if (alive) setLoading(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [id]);
 
   const status = useMemo(() => lower(data?.status), [data]);
   const paymentStatus = useMemo(() => lower(data?.paymentStatus), [data]);
-
   const paidOrConfirmed = useMemo(() => isPaymentActuallyPaid(data), [data]);
 
   const hasCancelReq =
@@ -145,7 +170,6 @@ export default function BookingDetailsPage() {
       status === "refund_requested") &&
     !["cancelled", "refunded"].includes(status);
 
-  // ✅ Only allow cancel/chat/checkin if payment is truly paid/confirmed
   const canCancel =
     !!data &&
     paidOrConfirmed &&
@@ -156,21 +180,13 @@ export default function BookingDetailsPage() {
   const canChat = !!data && paidOrConfirmed;
   const canCheckInGuide = !!data && paidOrConfirmed && !isPast(data.checkOut);
 
-  async function handleCancel() {
-    if (!data) return;
-
-    if (!canCancel) {
-      alert("This booking can’t be cancelled.");
-      return;
-    }
-    if (!window.confirm("Request cancellation for this booking?")) return;
-
+  // ── Cancel flow ──────────────────────────────────────────────────────────
+  async function execCancel() {
+    closeModal();
+    if (!data || !canCancel) return;
     setCancelling(true);
-
-    // optimistic UI
     const prev = data;
     setData((d) => ({ ...d, status: "cancel_request", cancellationRequested: true, cancelRequested: true }));
-
     try {
       const token = await getBearerToken();
       const res = await fetch(`${API_BASE}/bookings/${id}/cancel`, {
@@ -182,24 +198,42 @@ export default function BookingDetailsPage() {
         credentials: "include",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      alert("Cancellation request sent to host/partner.");
-    } catch (e) {
-      alert("Could not send request. Restoring previous state.");
-      setData(prev);
+    } catch {
+      setData(prev); // restore on failure
+      setModal("cancel_error");
     } finally {
       setCancelling(false);
     }
   }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function openChat() {
+    if (!data) return;
+    if (!canChat) return;
+    const bookingId = data.id || id;
+    const listingId = data.listingId || data.listing?.id || null;
+    const title = data.listingTitle || data.listing?.title || "Listing";
+    const ownership = lower(data.ownershipType);
+    const counterpartUid =
+      ownership === "host"
+        ? data.ownerId || data.hostId || null
+        : data.partnerUid || data.ownerId || data.hostId || null;
+    if (!listingId || !counterpartUid) {
+      setModal("chat_missing");
+      return;
+    }
+    nav(`/booking/${bookingId}/chat`, {
+      state: { partnerUid: counterpartUid, listing: { id: listingId, title }, bookingId, from: "bookingDetail" },
+    });
+  }
 
   function rebook() {
     if (!data) return;
-
     const listingId = data.listingId || data.listing?.id;
     if (!listingId) {
-      alert("Listing ID missing for this booking.");
+      setModal("rebook_missing");
       return;
     }
-
     nav(`/reserve/${listingId}`, {
       state: {
         id: listingId,
@@ -212,75 +246,65 @@ export default function BookingDetailsPage() {
     });
   }
 
-  function openChat() {
-    if (!data) return;
-
-    if (!canChat) {
-      alert("Chat is available after payment is verified and the booking is confirmed.");
-      return;
-    }
-
-    const bookingId = data.id || id;
-    const listingId = data.listingId || data.listing?.id || null;
-    const title = data.listingTitle || data.listing?.title || "Listing";
-
-    const ownership = lower(data.ownershipType);
-    const counterpartUid =
-      ownership === "host"
-        ? data.ownerId || data.hostId || null
-        : data.partnerUid || data.ownerId || data.hostId || null;
-
-    if (!listingId || !counterpartUid) {
-      alert("This booking is missing host/partner info.");
-      return;
-    }
-
-    nav(`/booking/${bookingId}/chat`, {
-  state: {
-    partnerUid: counterpartUid,
-    listing: { id: listingId, title },
-    bookingId,
-    from: "bookingDetail",
-  },
-});
-  }
-
   const statusTone = (() => {
-    // ✅ Prefer paymentStatus for tone
     if (paymentStatus === "paid" || paidOrConfirmed)
       return "border-emerald-400 text-emerald-300 bg-emerald-400/10";
-
     if (status === "cancelled") return "border-red-400 text-red-300 bg-red-400/10";
     if (status === "refunded") return "border-amber-400 text-amber-200 bg-amber-500/10";
     if (status === "cancel_request" || status === "refund_requested")
       return "border-amber-400 text-amber-200 bg-amber-500/10";
-
     if (status === "payment-review" || paymentStatus === "payment-review")
       return "border-amber-400 text-amber-200 bg-amber-500/10";
-
     return "border-slate-400 text-slate-200 bg-slate-500/10";
   })();
 
   const statusLabel = (() => {
-    // ✅ More accurate labels across your lifecycle
     if (status === "cancelled") return "cancelled";
     if (status === "refunded") return "refunded";
     if (status === "cancel_request" || status === "refund_requested") return "cancel requested";
-
     if (paymentStatus === "paid" && (status === "paid-pending-confirmation" || status === "pending_payment"))
       return "payment received";
-
     if (paidOrConfirmed) return "confirmed";
-
     if (status === "pending_payment") return "pending payment";
     if (status === "payment-review" || paymentStatus === "payment-review") return "payment review";
-
     if (status === "pending") return "pending";
     return status || "pending";
   })();
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#05070d] via-[#050a12] to-[#05070d] text-white px-4 py-10">
+
+      {/* ── Modals ─────────────────────────────────────────────────────────── */}
+      <Modal
+        open={modal === "cancel"}
+        title="Request cancellation?"
+        body="Your cancellation request will be sent to the host or partner for review. You'll be notified once it's processed."
+        confirmLabel="Send request"
+        confirmTone="amber"
+        onConfirm={execCancel}
+        onCancel={closeModal}
+      />
+      <Modal
+        open={modal === "cancel_error"}
+        title="Request failed"
+        body="We couldn't send your cancellation request. Please try again or contact support if the issue persists."
+        confirmTone="amber"
+        onCancel={closeModal}
+      />
+      <Modal
+        open={modal === "rebook_missing"}
+        title="Listing unavailable"
+        body="This booking doesn't have a linked listing ID and can't be rebooked from here. Try searching from the explore page."
+        onCancel={closeModal}
+      />
+      <Modal
+        open={modal === "chat_missing"}
+        title="Chat unavailable"
+        body="This booking is missing host or partner information required to open a chat. Please contact support."
+        onCancel={closeModal}
+      />
+      {/* ─────────────────────────────────────────────────────────────────── */}
+
       <div className="max-w-3xl mx-auto">
         <button
           onClick={() => nav(-1)}
@@ -291,7 +315,7 @@ export default function BookingDetailsPage() {
         </button>
 
         {loading && (
-          <div className="rounded-3xl border border-white/10 bg-gray-900/70 p-6">
+          <div className="rounded-3xl border border-white/10 bg-gray-900/70 p-6 text-white/60">
             Loading booking…
           </div>
         )}
@@ -315,19 +339,16 @@ export default function BookingDetailsPage() {
                 <h1
                   className="text-2xl md:text-3xl font-semibold tracking-tight"
                   style={{
-                    fontFamily:
-                      'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
+                    fontFamily: 'Playfair Display, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", serif',
                   }}
                 >
                   {data.listingTitle || "Listing"}
                 </h1>
                 <p className="text-sm text-gray-300 mt-1">{data.listingLocation || ""}</p>
                 <p className="mt-2 text-xs text-gray-400">Created: {fmt(data.createdAt)}</p>
-
                 <p className="mt-1 text-[11px] text-gray-500 font-mono">
                   Ref: {data.reference || data.id || id}
                 </p>
-
                 <p className="mt-1 text-[11px] text-gray-500">
                   Payment:{" "}
                   <span className="font-mono">
@@ -342,25 +363,25 @@ export default function BookingDetailsPage() {
             </header>
 
             <section className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="rounded-2xl bg-black/40 border border-white/12 p-4">
+              <div className="rounded-2xl bg-black/40 border border-white/10 p-4">
                 <div className="text-xs text-gray-400 uppercase tracking-wide">Check-in</div>
                 <div className="mt-1 font-semibold">{justDate(data.checkIn)}</div>
               </div>
-              <div className="rounded-2xl bg-black/40 border border-white/12 p-4">
+              <div className="rounded-2xl bg-black/40 border border-white/10 p-4">
                 <div className="text-xs text-gray-400 uppercase tracking-wide">Check-out</div>
                 <div className="mt-1 font-semibold">{justDate(data.checkOut)}</div>
               </div>
-              <div className="rounded-2xl bg-black/40 border border-white/12 p-4">
+              <div className="rounded-2xl bg-black/40 border border-white/10 p-4">
                 <div className="text-xs text-gray-400 uppercase tracking-wide">Guests</div>
                 <div className="mt-1 font-semibold">{data.guests || 1}</div>
               </div>
-              <div className="rounded-2xl bg-black/40 border border-white/12 p-4">
+              <div className="rounded-2xl bg-black/40 border border-white/10 p-4">
                 <div className="text-xs text-gray-400 uppercase tracking-wide">Nights</div>
                 <div className="mt-1 font-semibold">{data.nights ?? "-"}</div>
               </div>
             </section>
 
-            <section className="mt-6 rounded-2xl bg-black/45 border border-white/12 p-4">
+            <section className="mt-6 rounded-2xl bg-black/45 border border-white/10 p-4">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-gray-300">Subtotal</span>
                 <span className="font-medium">{ngn(data.subtotal ?? data.amountN ?? 0)}</span>
@@ -377,7 +398,7 @@ export default function BookingDetailsPage() {
 
             {!paidOrConfirmed && (
               <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3 text-[12px] text-gray-300">
-                Payment has not been verified yet. Your booking will only be confirmed after Flutterwave confirms the charge.
+                Payment has not been verified yet. Your booking will only be confirmed after payment is confirmed by the server.
               </div>
             )}
 
@@ -404,7 +425,7 @@ export default function BookingDetailsPage() {
               {canCheckInGuide && (
                 <button
                   onClick={() => nav(`/checkin/${data.id || id}`, { state: { booking: data } })}
-                  className="px-4 py-2 rounded-full bg-white/5 border border-white/12 text-xs md:text-sm hover:bg-white/10"
+                  className="px-4 py-2 rounded-full bg-white/5 border border-white/10 text-xs md:text-sm hover:bg-white/10"
                 >
                   Check-in guide
                 </button>
@@ -412,7 +433,7 @@ export default function BookingDetailsPage() {
 
               {canCancel && (
                 <button
-                  onClick={handleCancel}
+                  onClick={() => setModal("cancel")}
                   disabled={cancelling}
                   className={`px-4 py-2 rounded-full border text-xs md:text-sm ${
                     cancelling

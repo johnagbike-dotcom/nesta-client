@@ -79,7 +79,7 @@ export default function Footer() {
               <ul className="space-y-2.5">
                 <li>
                   <Link to="/about" className={linkClass}>
-                    About Nesta
+                    About NestaNg
                   </Link>
                 </li>
                 <li>
@@ -117,6 +117,11 @@ export default function Footer() {
                 <li>
                   <Link to="/cancellation-policy" className={linkClass}>
                     Cancellations &amp; refunds
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/cookie-policy" className={linkClass}>
+                    Cookie policy
                   </Link>
                 </li>
                 <li>

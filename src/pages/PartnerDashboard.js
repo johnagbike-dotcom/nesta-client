@@ -350,11 +350,41 @@ export default function PartnerDashboard() {
     );
 
     const confirmed30 = confirmed.filter((b) => inLastDays(b.createdAt, 30));
+
+    // Gross = what guests actually paid
     const revenue30 = confirmed30.reduce((sum, b) => sum + (b.amount || 0), 0);
 
     const attentionCount = myBookings.filter((b) => isAttentionStatus(b.status, b)).length;
 
-    const partnerEarnings30 = (revenue30 * partnerCommissionPct) / 100;
+    // Partner net payout: use server-computed netPayoutN where present on each booking
+    // (already has Nesta platform fee deducted). Fall back to partnerCommissionPct estimate
+    // only when the exact figure is absent.
+    const partnerNet30 = confirmed30.reduce((sum, b) => {
+      const snap = b.pricingSnapshot || {};
+      const exact =
+        snap.netPayoutN ??
+        snap.partnerPayoutN ??
+        b.netPayoutN ??
+        b.partnerPayoutN ??
+        null;
+      if (exact != null) return sum + Number(exact);
+      // Fallback: estimate using partnerCommissionPct
+      return sum + (Number(b.amount || 0) * partnerCommissionPct) / 100;
+    }, 0);
+
+    // Whether any booking in the window had an exact payout snapshot
+    const hasExactPayout = confirmed30.some((b) => {
+      const snap = b.pricingSnapshot || {};
+      return (
+        snap.netPayoutN != null ||
+        snap.partnerPayoutN != null ||
+        b.netPayoutN != null ||
+        b.partnerPayoutN != null
+      );
+    });
+
+    // Nesta platform fee = gross minus what goes to partner
+    const nestaFee30 = revenue30 - partnerNet30;
 
     const recentBookings = myBookings.slice(0, 6);
 
@@ -363,7 +393,9 @@ export default function PartnerDashboard() {
       confirmedCount: confirmed.length,
       revenue30,
       attentionCount,
-      partnerEarnings30,
+      partnerNet30,
+      nestaFee30,
+      hasExactPayout,
       recentBookings,
       totalBookings: myBookings.length,
     };
@@ -516,11 +548,21 @@ export default function PartnerDashboard() {
 
           {insightsOpen ? (
             <div className="px-5 pb-5">
-              <div className="grid gap-3 md:grid-cols-3">
-                <MiniKpi label="Revenue (30 days)" value={formatNgn(stats.revenue30)} />
-                <MiniKpi label={`Est. earnings (30d) • ${partnerCommissionPct}%`} value={formatNgn(stats.partnerEarnings30)} tone="emerald" />
+              <div className="grid gap-3 md:grid-cols-4">
+                <MiniKpi label="Gross revenue (30d)" value={formatNgn(stats.revenue30)} />
+                <MiniKpi
+                  label={stats.hasExactPayout ? "Your net payout (30d)" : `Your est. payout (30d) · ${partnerCommissionPct}%`}
+                  value={formatNgn(stats.partnerNet30)}
+                  tone="emerald"
+                />
+                <MiniKpi label="Nesta platform fee (30d)" value={formatNgn(stats.nestaFee30)} />
                 <MiniKpi label="Attention queue" value={stats.attentionCount.toLocaleString("en-NG")} tone="amber" />
               </div>
+              {!stats.hasExactPayout && stats.revenue30 > 0 && (
+                <p className="mt-2 text-[11px] text-white/35 leading-relaxed">
+                  * Payout estimate based on your {partnerCommissionPct}% commission rate. Exact figures appear once bookings carry a confirmed payout snapshot.
+                </p>
+              )}
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <SoftButton onClick={goReservationsAll}>Open reservations →</SoftButton>

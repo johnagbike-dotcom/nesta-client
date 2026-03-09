@@ -222,6 +222,7 @@ export default function ReservePage() {
 
   // payment provider
   const [payProvider, setPayProvider] = useState("flutterwave");
+  const [termsAgreed, setTermsAgreed] = useState(false);
 
   const todayMin = useMemo(() => toYmdLocal(new Date()), []);
   const checkOutMin = useMemo(() => {
@@ -311,7 +312,7 @@ export default function ReservePage() {
   );
   const canGoToStep3 = Boolean(canGoToStep2);
   const canPay = Boolean(
-    user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail
+    user && listing && datesValid && total > 0 && guests > 0 && availOk && !checkingAvail && termsAgreed
   );
 
   // Navigate to success/verify page (BookingCompletePage)
@@ -1045,6 +1046,23 @@ export default function ReservePage() {
                       Your provisional hold will expire soon.
                     </div>
                   )}
+
+                  {/* Terms acknowledgement — required before payment */}
+                  <label className="flex items-start gap-3 cursor-pointer mt-4 p-3 rounded-2xl border border-white/10 bg-white/3 hover:bg-white/5 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={termsAgreed}
+                      onChange={(e) => setTermsAgreed(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 accent-amber-400 cursor-pointer flex-shrink-0"
+                    />
+                    <span className="text-xs text-white/65 leading-relaxed">
+                      I agree to NestaNg's{" "}
+                      <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline text-amber-300/80 hover:text-amber-300">Terms of Use</a>
+                      {" "}and{" "}
+                      <a href="/cancellation-policy" target="_blank" rel="noopener noreferrer" className="underline text-amber-300/80 hover:text-amber-300">Cancellation Policy</a>
+                      . I understand my booking is subject to the cancellation terms of this listing.
+                    </span>
+                  </label>
 
                   <button
                     type="button"

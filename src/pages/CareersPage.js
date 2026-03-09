@@ -5,7 +5,7 @@ export default function CareersPage() {
   const year = new Date().getFullYear();
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-[#05070a] via-[#05070a] to-black text-white pt-24 pb-16 px-4">
+    <main className="min-h-screen bg-[#05070a] text-white pt-20 pb-16 px-4">
       <div className="mx-auto max-w-5xl">
         {/* Hero */}
         <section className="mb-10">
@@ -17,17 +17,17 @@ export default function CareersPage() {
             <span className="text-amber-300">luxury stays in Nigeria.</span>
           </h1>
           <p className="mt-4 text-sm md:text-base text-white/75 max-w-2xl">
-            Nesta is creating a new standard for premium short-stays across
+            NestaNg is creating a new standard for premium short-stays across
             Nigeria — combining hospitality, technology and design. If you care
             about details, reliability and guest experience, there’s a place for
             you here.
           </p>
         </section>
 
-        {/* Why Nesta */}
+        {/* Why NestaNg */}
         <section className="mb-10">
           <h2 className="text-lg font-semibold mb-3">
-            Why join Nesta’s early team?
+            Why join NestaNg’s early team?
           </h2>
           <div className="grid gap-4 md:grid-cols-3 text-sm text-white/80">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -63,7 +63,7 @@ export default function CareersPage() {
         {/* Our culture / values */}
         <section className="mb-10">
           <h2 className="text-lg font-semibold mb-3">
-            How we work at Nesta
+            How we work at NestaNg
           </h2>
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 md:p-6 text-sm text-white/80 space-y-2">
             <p>
@@ -115,7 +115,7 @@ export default function CareersPage() {
 
           <div className="rounded-2xl border border-amber-300/40 bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-transparent p-5 md:p-6 text-sm text-white/85 space-y-3">
             <p>
-              Nesta is in its early growth phase. We will be opening formal
+              NestaNg is in its early growth phase. We will be opening formal
               roles across:
             </p>
             <ul className="space-y-1.5 list-disc list-inside">
@@ -139,19 +139,19 @@ export default function CareersPage() {
                 </p>
                 <p className="text-sm text-white/80 mt-1">
                   Send a short note with your CV / LinkedIn, what you do best,
-                  and why Nesta interests you.
+                  and why NestaNg interests you.
                 </p>
               </div>
               <a
-                href="mailto:careers@nestaapp.ng?subject=Careers%20expression%20of%20interest"
+                href="mailto:hello@nestaapp.ng?subject=Careers%20expression%20of%20interest"
                 className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-amber-500 text-black text-sm font-semibold hover:bg-amber-400"
               >
-                Email careers@nestanaija.com
+                Email hello@nestanaija.com
               </a>
             </div>
 
             <p className="text-xs text-white/60 mt-1">
-              Please note: by contacting us about roles, you consent to Nesta
+              Please note: by contacting us about roles, you consent to NestaNg
               storing your details for up to 12 months in line with our{" "}
               <Link
                 to="/privacy"
@@ -184,7 +184,7 @@ export default function CareersPage() {
               </div>
               <p>
                 Where relevant, we’ll share a small, real-world task —
-                something close to what you would actually work on at Nesta.
+                something close to what you would actually work on at NestaNg.
               </p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -204,7 +204,7 @@ export default function CareersPage() {
         <section className="mt-6 text-sm text-white/70">
           <p>
             We know that talented people have options. If you choose to build
-            with Nesta — whether full-time, part-time or as a partner — we take
+            with NestaNg — whether full-time, part-time or as a partner — we take
             that trust seriously.
           </p>
           <p className="mt-2">

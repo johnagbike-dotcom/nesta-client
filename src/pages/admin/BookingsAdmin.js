@@ -401,9 +401,12 @@ export default function BookingsAdmin() {
               b.payment?.status ||
               b.transactionStatus ||
               null,
+            archived: !!b.archived,
           };
         })
-        .filter(Boolean);
+        .filter(Boolean)
+        // Never show archived (soft-deleted) bookings in the admin table
+        .filter((b) => !b.archived);
 
       setRows(norm);
       setPage(1);

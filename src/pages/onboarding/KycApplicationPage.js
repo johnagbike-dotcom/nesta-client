@@ -1,6 +1,8 @@
 // src/pages/onboarding/KycApplicationPage.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { db } from "../../firebase";
 import { useAuth } from "../../auth/AuthContext";
 import useUserProfile from "../../hooks/useUserProfile";
 import {
@@ -8,6 +10,155 @@ import {
   loadKycProfile,
   saveKycProfile,
 } from "../../api/kycProfile";
+
+// ─── KYC consent version — bump when data collection scope changes ────────────
+const KYC_CONSENT_VERSION = "v1.0";
+
+// ─── Firestore: record KYC consent acceptance ─────────────────────────────────
+async function recordKycConsent(uid, targetRole, version) {
+  const ref = doc(db, "users", uid, "agreements", "kyc_consent");
+  await setDoc(ref, {
+    agreementType: "kyc_consent",
+    version,
+    targetRole,
+    acceptedAt: serverTimestamp(),
+    method: "checkbox",
+  }, { merge: true });
+}
+
+// ─── KYC Consent Gate ─────────────────────────────────────────────────────────
+function KycConsentGate({ targetRole, onAccept }) {
+  const [checked1, setChecked1] = useState(false); // data collection
+  const [checked2, setChecked2] = useState(false); // sharing with processors
+  const [checked3, setChecked3] = useState(false); // retention period
+  const canProceed = checked1 && checked2 && checked3;
+
+  const isPartner = targetRole === "partner";
+
+  return (
+    <div className="rounded-3xl border border-amber-400/20 bg-amber-400/5 p-6 md:p-8 space-y-5 mb-8">
+      {/* Header */}
+      <div className="space-y-1">
+        <p className="text-[10px] tracking-[0.3em] uppercase text-amber-300/70">
+          NestaNg · NDPR Data Consent
+        </p>
+        <h2 className="text-lg font-black text-white">
+          Before we collect your information
+        </h2>
+        <p className="text-sm text-white/60 max-w-2xl">
+          Nigerian law (NDPR / NDPA) requires us to obtain your explicit consent
+          before collecting identity and verification documents. Please read each
+          item carefully and confirm your consent before proceeding.
+        </p>
+      </div>
+
+      {/* What we collect */}
+      <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-2">
+        <p className="text-xs font-bold text-white/80 uppercase tracking-wider">
+          What we collect
+        </p>
+        <ul className="text-xs text-white/60 space-y-1.5 leading-relaxed">
+          <li>• Full legal name, date of birth, and contact details</li>
+          <li>• Government-issued photo ID (passport, NIN, driver's licence, or voter's card)</li>
+          <li>• Bank Verification Number (BVN) for Nigerian residents</li>
+          <li>• Proof of address (utility bill or bank statement)</li>
+          {isPartner && (
+            <>
+              <li>• CAC Certificate of Incorporation and business registration documents</li>
+              <li>• Proof of authority to manage or let listed properties</li>
+            </>
+          )}
+          {!isPartner && (
+            <li>• Proof of right to let the property (C of O, tenancy agreement, or authorisation letter)</li>
+          )}
+        </ul>
+      </div>
+
+      {/* Why we collect it */}
+      <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-2">
+        <p className="text-xs font-bold text-white/80 uppercase tracking-wider">
+          Why we collect it
+        </p>
+        <p className="text-xs text-white/60 leading-relaxed">
+          We collect this data to verify your identity and right to list on the
+          NestaNg platform, comply with Nigerian AML and KYC regulations, protect
+          guests and other hosts from fraud, and process payouts to your verified
+          bank account. The legal basis for processing is contractual necessity
+          and legal obligation under the NDPA 2023 and CBN guidelines.
+        </p>
+      </div>
+
+      {/* Three consent checkboxes */}
+      <div className="space-y-3 pt-1">
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input
+            type="checkbox"
+            checked={checked1}
+            onChange={(e) => setChecked1(e.target.checked)}
+            className="mt-0.5 w-4 h-4 accent-amber-400 flex-shrink-0"
+          />
+          <span className="text-xs text-white/70 leading-relaxed group-hover:text-white/90">
+            <span className="font-semibold text-white/90">Data collection consent: </span>
+            I consent to NestaNg (Nesta Connect Limited) collecting and processing
+            my personal and identity verification data for the purpose of KYC
+            verification as described above.
+          </span>
+        </label>
+
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input
+            type="checkbox"
+            checked={checked2}
+            onChange={(e) => setChecked2(e.target.checked)}
+            className="mt-0.5 w-4 h-4 accent-amber-400 flex-shrink-0"
+          />
+          <span className="text-xs text-white/70 leading-relaxed group-hover:text-white/90">
+            <span className="font-semibold text-white/90">Third-party sharing consent: </span>
+            I understand my data may be shared with NestaNg's approved KYC
+            verification providers, payment processors (Paystack, Flutterwave),
+            and cloud infrastructure providers (Google Firebase) for the purpose
+            of verification and platform operation. All processors are bound by
+            data processing agreements.
+          </span>
+        </label>
+
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input
+            type="checkbox"
+            checked={checked3}
+            onChange={(e) => setChecked3(e.target.checked)}
+            className="mt-0.5 w-4 h-4 accent-amber-400 flex-shrink-0"
+          />
+          <span className="text-xs text-white/70 leading-relaxed group-hover:text-white/90">
+            <span className="font-semibold text-white/90">Retention consent: </span>
+            I understand my KYC documents will be retained for 5 years after our
+            relationship ends, as required by Nigerian law. I may request
+            correction or deletion of my data by contacting{" "}
+            <a href="mailto:hello@nestanaija.com" className="underline text-amber-300/80 hover:text-amber-300">
+              hello@nestanaija.com
+            </a>.
+          </span>
+        </label>
+      </div>
+
+      <div className="pt-1">
+        <button
+          type="button"
+          onClick={() => canProceed && onAccept()}
+          disabled={!canProceed}
+          className="px-6 py-2.5 rounded-xl bg-amber-400 text-black font-semibold text-sm hover:bg-amber-300 disabled:opacity-35 disabled:cursor-not-allowed transition-opacity"
+        >
+          I consent — proceed to verification form
+        </button>
+        {!canProceed && (
+          <p className="mt-2 text-[11px] text-white/35">
+            All three consent items must be confirmed before proceeding.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const COUNTRY_DEFAULT = "Nigeria";
 
@@ -45,6 +196,7 @@ export default function KycApplicationPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [consentGiven, setConsentGiven] = useState(false);
 
   const queryRole = searchParams.get("role");
   const queryIntent = searchParams.get("intent");
@@ -223,6 +375,13 @@ export default function KycApplicationPage() {
         step: 2,
       };
 
+      // Record NDPR consent acceptance before saving KYC profile
+      try {
+        await recordKycConsent(user.uid, targetRole, KYC_CONSENT_VERSION);
+      } catch (consentErr) {
+        console.error("Consent record failed (non-blocking):", consentErr);
+      }
+
       await saveKycProfile(user.uid, payload);
 
       try {
@@ -242,6 +401,18 @@ export default function KycApplicationPage() {
     }
   };
 
+  const handleConsentAccept = useCallback(async () => {
+    // Pre-record consent at gate — also recorded again on actual submit as backup
+    if (user?.uid) {
+      try {
+        await recordKycConsent(user.uid, targetRole, KYC_CONSENT_VERSION);
+      } catch (e) {
+        console.error("Pre-consent record failed (non-blocking):", e);
+      }
+    }
+    setConsentGiven(true);
+  }, [user?.uid, targetRole]);
+
   if (loading) return null;
 
   const accountType = isHost ? "individual" : form.accountType;
@@ -255,13 +426,13 @@ export default function KycApplicationPage() {
       <div className="max-w-4xl mx-auto">
         <header className="mb-6">
           <p className="text-xs tracking-[0.35em] uppercase text-amber-200/80">
-            Nesta • KYC • Step 2 of 3
+            NestaNg • KYC • Step 2 of 3
           </p>
           <h1 className="mt-2 text-3xl md:text-4xl font-extrabold tracking-tight">
             Tell us about you
           </h1>
           <p className="mt-2 text-sm md:text-base text-white/70 max-w-2xl">
-            We ask for these details once to keep Nesta safe and compliant. For a
+            We ask for these details once to keep NestaNg safe and compliant. For a
             company partner, fill in both the company and primary contact
             details.
           </p>
@@ -272,6 +443,16 @@ export default function KycApplicationPage() {
         </header>
 
         <section className="rounded-3xl border border-white/10 bg-[#070b12] p-6 md:p-8 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
+          {/* ── KYC Consent Gate — shown until user explicitly consents ── */}
+          {!consentGiven && (
+            <KycConsentGate
+              targetRole={targetRole}
+              onAccept={handleConsentAccept}
+            />
+          )}
+          {/* ── Form body — only rendered after consent ── */}
+          {consentGiven && (
+          <>
           <div className="flex items-start justify-between gap-4 mb-4 md:mb-6">
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-2xl bg-amber-400/90 flex items-center justify-center text-black font-bold text-lg">
@@ -608,10 +789,12 @@ export default function KycApplicationPage() {
               </button>
             </div>
           </form>
+          </> /* end consentGiven */
+          )}
         </section>
 
         <p className="mt-4 text-xs text-white/45 max-w-2xl">
-          For luxury and compliance, Nesta may request additional documents for
+          For luxury and compliance, NestaNg may request additional documents for
           very high-value properties. You’ll always be able to review and update
           these details later from your account settings.
         </p>

@@ -6,7 +6,7 @@ export default function Terms() {
   const year = new Date().getFullYear();
 
   return (
-    <main className="min-h-screen bg-[#05070a] pt-[calc(var(--topbar-h,88px)+24px)] pb-20 px-4 text-white">
+    <main className="min-h-screen bg-[#05070a] pt-20 pb-20 px-4 text-white">
       <div className="max-w-4xl mx-auto space-y-10">
         {/* HEADER */}
         <section className="rounded-3xl border border-white/10 bg-[#0a0e14] px-6 py-10 shadow-[0_20px_80px_rgba(0,0,0,0.55)]">
@@ -17,25 +17,25 @@ export default function Terms() {
             Terms of Use
           </h1>
           <p className="mt-3 text-sm md:text-base text-white/75 leading-relaxed max-w-2xl">
-            These Terms explain how Nesta operates, what guests, hosts and
+            These Terms explain how NestaNg operates, what guests, hosts and
             partners can expect, and the responsibilities involved in using
-            the platform. Please read them carefully — using Nesta means you
+            the platform. Please read them carefully — using NestaNg means you
             agree to these Terms.
           </p>
         </section>
 
         {/* SECTION 1 */}
         <section className="space-y-4 text-sm leading-relaxed text-white/80">
-          <h2 className="text-xl font-semibold text-white">1. About Nesta</h2>
+          <h2 className="text-xl font-semibold text-white">1. About NestaNg</h2>
           <p>
-            Nesta is a digital platform that connects guests with independent
+            NestaNg is a digital platform that connects guests with independent
             hosts and partners offering short-stay accommodation across Nigeria.
-            Nesta does not own or operate most listed properties. Each stay is
+            NestaNg does not own or operate most listed properties. Each stay is
             provided directly by the host or partner (“Accommodation Provider”),
             and you enter into a separate agreement with them when you book.
           </p>
           <p>
-            Nesta operates the website and app, manages payments, provides
+            NestaNg operates the website and app, manages payments, provides
             communication tools, enforces policies, and ensures the platform is
             safe, curated and trustworthy.
           </p>
@@ -45,7 +45,7 @@ export default function Terms() {
         <section className="space-y-4 text-sm leading-relaxed text-white/80">
           <h2 className="text-xl font-semibold text-white">2. Eligibility & Accounts</h2>
           <ul className="list-disc ml-6 space-y-2">
-            <li>You must be at least 18 years old to use Nesta.</li>
+            <li>You must be at least 18 years old to use NestaNg.</li>
             <li>
               You are responsible for keeping your account secure and ensuring
               the information you provide is accurate.
@@ -60,7 +60,7 @@ export default function Terms() {
         {/* SECTION 3 */}
         <section className="space-y-4 text-sm leading-relaxed text-white/80">
           <h2 className="text-xl font-semibold text-white">3. Bookings & Payments</h2>
-          <p>When booking a stay on Nesta, you agree to:</p>
+          <p>When booking a stay on NestaNg, you agree to:</p>
           <ul className="list-disc ml-6 space-y-2">
             <li>The pricing shown at checkout, including service fees.</li>
             <li>
@@ -83,8 +83,8 @@ export default function Terms() {
             </li>
           </ul>
           <p className="mt-2">
-            Payments on Nesta are processed in partnership with licensed payment
-            providers in Nigeria. In the event of a dispute, Nesta may hold,
+            Payments on NestaNg are processed in partnership with licensed payment
+            providers in Nigeria. In the event of a dispute, NestaNg may hold,
             release or refund funds in accordance with our policies.
           </p>
         </section>
@@ -112,7 +112,7 @@ export default function Terms() {
         {/* SECTION 5 */}
         <section className="space-y-4 text-sm leading-relaxed text-white/80">
           <h2 className="text-xl font-semibold text-white">5. Responsibilities of Hosts & Partners</h2>
-          <p>By listing on Nesta, Hosts and Partners agree to:</p>
+          <p>By listing on NestaNg, Hosts and Partners agree to:</p>
           <ul className="list-disc ml-6 space-y-2">
             <li>
               Provide accurate listing descriptions, photos and pricing.
@@ -139,13 +139,13 @@ export default function Terms() {
           <p>You agree not to:</p>
           <ul className="list-disc ml-6 space-y-2">
             <li>Create fraudulent bookings or chargebacks.</li>
-            <li>Use Nesta to bypass or avoid fees.</li>
+            <li>Use NestaNg to bypass or avoid fees.</li>
             <li>Harass, threaten or abuse other users.</li>
             <li>List unsafe, illegal or misrepresented spaces.</li>
             <li>Interfere with data, security or platform operations.</li>
           </ul>
           <p>
-            Nesta may suspend or remove accounts involved in unsafe,
+            NestaNg may suspend or remove accounts involved in unsafe,
             unprofessional or fraudulent activity.
           </p>
         </section>
@@ -166,7 +166,7 @@ export default function Terms() {
           </p>
           <p>
             If a host fails to provide access or the listing is significantly
-            misrepresented, Nesta may step in to review the situation and
+            misrepresented, NestaNg may step in to review the situation and
             facilitate a fair resolution.
           </p>
         </section>
@@ -175,13 +175,13 @@ export default function Terms() {
         <section className="space-y-4 text-sm leading-relaxed text-white/80">
           <h2 className="text-xl font-semibold text-white">8. Liability</h2>
           <p>
-            Nesta is not responsible for property conditions, personal injuries,
+            NestaNg is not responsible for property conditions, personal injuries,
             losses or damages that occur during a stay, except where required by
             Nigerian law. Hosts and partners are solely responsible for their
             accommodation and compliance with legal requirements.
           </p>
           <p>
-            To the fullest extent permitted by law, Nesta’s liability is limited
+            To the fullest extent permitted by law, NestaNg’s liability is limited
             to the total amount paid by the guest for the specific booking in
             question.
           </p>
@@ -191,7 +191,7 @@ export default function Terms() {
         <section className="space-y-4 text-sm leading-relaxed text-white/80">
           <h2 className="text-xl font-semibold text-white">9. Changes to Terms</h2>
           <p>
-            Nesta may update these Terms periodically. Continued use of the
+            NestaNg may update these Terms periodically. Continued use of the
             platform indicates acceptance of the updated Terms. Major changes
             will be communicated on the platform.
           </p>
@@ -205,7 +205,7 @@ export default function Terms() {
           </p>
           <ul className="space-y-1 text-sm">
             <li>• support@nestanaija.com</li>
-            <li>• partners@nestanaija.com</li>
+            <li>• hello@nestanaija.com</li>
           </ul>
         </section>
 

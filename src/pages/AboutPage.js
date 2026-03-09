@@ -3,19 +3,19 @@ import { Link } from "react-router-dom";
 
 export default function AboutPage() {
   return (
-    <main className="min-h-screen bg-gradient-to-b from-[#05070a] via-[#05070a] to-black text-white pt-24 pb-16 px-4">
+    <main className="min-h-screen bg-[#05070a] text-white pt-20 pb-16 px-4">
       <div className="mx-auto max-w-5xl">
         {/* Hero */}
         <section className="mb-10">
-          <p className="text-[11px] tracking-[0.28em] text-amber-300/80 uppercase mb-3">
-            About Nesta
+          <p className="text-[11px] tracking-[0.28em] text-amber-300/80 mb-3">
+            About NestaNg
           </p>
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
             Luxury stays,{" "}
             <span className="text-amber-300">designed for Nigeria.</span>
           </h1>
           <p className="mt-4 text-sm md:text-base text-white/75 max-w-2xl">
-            Nesta is a curated marketplace for premium apartments, villas and
+            NestaNg is a curated marketplace for premium apartments, villas and
             suites across Nigeria. We exist for guests who want more than
             “somewhere to sleep” — and for hosts and partners who take pride in
             offering a professional experience from first enquiry to checkout.
@@ -27,14 +27,14 @@ export default function AboutPage() {
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 md:p-6">
             <h2 className="text-lg font-semibold mb-2">Our story</h2>
             <p className="text-sm text-white/75">
-              Nesta was born from a simple frustration: finding a genuinely
+              NestaNg was born from a simple frustration: finding a genuinely
               reliable, beautiful place to stay in Nigerian cities often meant
               endless calls, screenshots and guesswork. We wanted something
               calmer — a trusted home for verified, design-led spaces with clear
               pricing and professional hosts.
             </p>
             <p className="text-sm text-white/75 mt-3">
-              Today, Nesta brings together guests, individual hosts and portfolio
+              Today, NestaNg brings together guests, individual hosts and portfolio
               partners under one luxury standard. Every listing aims to meet our
               bar for comfort, cleanliness, safety and digital-first service.
             </p>
@@ -43,7 +43,7 @@ export default function AboutPage() {
           <div className="rounded-2xl border border-amber-400/30 bg-gradient-to-b from-amber-500/10 via-amber-500/5 to-transparent p-5 md:p-6">
             <h2 className="text-lg font-semibold mb-2">Nigeria-first by design</h2>
             <p className="text-sm text-white/80">
-              Nesta is built specifically for the realities of the Nigerian
+              NestaNg is built specifically for the realities of the Nigerian
               market:
             </p>
             <ul className="mt-3 space-y-2 text-sm text-white/80">
@@ -64,7 +64,7 @@ export default function AboutPage() {
         {/* Pillars */}
         <section className="mb-10">
           <h2 className="text-lg font-semibold mb-3">
-            What Nesta stands for
+            What NestaNg stands for
           </h2>
           <div className="grid gap-4 md:grid-cols-3">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -100,7 +100,7 @@ export default function AboutPage() {
         {/* How it works */}
         <section className="mb-10">
           <h2 className="text-lg font-semibold mb-3">
-            How Nesta works — in three simple steps
+            How NestaNg works — in three simple steps
           </h2>
           <div className="grid gap-4 md:grid-cols-3 text-sm text-white/80">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -126,7 +126,7 @@ export default function AboutPage() {
                 3. Arrive &amp; relax
               </div>
               <p>
-                Hosts and partners use Nesta to manage reservations, check-in
+                Hosts and partners use NestaNg to manage reservations, check-in
                 details and after-stay feedback — closing the loop.
               </p>
             </div>
@@ -142,7 +142,7 @@ export default function AboutPage() {
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
               <h3 className="font-semibold mb-1">For guests</h3>
               <p className="text-white/75">
-                Business trips, weekends away, relocation stays — Nesta gives
+                Business trips, weekends away, relocation stays — NestaNg gives
                 you a calm way to find reliable homes, not guesswork.
               </p>
             </div>
@@ -168,13 +168,13 @@ export default function AboutPage() {
           <h2 className="text-lg font-semibold mb-3">Founder’s message</h2>
           <div className="rounded-2xl border border-amber-300/40 bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-transparent p-5 md:p-6 text-sm text-white/80 leading-relaxed space-y-3">
             <p>
-              At Nesta, we believe luxury is not defined by marble floors or sparkling chandeliers —{" "}
+              At NestaNg, we believe luxury is not defined by marble floors or sparkling chandeliers —{" "}
               it is defined by how a person feels the moment they walk through the door.
             </p>
             <p>
               In Nigeria, extraordinary spaces exist.
               What has been missing is a platform that treats those spaces with the same care, respect, and refinement that the world’s finest brands offer.
-              Nesta was created to close that gap.
+              NestaNg was created to close that gap.
             </p>
             <p>
               Our mission is simple:
@@ -186,14 +186,14 @@ export default function AboutPage() {
               And we design our technology to feel calm, intuitive, and quietly luxurious.
             </p>
             <p>
-              Nesta is for the discerning traveler.
+              NestaNg is for the discerning traveler.
               For families who value comfort.
               For professionals who expect reliability.
               And for property owners who believe their spaces deserve to be showcased with honour.
             </p>
             <p>
               What you see today is only the beginning.
-              Thank you for trusting Nesta with your journey —{" "}
+              Thank you for trusting NestaNg with your journey —{" "}
               whether you are opening your doors, or discovering your next destination.
             </p>
             <p>You deserve a stay that remembers you.</p>
@@ -221,7 +221,7 @@ export default function AboutPage() {
             to="/careers"
             className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-white/80 hover:bg-white/10"
           >
-            Careers at Nesta
+            Careers at NestaNg
           </Link>
         </section>
       </div>

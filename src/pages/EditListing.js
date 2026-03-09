@@ -21,10 +21,57 @@ import useUserProfile from "../hooks/useUserProfile";
 import ListingMap from "../components/ListingMap";
 import ImageUploader from "../components/ImageUploader";
 
-/* ───────────────────────── config ───────────────────────── */
+/* ─────────────────────────── config ─────────────────────────── */
 const PAYSTACK_PUBLIC_KEY = process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "";
 
-/* ───────────────────────── helpers ───────────────────────── */
+/* ─────────────────────────── constants ─────────────────────────── */
+const TYPES = ["Apartment", "Bungalow", "Studio", "Loft", "Villa", "Penthouse", "Hotel", "Other"];
+
+const AMENITIES = [
+  "Wi-Fi",
+  "Air conditioning",
+  "24/7 Power",
+  "Smart TV",
+  "Workspace",
+  "Kitchen",
+  "Security",
+  "Parking",
+  "Pool",
+  "Gym",
+  "Generator",
+  "Elevator",
+  "Balcony",
+  "Garden",
+];
+
+const FEATURE_PLANS = {
+  spotlight: {
+    key: "spotlight",
+    label: "Spotlight · 24 hours",
+    price: 20000,
+    durationDays: 1,
+    tagline: "Great for last-minute boosts",
+    tier: "Entry",
+  },
+  premium: {
+    key: "premium",
+    label: "Premium · 7 days",
+    price: 70000,
+    durationDays: 7,
+    tagline: "Week-long visibility in peak areas",
+    tier: "Popular",
+  },
+  signature: {
+    key: "signature",
+    label: "Signature · 30 days",
+    price: 250000,
+    durationDays: 30,
+    tagline: "Flagship placement for serious hosts",
+    tier: "Flagship",
+  },
+};
+
+/* ─────────────────────────── helpers ─────────────────────────── */
 function normalizeRole(raw) {
   const r = String(raw || "").toLowerCase();
   if (r === "verified_host") return "host";
@@ -40,20 +87,15 @@ function canEditListing(user, profile, listing) {
   if (isAdmin) return true;
 
   const uid = user.uid;
-  const ownerCandidates = [
-    listing.ownerUid,
-    listing.ownerId,
-    listing.hostUid,
-    listing.hostId,
-    listing.partnerUid,
-    listing.partnerId,
-    listing.userUid,
-    listing.userId,
-    listing.createdBy,
-    listing.createdByUid,
+  const candidates = [
+    listing.ownerUid, listing.ownerId,
+    listing.hostUid, listing.hostId,
+    listing.partnerUid, listing.partnerId,
+    listing.userUid, listing.userId,
+    listing.createdBy, listing.createdByUid,
   ].filter(Boolean);
 
-  return ownerCandidates.includes(uid);
+  return candidates.includes(uid);
 }
 
 function pickPhotos(data) {
@@ -72,41 +114,149 @@ function toNullableNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-/* ───────────────────────── plans ───────────────────────── */
-const FEATURE_PLANS = {
-  spotlight: {
-    key: "spotlight",
-    label: "Spotlight · 24 hours",
-    price: 20000,
-    durationDays: 1,
-    tagline: "Great for last-minute boosts",
-  },
-  premium: {
-    key: "premium",
-    label: "Premium · 7 days",
-    price: 70000,
-    durationDays: 7,
-    tagline: "Week-long visibility in peak areas",
-  },
-  signature: {
-    key: "signature",
-    label: "Signature · 30 days",
-    price: 250000,
-    durationDays: 30,
-    tagline: "Flagship placement for serious hosts",
-  },
-};
+/* ─────────────────────────── shared UI primitives ─────────────────────────── */
+const inputCls =
+  "w-full rounded-2xl bg-black/30 border border-white/10 px-3 py-2.5 text-white/90 text-sm outline-none focus:border-amber-400/70 transition-colors placeholder-white/25";
 
-function Section({ title, children }) {
+function Field({ label, hint, children }) {
   return (
-    <section className="border-t border-white/10 pt-6 mt-6">
-      <h2 className="text-lg font-semibold text-white mb-3">{title}</h2>
+    <label className="block space-y-1.5">
+      <div className="text-[11px] uppercase tracking-[0.14em] font-semibold text-white/55">
+        {label}
+      </div>
+      {hint ? <div className="text-[11px] text-white/40 -mt-1">{hint}</div> : null}
+      <div>{children}</div>
+    </label>
+  );
+}
+
+function TextInput(props) {
+  return <input {...props} className={[inputCls, props.className || ""].join(" ")} />;
+}
+
+function SelectInput({ children, ...props }) {
+  return (
+    <select {...props} className={[inputCls, props.className || ""].join(" ")}>
       {children}
+    </select>
+  );
+}
+
+function TextArea(props) {
+  return (
+    <textarea
+      {...props}
+      className={[
+        "w-full min-h-[100px] rounded-2xl bg-black/30 border border-white/10",
+        "px-3 py-2.5 text-white/90 text-sm outline-none focus:border-amber-400/70 transition-colors resize-y placeholder-white/25",
+        props.className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+function Section({ title, subtitle, children }) {
+  return (
+    <section className="rounded-3xl border border-white/8 bg-[#0c0f16] p-5 md:p-6 space-y-4">
+      <div>
+        <h3 className="text-base font-bold text-white tracking-tight">{title}</h3>
+        {subtitle && <p className="text-[13px] text-white/50 mt-0.5">{subtitle}</p>}
+      </div>
+      <div className="space-y-3">{children}</div>
     </section>
   );
 }
 
-/* ───────────────────────── Feature plan modal ───────────────────────── */
+function AmenityToggle({ label, checked, onChange }) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className={[
+        "inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[13px] font-medium border transition-all",
+        checked
+          ? "bg-amber-400/15 border-amber-400/50 text-amber-300"
+          : "bg-white/5 border-white/10 text-white/60 hover:border-white/20",
+      ].join(" ")}
+    >
+      <span
+        className={[
+          "inline-block h-2.5 w-2.5 rounded-full transition-colors",
+          checked ? "bg-amber-400" : "bg-white/25",
+        ].join(" ")}
+      />
+      {label}
+    </button>
+  );
+}
+
+/* ─────────────────────────── Confirm modal ─────────────────────────── */
+function ConfirmModal({ open, title, body, confirmLabel, tone = "red", onConfirm, onCancel }) {
+  if (!open) return null;
+  const btnCls =
+    tone === "red"
+      ? "bg-red-500/80 hover:bg-red-500 border-red-500/60 text-white"
+      : "bg-amber-400 hover:bg-amber-300 border-amber-400/60 text-black";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/75 px-4 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#0e1118] shadow-2xl p-6 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-base font-bold text-white">{title}</h3>
+        {body && <p className="text-[13px] text-white/60 leading-relaxed">{body}</p>}
+        <div className="flex gap-3 pt-1">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 py-2.5 rounded-2xl border border-white/10 bg-white/5 text-sm hover:bg-white/10 transition-all"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className={["flex-1 py-2.5 rounded-2xl border text-sm font-semibold transition-all", btnCls].join(" ")}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Info modal ─────────────────────────── */
+function InfoModal({ open, title, body, onClose }) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/75 px-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#0e1118] shadow-2xl p-6 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-base font-bold text-white">{title}</h3>
+        {body && <p className="text-[13px] text-white/60 leading-relaxed">{body}</p>}
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full py-2.5 rounded-2xl border border-white/10 bg-white/5 text-sm hover:bg-white/10 transition-all"
+        >
+          OK
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Feature plan modal ─────────────────────────── */
 function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotlight" }) {
   const [choice, setChoice] = useState(initialPlanKey || "spotlight");
 
@@ -117,24 +267,23 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/75 px-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
       <div
-        className="w-full max-w-xl rounded-2xl border border-white/15 bg-gradient-to-b from-white/10 to-black/70 shadow-2xl p-5 md:p-6"
+        className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#0e1118] shadow-2xl p-6 space-y-5"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start gap-3 mb-4">
-          <div className="flex-1">
-            <h3 className="text-lg font-semibold text-white">
-              Boost this listing in the Nesta carousel
-            </h3>
-            <p className="text-xs text-white/60 mt-1">
-              Choose a spotlight plan. Admin reviews first. After approval, you’ll pay securely and
-              admin activates your placement.
-            </p>
-          </div>
+        <div>
+          <h3 className="text-lg font-bold text-white">Boost this listing</h3>
+          <p className="text-[13px] text-white/55 mt-1">
+            Choose a spotlight plan. Admin reviews first. After approval, you'll pay securely and
+            admin activates your placement.
+          </p>
         </div>
 
-        <div className="grid md:grid-cols-3 gap-3 mb-5">
+        <div className="grid md:grid-cols-3 gap-3">
           {Object.values(FEATURE_PLANS).map((plan) => {
             const active = choice === plan.key;
             return (
@@ -142,22 +291,19 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
                 key={plan.key}
                 type="button"
                 onClick={() => setChoice(plan.key)}
-                className={`flex flex-col items-start text-left rounded-2xl border px-3 py-3 text-xs transition ${
+                className={[
+                  "flex flex-col items-start text-left rounded-2xl border px-4 py-3 transition-all",
                   active
-                    ? "border-amber-400 bg-amber-500/15 shadow-[0_18px_40px_rgba(0,0,0,0.65)]"
-                    : "border-white/10 bg-black/40 hover:bg-black/60"
-                }`}
+                    ? "border-amber-400 bg-amber-500/15"
+                    : "border-white/10 bg-black/40 hover:bg-black/60",
+                ].join(" ")}
               >
-                <div className="text-[11px] uppercase tracking-[0.18em] text-white/60 mb-1">
-                  {plan.key === "spotlight"
-                    ? "Entry"
-                    : plan.key === "premium"
-                    ? "Popular"
-                    : "Flagship"}
+                <div className="text-[10px] uppercase tracking-[0.18em] text-white/50 mb-1">
+                  {plan.tier}
                 </div>
                 <div className="text-sm font-semibold text-white mb-1">{plan.label}</div>
-                <div className="text-[11px] text-white/60 mb-2">{plan.tagline}</div>
-                <div className="mt-auto text-xs font-semibold text-amber-300">
+                <div className="text-[11px] text-white/55 mb-3">{plan.tagline}</div>
+                <div className="mt-auto text-sm font-bold text-amber-300">
                   ₦{plan.price.toLocaleString()}
                 </div>
               </button>
@@ -165,22 +311,22 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
           })}
         </div>
 
-        <div className="flex flex-col md:flex-row md:items-center gap-3 mt-2">
+        <div className="flex items-center gap-3 flex-wrap pt-1">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-xl border border-white/20 bg-white/5 text-sm text-white/80 hover:bg-white/10"
+            className="px-5 py-2.5 rounded-2xl border border-white/10 bg-white/5 text-sm hover:bg-white/10 transition-all"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={() => onConfirm(choice)}
-            className="px-4 py-2 rounded-xl border border-amber-400/60 bg-amber-500/80 text-sm font-semibold text-black hover:bg-amber-400"
+            className="px-5 py-2.5 rounded-2xl border border-amber-400/60 bg-amber-500/80 text-sm font-semibold text-black hover:bg-amber-400 transition-all"
           >
             Submit request
           </button>
-          <div className="md:ml-auto text-[11px] text-white/55">
+          <div className="ml-auto text-[11px] text-white/45">
             Admin approves → you pay → admin activates.
           </div>
         </div>
@@ -189,7 +335,7 @@ function FeaturePlanModal({ open, onClose, onConfirm, initialPlanKey = "spotligh
   );
 }
 
-/* ───────────────────────── component ───────────────────────── */
+/* ─────────────────────────── Main component ─────────────────────────── */
 export default function EditListing() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -199,6 +345,7 @@ export default function EditListing() {
   const role = normalizeRole(profile?.role || profile?.type);
   const isAdmin = profile?.isAdmin === true || role === "admin";
 
+  /* ── state ─────────────────────────────────────────────────────── */
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [featureBusy, setFeatureBusy] = useState(false);
@@ -213,7 +360,7 @@ export default function EditListing() {
     address: "",
     nightlyRate: "",
     pricePerNight: "",
-    type: "apartment",
+    type: "Apartment",
     bedrooms: "",
     bathrooms: "",
     beds: "",
@@ -231,10 +378,24 @@ export default function EditListing() {
   const [featureReq, setFeatureReq] = useState(null);
   const [planModalOpen, setPlanModalOpen] = useState(false);
 
-  const canEdit = canEditListing(user, profile, listing);
-  const canSave = canEdit && !busy && !!form.title && !!form.city;
+  // Modal state — replaces all window.alert / window.confirm
+  const [infoModal, setInfoModal] = useState({ open: false, title: "", body: "" });
+  const [confirmModal, setConfirmModal] = useState({
+    open: false, title: "", body: "", confirmLabel: "", tone: "red", onConfirm: null,
+  });
 
-  /* ───────────────────────── load listing ───────────────────────── */
+  const showInfo = (title, body) => setInfoModal({ open: true, title, body });
+  const closeInfo = () => setInfoModal((p) => ({ ...p, open: false }));
+
+  const showConfirm = ({ title, body, confirmLabel, tone = "red", onConfirm }) =>
+    setConfirmModal({ open: true, title, body, confirmLabel, tone, onConfirm });
+  const closeConfirm = () => setConfirmModal((p) => ({ ...p, open: false }));
+
+  /* ── derived ───────────────────────────────────────────────────── */
+  const canEdit = canEditListing(user, profile, listing);
+  const canSave = canEdit && !busy && !!form.title.trim() && !!form.city.trim();
+
+  /* ── load listing ──────────────────────────────────────────────── */
   useEffect(() => {
     if (!id) return;
 
@@ -243,7 +404,7 @@ export default function EditListing() {
       try {
         const snap = await getDoc(doc(db, "listings", id));
         if (!snap.exists()) {
-          window.alert("Listing not found.");
+          showInfo("Not found", "This listing could not be found.");
           navigate("/host");
           return;
         }
@@ -261,7 +422,7 @@ export default function EditListing() {
           address: data.address || "",
           nightlyRate: data.nightlyRate ?? data.pricePerNight ?? "",
           pricePerNight: data.pricePerNight ?? data.nightlyRate ?? "",
-          type: data.type || "apartment",
+          type: data.type || "Apartment",
           bedrooms: data.bedrooms ?? "",
           bathrooms: data.bathrooms ?? "",
           beds: data.beds ?? data.bedCount ?? data.numberOfBeds ?? "",
@@ -277,7 +438,7 @@ export default function EditListing() {
         });
       } catch (e) {
         console.error(e);
-        window.alert("Failed to load listing.");
+        showInfo("Load failed", "Could not load listing. Please try again.");
       } finally {
         setLoading(false);
       }
@@ -286,7 +447,7 @@ export default function EditListing() {
     load();
   }, [id, navigate]);
 
-  /* ───────────────────────── live feature request ───────────────────────── */
+  /* ── live feature request ──────────────────────────────────────── */
   useEffect(() => {
     if (!id) return;
 
@@ -300,61 +461,50 @@ export default function EditListing() {
     const unsub = onSnapshot(
       qRef,
       (snap) => {
-        if (!snap.empty) {
-          const docSnap = snap.docs[0];
-          setFeatureReq({ id: docSnap.id, ...docSnap.data() });
-        } else {
-          setFeatureReq(null);
-        }
+        setFeatureReq(
+          snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() }
+        );
       },
-      (err) => {
-        console.error("featureRequests listener error", err);
-      }
+      (err) => console.error("featureRequests listener:", err)
     );
 
     return () => unsub();
   }, [id]);
 
-  /* ───────────────────────── helpers ───────────────────────── */
+  /* ── form helpers ──────────────────────────────────────────────── */
   const updateField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
 
-  const amenitiesOptions = [
-    "Wi-Fi",
-    "Air conditioning",
-    "Parking",
-    "Swimming pool",
-    "24/7 security",
-    "Generator / Inverter",
-    "Housekeeping",
-    "Smart TV",
-  ];
-
   const toggleAmenity = (amenity) =>
-    setForm((f) => {
-      const has = f.amenities.includes(amenity);
-      return {
-        ...f,
-        amenities: has ? f.amenities.filter((x) => x !== amenity) : [...f.amenities, amenity],
-      };
-    });
+    setForm((f) => ({
+      ...f,
+      amenities: f.amenities.includes(amenity)
+        ? f.amenities.filter((x) => x !== amenity)
+        : [...f.amenities, amenity],
+    }));
 
-  /* ───────────────────────── save / delete ───────────────────────── */
+  /* ── save ──────────────────────────────────────────────────────── */
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveErr, setSaveErr] = useState("");
+
   const handleSave = async (e) => {
     e?.preventDefault?.();
     if (!canSave) return;
 
     setBusy(true);
+    setSaveErr("");
+    setSaveSuccess(false);
+
     try {
       const mergedPhotos = [...(form.photos || [])].filter(Boolean);
       const nightly = Number(form.nightlyRate || form.pricePerNight || 0);
 
       const payload = {
-        title: String(form.title || "").trim(),
-        description: String(form.description || "").trim(),
-        city: String(form.city || "").trim(),
-        area: String(form.area || "").trim(),
-        neighbourhood: String(form.neighbourhood || "").trim(),
-        address: String(form.address || "").trim(),
+        title: form.title.trim(),
+        description: form.description.trim(),
+        city: form.city.trim(),
+        area: form.area.trim(),
+        neighbourhood: form.neighbourhood.trim(),
+        address: form.address.trim(),
 
         nightlyRate: nightly || "",
         pricePerNight: nightly || "",
@@ -384,120 +534,137 @@ export default function EditListing() {
       };
 
       await updateDoc(doc(db, "listings", id), payload);
-      window.alert("Listing updated.");
-      navigate("/host");
+      setSaveSuccess(true);
+      // Navigate after short delay so user sees success
+      setTimeout(() => navigate("/host"), 1200);
     } catch (e) {
       console.error(e);
-      window.alert("Failed to save listing.");
+      setSaveErr(e?.message || "Could not save listing. Please try again.");
     } finally {
       setBusy(false);
     }
   };
 
-  const handleDelete = async () => {
-    if (!window.confirm("Delete this listing permanently?")) return;
-
-    try {
-      await deleteDoc(doc(db, "listings", id));
-      window.alert("Listing deleted.");
-      navigate("/host");
-    } catch (e) {
-      console.error(e);
-      window.alert("Failed to delete listing.");
-    }
+  /* ── delete ────────────────────────────────────────────────────── */
+  const handleDelete = () => {
+    showConfirm({
+      title: "Delete this listing?",
+      body: "This is permanent and cannot be undone. All booking history will remain but the listing will no longer be visible.",
+      confirmLabel: "Delete permanently",
+      tone: "red",
+      onConfirm: async () => {
+        closeConfirm();
+        try {
+          await deleteDoc(doc(db, "listings", id));
+          navigate("/host");
+        } catch (e) {
+          console.error(e);
+          showInfo("Delete failed", "Could not delete listing. Please try again.");
+        }
+      },
+    });
   };
 
-  /* ───────────────────────── featured workflow ───────────────────────── */
+  /* ── featured workflow ─────────────────────────────────────────── */
   const featureStatus = String(featureReq?.status || "").toLowerCase();
 
   const planLabel = useMemo(() => {
     if (!featureReq) return null;
     if (featureReq.planLabel) return featureReq.planLabel;
     const k = featureReq.planId || featureReq.planKey;
-    if (k && FEATURE_PLANS[k]) return FEATURE_PLANS[k].label;
-    return "Custom plan";
+    return (k && FEATURE_PLANS[k]?.label) || "Custom plan";
   }, [featureReq]);
 
-  const { requestSummary, requestHelpText, requestButtonLabel, requestButtonDisabled, showPayNowAction } =
-    useMemo(() => {
-      if (!featureReq) {
-        return {
-          requestSummary: "No featured request yet.",
-          requestHelpText: "Boost visibility by appearing in the homepage Featured carousel.",
-          requestButtonLabel: "Request Featured",
-          requestButtonDisabled: false,
-          showPayNowAction: false,
-        };
-      }
-
-      if (featureStatus === "pending") {
-        return {
-          requestSummary: `Featured request: Pending — ${planLabel}`,
-          requestHelpText:
-            "Admin is reviewing your request. After approval, it becomes ‘Awaiting payment’.",
-          requestButtonLabel: "Request pending",
-          requestButtonDisabled: true,
-          showPayNowAction: false,
-        };
-      }
-
-      if (featureStatus === "awaiting-payment") {
-        return {
-          requestSummary: `Featured request: Awaiting payment — ${planLabel}`,
-          requestHelpText: "Admin approved and locked your plan. Complete payment to proceed.",
-          requestButtonLabel: "Pay now",
-          requestButtonDisabled: false,
-          showPayNowAction: true,
-        };
-      }
-
-      if (featureStatus === "paid" || featureStatus === "paid-needs-review") {
-        return {
-          requestSummary: `Payment received — ${planLabel}`,
-          requestHelpText:
-            "Payment is recorded. Admin will activate your placement after final checks.",
-          requestButtonLabel: "Paid (awaiting activation)",
-          requestButtonDisabled: true,
-          showPayNowAction: false,
-        };
-      }
-
-      if (featureStatus === "active") {
-        return {
-          requestSummary: `Featured placement active — ${planLabel}`,
-          requestHelpText:
-            "Your property is currently eligible for the homepage Featured carousel.",
-          requestButtonLabel: "Currently featured",
-          requestButtonDisabled: true,
-          showPayNowAction: false,
-        };
-      }
-
-      if (featureStatus === "rejected") {
-        return {
-          requestSummary: `Featured request: Rejected — ${planLabel}`,
-          requestHelpText: featureReq?.adminNote || "You can submit a new request when ready.",
-          requestButtonLabel: "Request again",
-          requestButtonDisabled: false,
-          showPayNowAction: false,
-        };
-      }
-
+  const {
+    requestSummary,
+    requestHelpText,
+    requestButtonLabel,
+    requestButtonDisabled,
+    showPayNowAction,
+    featureStatusTone,
+  } = useMemo(() => {
+    if (!featureReq)
       return {
         requestSummary: "No featured request yet.",
         requestHelpText: "Boost visibility by appearing in the homepage Featured carousel.",
         requestButtonLabel: "Request Featured",
         requestButtonDisabled: false,
         showPayNowAction: false,
+        featureStatusTone: "neutral",
       };
-    }, [featureReq, featureStatus, planLabel]);
+
+    const map = {
+      pending: {
+        requestSummary: `Pending review — ${planLabel}`,
+        requestHelpText: "Admin is reviewing your request. After approval it becomes 'Awaiting payment'.",
+        requestButtonLabel: "Request pending",
+        requestButtonDisabled: true,
+        showPayNowAction: false,
+        featureStatusTone: "amber",
+      },
+      "awaiting-payment": {
+        requestSummary: `Approved — payment required — ${planLabel}`,
+        requestHelpText: "Admin approved and locked your plan. Complete payment to proceed.",
+        requestButtonLabel: "Pay now",
+        requestButtonDisabled: false,
+        showPayNowAction: true,
+        featureStatusTone: "amber",
+      },
+      paid: {
+        requestSummary: `Payment received — ${planLabel}`,
+        requestHelpText: "Admin will activate your carousel placement after final checks.",
+        requestButtonLabel: "Paid — awaiting activation",
+        requestButtonDisabled: true,
+        showPayNowAction: false,
+        featureStatusTone: "emerald",
+      },
+      "paid-needs-review": {
+        requestSummary: `Payment received — ${planLabel}`,
+        requestHelpText: "Admin will activate your carousel placement after final checks.",
+        requestButtonLabel: "Paid — awaiting activation",
+        requestButtonDisabled: true,
+        showPayNowAction: false,
+        featureStatusTone: "emerald",
+      },
+      active: {
+        requestSummary: `Featured placement active — ${planLabel}`,
+        requestHelpText: "Your property is currently in the homepage Featured carousel.",
+        requestButtonLabel: "Currently featured",
+        requestButtonDisabled: true,
+        showPayNowAction: false,
+        featureStatusTone: "emerald",
+      },
+      rejected: {
+        requestSummary: `Request rejected — ${planLabel}`,
+        requestHelpText: featureReq?.adminNote || "You can submit a new request when ready.",
+        requestButtonLabel: "Request again",
+        requestButtonDisabled: false,
+        showPayNowAction: false,
+        featureStatusTone: "red",
+      },
+    };
+
+    return (
+      map[featureStatus] || {
+        requestSummary: "No featured request yet.",
+        requestHelpText: "Boost visibility in the homepage Featured carousel.",
+        requestButtonLabel: "Request Featured",
+        requestButtonDisabled: false,
+        showPayNowAction: false,
+        featureStatusTone: "neutral",
+      }
+    );
+  }, [featureReq, featureStatus, planLabel]);
 
   const handleOpenPlanModal = () => {
     if (
       featureReq &&
       ["pending", "awaiting-payment", "paid", "paid-needs-review", "active"].includes(featureStatus)
     ) {
-      window.alert("You already have a featured request in progress for this listing.");
+      showInfo(
+        "Request already in progress",
+        "You already have a featured request active for this listing. Check the status below."
+      );
       return;
     }
     setPlanModalOpen(true);
@@ -505,7 +672,7 @@ export default function EditListing() {
 
   const confirmPlanAndRequest = async (planKey) => {
     if (!user || !listing) {
-      window.alert("Listing not ready yet, please try again.");
+      showInfo("Not ready", "Listing not ready yet. Please try again.");
       return;
     }
 
@@ -538,10 +705,13 @@ export default function EditListing() {
       });
 
       setPlanModalOpen(false);
-      window.alert("Request sent. Admin will review shortly.");
+      showInfo(
+        "Request submitted",
+        "Admin will review your featured request shortly. You'll see the status update here."
+      );
     } catch (e) {
       console.error(e);
-      window.alert("Could not send request. Please try again later.");
+      showInfo("Request failed", "Could not send request. Please try again later.");
     } finally {
       setFeatureBusy(false);
     }
@@ -561,23 +731,23 @@ export default function EditListing() {
   const handlePayNow = async () => {
     try {
       if (!featureReq) {
-        window.alert("No featured request found for this listing.");
+        showInfo("No request found", "No featured request found for this listing.");
         return;
       }
 
       if (String(featureReq.status || "").toLowerCase() !== "awaiting-payment") {
-        window.alert("This request is not approved for payment yet.");
+        showInfo("Not ready for payment", "This request is not approved for payment yet.");
         return;
       }
 
       const amountNaira = Number(featureReq.price ?? featureReq.planPrice ?? 0);
       if (!amountNaira || Number.isNaN(amountNaira) || amountNaira <= 0) {
-        window.alert("This plan does not have a valid locked price. Admin must approve and set price.");
+        showInfo("Invalid price", "This plan does not have a valid locked price. Admin must approve and set price.");
         return;
       }
 
       if (!PAYSTACK_PUBLIC_KEY) {
-        window.alert("Missing Paystack public key. Set REACT_APP_PAYSTACK_PUBLIC_KEY in your .env file.");
+        showInfo("Config missing", "Missing Paystack public key. Set REACT_APP_PAYSTACK_PUBLIC_KEY in your .env file.");
         return;
       }
 
@@ -607,15 +777,15 @@ export default function EditListing() {
                 paymentAttemptedAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
               });
-
-              window.alert(
-                "✅ Payment submitted.\n\nYour payment will be confirmed automatically (webhook). Once confirmed, admin will activate your carousel placement."
+              showInfo(
+                "Payment submitted",
+                "Your payment will be confirmed automatically. Once confirmed, admin will activate your carousel placement."
               );
             } catch (err) {
               console.error("[Paystack callback] update failed:", err);
-              window.alert(
-                "Payment succeeded, but we could not record your attempt automatically.\nPlease contact Nesta support with this reference: " +
-                  response.reference
+              showInfo(
+                "Payment received — action needed",
+                `Payment succeeded but we could not record it automatically. Please contact Nesta support with reference: ${response.reference}`
               );
             }
           })();
@@ -626,355 +796,447 @@ export default function EditListing() {
       handler.openIframe();
     } catch (err) {
       console.error("[handlePayNow] error:", err);
-      window.alert("Could not start payment. Please refresh and try again.");
+      showInfo("Payment error", "Could not start payment. Please refresh and try again.");
     }
   };
 
-  /* ───────────────────────── render guards ───────────────────────── */
+  /* ── feature status pill colour ───────────────────────────────── */
+  const featurePillCls =
+    featureStatusTone === "emerald"
+      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+      : featureStatusTone === "amber"
+      ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+      : featureStatusTone === "red"
+      ? "border-red-500/30 bg-red-500/10 text-red-200"
+      : "border-white/10 bg-white/5 text-white/60";
+
+  /* ── render guards ─────────────────────────────────────────────── */
   if (loading) {
-    return <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">Loading listing…</main>;
-  }
-
-  if (!listing) {
-    return <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">Listing not found.</main>;
-  }
-
-  if (!canEdit) {
     return (
-      <main className="max-w-5xl mx-auto px-4 py-10 text-white/80">
-        <h2 className="text-xl font-semibold mb-2">You don't have permission to edit this listing.</h2>
-        <p className="text-white/60">Only the listing owner or a Nesta admin can make changes.</p>
+      <main className="min-h-screen bg-[#05070a] pt-20 px-4 text-white/60">
+        <div className="max-w-3xl mx-auto">Loading listing…</div>
       </main>
     );
   }
 
-  /* ───────────────────────── main render ───────────────────────── */
-  return (
-    <>
-      <main className="max-w-5xl mx-auto px-4 py-8 text-white">
-        <header className="flex items-center gap-4 mb-6">
+  if (!listing) {
+    return (
+      <main className="min-h-screen bg-[#05070a] pt-20 px-4 text-white/60">
+        <div className="max-w-3xl mx-auto">Listing not found.</div>
+      </main>
+    );
+  }
+
+  if (!canEdit) {
+    return (
+      <main className="min-h-screen bg-[#05070a] pt-20 px-4 text-white">
+        <div className="max-w-3xl mx-auto space-y-2">
+          <h2 className="text-xl font-semibold">Permission denied</h2>
+          <p className="text-white/55">Only the listing owner or a Nesta admin can edit this listing.</p>
           <button
             onClick={() => navigate(-1)}
-            className="px-3 py-2 rounded-xl border border-white/10 hover:bg-white/5"
+            className="mt-4 px-4 py-2 rounded-full bg-white/8 border border-white/10 text-sm hover:bg-white/12 transition-all"
           >
-            ← Back
+            ← Go back
           </button>
-
-          <div>
-            <div className="text-sm text-white/60">Edit listing</div>
-            <h1 className="text-2xl font-semibold">{form.title || "Untitled"}</h1>
-          </div>
-
-          <div className="ml-auto flex gap-3">
-            <button
-              type="button"
-              onClick={handleDelete}
-              className="px-4 py-2 rounded-xl border border-red-500/40 text-red-300 hover:bg-red-500/10"
-            >
-              Delete
-            </button>
-
-            <button
-              type="button"
-              disabled={!canSave}
-              onClick={handleSave}
-              className={`px-4 py-2 rounded-xl border border-amber-400/50 bg-amber-500/20 hover:bg-amber-500/30 text-amber-50 ${
-                !canSave ? "opacity-60 cursor-not-allowed" : ""
-              }`}
-            >
-              {busy ? "Saving…" : "Save changes"}
-            </button>
-          </div>
-        </header>
-
-        <form onSubmit={handleSave} className="space-y-6">
-          <Section title="Basics">
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Title</label>
-                <input
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.title}
-                  onChange={(e) => updateField("title", e.target.value)}
-                  placeholder="Designer studio in Lekki"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Type</label>
-                <select
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.type}
-                  onChange={(e) => updateField("type", e.target.value)}
-                >
-                  <option value="apartment">Apartment</option>
-                  <option value="duplex">Duplex</option>
-                  <option value="villa">Villa</option>
-                  <option value="studio">Studio</option>
-                  <option value="room">Private room</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <label className="block text-sm text-white/70 mb-1">Description</label>
-              <textarea
-                className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm min-h-[80px]"
-                value={form.description}
-                onChange={(e) => updateField("description", e.target.value)}
-                placeholder="Describe what makes this stay special…"
-              />
-            </div>
-          </Section>
-
-          <Section title="Location">
-            <div className="grid md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm text-white/70 mb-1">City</label>
-                <input
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.city}
-                  onChange={(e) => updateField("city", e.target.value)}
-                  placeholder="Lagos, Abuja, Port Harcourt…"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Area</label>
-                <input
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.area}
-                  onChange={(e) => updateField("area", e.target.value)}
-                  placeholder="Ikoyi, Lekki, Maitama…"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Neighbourhood (optional)</label>
-                <input
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.neighbourhood}
-                  onChange={(e) => updateField("neighbourhood", e.target.value)}
-                  placeholder="Close to Landmark, Eko Atlantic…"
-                />
-              </div>
-            </div>
-
-            <div className="mt-4 grid md:grid-cols-2 gap-4 items-start">
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Street address (optional)</label>
-                <input
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.address}
-                  onChange={(e) => updateField("address", e.target.value)}
-                  placeholder="Shown only to confirmed guests"
-                />
-
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-white/60 mb-1">Latitude</label>
-                    <input
-                      className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs"
-                      value={form.lat ?? ""}
-                      onChange={(e) =>
-                        updateField("lat", e.target.value === "" ? null : Number(e.target.value))
-                      }
-                      placeholder="Click map or paste"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-white/60 mb-1">Longitude</label>
-                    <input
-                      className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs"
-                      value={form.lng ?? ""}
-                      onChange={(e) =>
-                        updateField("lng", e.target.value === "" ? null : Number(e.target.value))
-                      }
-                      placeholder="Click map or paste"
-                    />
-                  </div>
-                </div>
-
-                <p className="mt-2 text-[11px] text-white/50">
-                  Guests only see a nearby area map before booking. Exact details are shared securely after confirmation.
-                </p>
-              </div>
-
-              <div className="mt-1">
-                <ListingMap
-                  lat={
-                    typeof form.lat === "number"
-                      ? form.lat
-                      : typeof listing.lat === "number"
-                      ? listing.lat
-                      : null
-                  }
-                  lng={
-                    typeof form.lng === "number"
-                      ? form.lng
-                      : typeof listing.lng === "number"
-                      ? listing.lng
-                      : null
-                  }
-                  editable
-                  onChange={(pos) => {
-                    updateField("lat", pos.lat);
-                    updateField("lng", pos.lng);
-                  }}
-                />
-              </div>
-            </div>
-          </Section>
-
-          <Section title="Pricing & capacity">
-            <div className="grid md:grid-cols-5 gap-4">
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Nightly rate (₦)</label>
-                <input
-                  type="number"
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.nightlyRate}
-                  onChange={(e) => {
-                    updateField("nightlyRate", e.target.value);
-                    updateField("pricePerNight", e.target.value);
-                  }}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Bedrooms</label>
-                <input
-                  type="number"
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.bedrooms}
-                  onChange={(e) => updateField("bedrooms", e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Bathrooms</label>
-                <input
-                  type="number"
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.bathrooms}
-                  onChange={(e) => updateField("bathrooms", e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Beds</label>
-                <input
-                  type="number"
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.beds}
-                  onChange={(e) => updateField("beds", e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-white/70 mb-1">Max guests</label>
-                <input
-                  type="number"
-                  className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm"
-                  value={form.maxGuests}
-                  onChange={(e) => updateField("maxGuests", e.target.value)}
-                />
-              </div>
-            </div>
-          </Section>
-
-          <Section title="Amenities">
-            <div className="flex flex-wrap gap-2">
-              {amenitiesOptions.map((a) => {
-                const active = form.amenities.includes(a);
-                return (
-                  <button
-                    key={a}
-                    type="button"
-                    onClick={() => toggleAmenity(a)}
-                    className={`px-3 py-1 rounded-full text-xs border ${
-                      active
-                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-100"
-                        : "bg-white/5 border-white/15 text-white/70 hover:bg-white/10"
-                    }`}
-                  >
-                    {a}
-                  </button>
-                );
-              })}
-            </div>
-          </Section>
-
-          <Section title="Photos">
-            <ImageUploader
-              value={form.photos}
-              onChange={(next) => {
-                if (typeof next === "function") {
-                  setForm((prev) => ({ ...prev, photos: next(prev.photos || []) }));
-                } else {
-                  setForm((prev) => ({ ...prev, photos: Array.isArray(next) ? next : [] }));
-                }
-              }}
-              userId={user?.uid}
-              disabled={!user?.uid}
-            />
-          </Section>
-
-          <Section title="Booking options">
-            <label className="inline-flex items-center gap-2 text-sm text-white/80">
-              <input
-                type="checkbox"
-                checked={form.instantBook}
-                onChange={(e) => updateField("instantBook", e.target.checked)}
-              />
-              <span>Enable instant booking</span>
-            </label>
-          </Section>
-
-          <Section title="Featured (carousel)">
-            <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-sm flex flex-col gap-2">
-              <div className="text-xs text-amber-200">{requestSummary}</div>
-              <div className="text-xs text-white/60">{requestHelpText}</div>
-            </div>
-          </Section>
-        </form>
-
-        <div className="mt-6 flex flex-wrap items-center gap-3">
-          <button
-            disabled={busy || !canSave}
-            onClick={handleSave}
-            className={`px-5 py-3 rounded-xl border border-emerald-400/60 bg-emerald-500/15 hover:bg-emerald-500/25 text-sm font-semibold ${
-              !canSave ? "opacity-60 cursor-not-allowed" : ""
-            }`}
-          >
-            {busy ? "Saving…" : "Save changes"}
-          </button>
-
-          <button
-            type="button"
-            disabled={featureBusy || requestButtonDisabled}
-            onClick={showPayNowAction ? handlePayNow : handleOpenPlanModal}
-            className={`px-5 py-3 rounded-xl border border-amber-400/50 bg-amber-500/10 hover:bg-amber-500/20 text-sm font-semibold ${
-              featureBusy || requestButtonDisabled ? "opacity-60 cursor-not-allowed" : ""
-            }`}
-          >
-            {featureBusy ? "Working…" : showPayNowAction ? "Pay now" : requestButtonLabel}
-          </button>
-
-          <div className="ml-auto text-sm text-white/60">
-            Role: <strong>{profile?.role || "host/partner"}</strong>
-            {isAdmin && " · Admin"}
-          </div>
         </div>
       </main>
+    );
+  }
 
+  /* ── main render ───────────────────────────────────────────────── */
+  return (
+    <>
+      {/* ── modals ── */}
+      <InfoModal
+        open={infoModal.open}
+        title={infoModal.title}
+        body={infoModal.body}
+        onClose={closeInfo}
+      />
+      <ConfirmModal
+        open={confirmModal.open}
+        title={confirmModal.title}
+        body={confirmModal.body}
+        confirmLabel={confirmModal.confirmLabel}
+        tone={confirmModal.tone}
+        onConfirm={confirmModal.onConfirm}
+        onCancel={closeConfirm}
+      />
       <FeaturePlanModal
         open={planModalOpen}
         onClose={() => setPlanModalOpen(false)}
         onConfirm={confirmPlanAndRequest}
         initialPlanKey="spotlight"
       />
+
+      {/* ── page ── */}
+      {/* ✅ pt-20 keeps back button clear of fixed header */}
+      <main className="min-h-screen bg-[#05070a] pt-20 pb-16 px-4 text-white">
+        <div className="max-w-3xl mx-auto space-y-6">
+
+          {/* Back */}
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            className="inline-flex items-center gap-2 rounded-full px-4 py-2 bg-white/8 border border-white/10 hover:bg-white/12 text-sm text-white/70 hover:text-white transition-all"
+          >
+            ← Back
+          </button>
+
+          {/* Header */}
+          <header className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="space-y-0.5">
+              <div className="text-[11px] uppercase tracking-[0.16em] text-white/40 font-semibold">
+                Edit listing
+              </div>
+              <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-amber-300 truncate max-w-lg">
+                {form.title || "Untitled"}
+              </h1>
+              <div className="text-[12px] text-white/40">
+                ID: {id} · Role: {profile?.role || "host"}{isAdmin ? " · Admin" : ""}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleDelete}
+                className="px-4 py-2 rounded-2xl border border-red-500/30 text-red-300 hover:bg-red-500/10 text-sm transition-all"
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                disabled={!canSave}
+                onClick={handleSave}
+                className={[
+                  "px-4 py-2 rounded-2xl text-sm font-semibold transition-all",
+                  canSave
+                    ? "border border-amber-400/50 bg-amber-500/20 hover:bg-amber-500/30 text-amber-100"
+                    : "border border-white/10 bg-white/5 text-white/30 cursor-not-allowed",
+                ].join(" ")}
+              >
+                {busy ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </header>
+
+          {/* Inline save feedback */}
+          {saveErr && (
+            <div className="rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+              {saveErr}
+            </div>
+          )}
+          {saveSuccess && (
+            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100 flex items-center gap-2">
+              <span className="text-emerald-400">✓</span> Listing updated — redirecting…
+            </div>
+          )}
+
+          <form onSubmit={handleSave} className="space-y-4">
+
+            {/* Basics */}
+            <Section title="Basics">
+              <div className="grid md:grid-cols-2 gap-3">
+                <Field label="Title">
+                  <TextInput
+                    value={form.title}
+                    onChange={(e) => updateField("title", e.target.value)}
+                    placeholder="Designer studio in Lekki"
+                    maxLength={80}
+                  />
+                </Field>
+
+                <Field label="Property type">
+                  <SelectInput
+                    value={form.type}
+                    onChange={(e) => updateField("type", e.target.value)}
+                  >
+                    {TYPES.map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </SelectInput>
+                </Field>
+              </div>
+
+              <Field label="Description">
+                <TextArea
+                  value={form.description}
+                  onChange={(e) => updateField("description", e.target.value)}
+                  placeholder="Describe what makes this stay special…"
+                  maxLength={1000}
+                />
+                <div className="mt-1 text-right text-[11px] text-white/30">
+                  {form.description.length}/1000
+                </div>
+              </Field>
+            </Section>
+
+            {/* Location */}
+            <Section title="Location">
+              <div className="grid md:grid-cols-3 gap-3">
+                <Field label="City">
+                  <TextInput
+                    value={form.city}
+                    onChange={(e) => updateField("city", e.target.value)}
+                    placeholder="Lagos, Abuja…"
+                  />
+                </Field>
+                <Field label="Area">
+                  <TextInput
+                    value={form.area}
+                    onChange={(e) => updateField("area", e.target.value)}
+                    placeholder="Ikoyi, Lekki…"
+                  />
+                </Field>
+                <Field label="Neighbourhood" hint="Optional">
+                  <TextInput
+                    value={form.neighbourhood}
+                    onChange={(e) => updateField("neighbourhood", e.target.value)}
+                    placeholder="Near Landmark…"
+                  />
+                </Field>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4 items-start">
+                <div className="space-y-3">
+                  <Field label="Street address" hint="Shown only to confirmed guests">
+                    <TextInput
+                      value={form.address}
+                      onChange={(e) => updateField("address", e.target.value)}
+                      placeholder="e.g. 12 Bourdillon Road"
+                    />
+                  </Field>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Latitude">
+                      <TextInput
+                        className="text-xs"
+                        value={form.lat ?? ""}
+                        onChange={(e) =>
+                          updateField("lat", e.target.value === "" ? null : Number(e.target.value))
+                        }
+                        placeholder="6.435"
+                      />
+                    </Field>
+                    <Field label="Longitude">
+                      <TextInput
+                        className="text-xs"
+                        value={form.lng ?? ""}
+                        onChange={(e) =>
+                          updateField("lng", e.target.value === "" ? null : Number(e.target.value))
+                        }
+                        placeholder="3.421"
+                      />
+                    </Field>
+                  </div>
+
+                  <p className="text-[11px] text-white/40 leading-relaxed">
+                    Guests see only an approximate area map before booking. Exact location is
+                    shared securely after confirmation.
+                  </p>
+                </div>
+
+                <div>
+                  <ListingMap
+                    lat={
+                      typeof form.lat === "number" ? form.lat
+                      : typeof listing.lat === "number" ? listing.lat
+                      : null
+                    }
+                    lng={
+                      typeof form.lng === "number" ? form.lng
+                      : typeof listing.lng === "number" ? listing.lng
+                      : null
+                    }
+                    editable
+                    onChange={(pos) => {
+                      updateField("lat", pos.lat);
+                      updateField("lng", pos.lng);
+                    }}
+                  />
+                </div>
+              </div>
+            </Section>
+
+            {/* Pricing & capacity */}
+            <Section title="Pricing & capacity">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <Field label="Nightly rate (₦)">
+                  <TextInput
+                    type="number"
+                    inputMode="numeric"
+                    value={form.nightlyRate}
+                    onChange={(e) => {
+                      updateField("nightlyRate", e.target.value);
+                      updateField("pricePerNight", e.target.value);
+                    }}
+                    placeholder="0"
+                  />
+                </Field>
+                <Field label="Bedrooms">
+                  <TextInput
+                    type="number"
+                    min={0}
+                    value={form.bedrooms}
+                    onChange={(e) => updateField("bedrooms", e.target.value)}
+                    placeholder="0"
+                  />
+                </Field>
+                <Field label="Bathrooms">
+                  <TextInput
+                    type="number"
+                    min={0}
+                    value={form.bathrooms}
+                    onChange={(e) => updateField("bathrooms", e.target.value)}
+                    placeholder="0"
+                  />
+                </Field>
+                <Field label="Beds">
+                  <TextInput
+                    type="number"
+                    min={0}
+                    value={form.beds}
+                    onChange={(e) => updateField("beds", e.target.value)}
+                    placeholder="0"
+                  />
+                </Field>
+                <Field label="Max guests">
+                  <TextInput
+                    type="number"
+                    min={1}
+                    value={form.maxGuests}
+                    onChange={(e) => updateField("maxGuests", e.target.value)}
+                    placeholder="2"
+                  />
+                </Field>
+              </div>
+            </Section>
+
+            {/* Amenities */}
+            <Section title="Amenities">
+              <div className="flex flex-wrap gap-2">
+                {AMENITIES.map((a) => (
+                  <AmenityToggle
+                    key={a}
+                    label={a}
+                    checked={form.amenities.includes(a)}
+                    onChange={() => toggleAmenity(a)}
+                  />
+                ))}
+              </div>
+              {form.amenities.length > 0 && (
+                <p className="text-[11px] text-white/40">
+                  {form.amenities.length} selected: {form.amenities.join(", ")}
+                </p>
+              )}
+            </Section>
+
+            {/* Photos */}
+            <Section
+              title="Photos"
+              subtitle="First image becomes the cover photo."
+            >
+              <ImageUploader
+                value={form.photos}
+                onChange={(next) => {
+                  setForm((prev) => ({
+                    ...prev,
+                    photos: typeof next === "function"
+                      ? next(prev.photos || [])
+                      : Array.isArray(next) ? next : [],
+                  }));
+                }}
+                userId={user?.uid}
+                disabled={!user?.uid}
+              />
+            </Section>
+
+            {/* Booking options */}
+            <Section title="Booking options">
+              <label className="inline-flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-amber-400"
+                  checked={form.instantBook}
+                  onChange={(e) => updateField("instantBook", e.target.checked)}
+                />
+                <span className="text-sm text-white/80">Enable instant booking</span>
+              </label>
+            </Section>
+
+            {/* Featured */}
+            <Section
+              title="Featured placement"
+              subtitle="Appear in the homepage carousel to boost bookings."
+            >
+              <div className={["rounded-2xl border p-4 space-y-2", featurePillCls].join(" ")}>
+                <div className="text-sm font-semibold">{requestSummary}</div>
+                <div className="text-[13px] opacity-80">{requestHelpText}</div>
+              </div>
+
+              <button
+                type="button"
+                disabled={featureBusy || requestButtonDisabled}
+                onClick={showPayNowAction ? handlePayNow : handleOpenPlanModal}
+                className={[
+                  "px-5 py-2.5 rounded-2xl border text-sm font-semibold transition-all",
+                  featureBusy || requestButtonDisabled
+                    ? "border-white/10 bg-white/5 text-white/30 cursor-not-allowed"
+                    : showPayNowAction
+                    ? "border-emerald-400/50 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200"
+                    : "border-amber-400/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-200",
+                ].join(" ")}
+              >
+                {featureBusy ? "Working…" : showPayNowAction ? "Pay now" : requestButtonLabel}
+              </button>
+            </Section>
+
+          </form>
+
+          {/* Bottom action row */}
+          <div className="flex items-center gap-3 flex-wrap pt-2 border-t border-white/5">
+            <button
+              type="button"
+              disabled={!canSave}
+              onClick={handleSave}
+              className={[
+                "px-6 py-3 rounded-2xl text-sm font-semibold transition-all",
+                canSave
+                  ? "bg-amber-400 text-black hover:bg-amber-300 shadow-lg shadow-amber-400/20"
+                  : "bg-amber-500/20 text-black/40 cursor-not-allowed",
+              ].join(" ")}
+            >
+              {busy ? (
+                <span className="flex items-center gap-2">
+                  <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-black/30 border-t-black animate-spin" />
+                  Saving…
+                </span>
+              ) : (
+                "Save changes"
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="px-5 py-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-sm transition-all"
+            >
+              Cancel
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="ml-auto px-5 py-3 rounded-2xl border border-red-500/20 text-red-400 hover:bg-red-500/10 text-sm transition-all"
+            >
+              Delete listing
+            </button>
+          </div>
+
+        </div>
+      </main>
     </>
   );
 }

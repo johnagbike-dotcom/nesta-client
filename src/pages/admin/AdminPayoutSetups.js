@@ -34,6 +34,9 @@ function safeLower(v) {
 function safeUpper(v) {
   return String(v ?? "").trim().toUpperCase();
 }
+function safeStr(v) {
+  return String(v ?? "").trim();
+}
 function extractError(e, fallback = "Something went wrong.") {
   return (
     e?.response?.data?.error ||
@@ -47,6 +50,9 @@ function safeDateIso(v) {
   if (typeof v?.toDate === "function") return v.toDate();
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+function arrayify(v) {
+  return Array.isArray(v) ? v : [];
 }
 
 const statusTone = {
@@ -65,6 +71,21 @@ const statusTone = {
     text: "#fecaca",
     ring: "rgba(239,68,68,.35)",
   },
+  READY: {
+    bg: "rgba(16,185,129,.18)",
+    text: "#d1fae5",
+    ring: "rgba(16,185,129,.35)",
+  },
+  PARTIAL_ERROR: {
+    bg: "rgba(245,158,11,.18)",
+    text: "#fde68a",
+    ring: "rgba(245,158,11,.35)",
+  },
+  INACTIVE: {
+    bg: "rgba(120,120,120,.18)",
+    text: "#e5e7eb",
+    ring: "rgba(120,120,120,.35)",
+  },
   ALL: {
     bg: "rgba(255,255,255,.06)",
     text: "#e6e9ef",
@@ -73,7 +94,8 @@ const statusTone = {
 };
 
 const Chip = ({ label, tone }) => {
-  const c = statusTone[tone] || statusTone.PENDING_REVIEW;
+  const t = safeUpper(tone || label || "ALL");
+  const c = statusTone[t] || statusTone.PENDING_REVIEW;
   return (
     <span
       style={{
@@ -106,6 +128,15 @@ function normalizeListShape(payload) {
   return [];
 }
 
+function monoText(text) {
+  return {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: 12,
+    color: "rgba(255,255,255,.82)",
+    wordBreak: "break-all",
+  };
+}
+
 /* ------------------------------- modal ------------------------------- */
 function Modal({ open, title, children, onClose }) {
   if (!open) return null;
@@ -126,12 +157,14 @@ function Modal({ open, title, children, onClose }) {
       <div
         onMouseDown={(e) => e.stopPropagation()}
         style={{
-          width: "min(880px, 100%)",
+          width: "min(980px, 100%)",
           borderRadius: 18,
           border: "1px solid rgba(255,255,255,.12)",
           background: "rgba(10,12,16,.96)",
           boxShadow: "0 30px 90px rgba(0,0,0,.6)",
           overflow: "hidden",
+          maxHeight: "90vh",
+          overflowY: "auto",
         }}
       >
         <div
@@ -181,7 +214,6 @@ export default function AdminPayoutSetups() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  // View modal state
   const [viewOpen, setViewOpen] = useState(false);
   const [viewUid, setViewUid] = useState(null);
   const [viewData, setViewData] = useState(null);
@@ -240,6 +272,12 @@ export default function AdminPayoutSetups() {
         const note = safeLower(r.note);
         const name = safeLower(r.accountName);
 
+        const paystackCode = safeLower(r.paystackSubaccountCode);
+        const flwCollection = safeLower(r.flutterwaveCollectionSubaccountId);
+        const flwPayout = safeLower(r.flutterwavePayoutSubaccountRef);
+        const provisioningStatus = safeLower(r.provisioningStatus);
+        const providerErrors = arrayify(r.provisioningErrors).join(" ").toLowerCase();
+
         return (
           uid.includes(kw) ||
           role.includes(kw) ||
@@ -249,7 +287,12 @@ export default function AdminPayoutSetups() {
           code.includes(kw) ||
           acct.includes(kw) ||
           note.includes(kw) ||
-          name.includes(kw)
+          name.includes(kw) ||
+          paystackCode.includes(kw) ||
+          flwCollection.includes(kw) ||
+          flwPayout.includes(kw) ||
+          provisioningStatus.includes(kw) ||
+          providerErrors.includes(kw)
         );
       });
     }
@@ -311,7 +354,12 @@ export default function AdminPayoutSetups() {
       );
 
       if (data?.ok) {
-        tOk(status === "VERIFIED" ? "Payout method verified." : "Payout method rejected.");
+        if (data?.warning) {
+          tOk(data.warning);
+        } else {
+          tOk(status === "VERIFIED" ? "Payout method verified." : "Payout method rejected.");
+        }
+
         await load();
 
         if (viewUid === uid && viewOpen) {
@@ -393,7 +441,6 @@ export default function AdminPayoutSetups() {
         }
       />
 
-      {/* Controls */}
       <div
         style={{
           display: "grid",
@@ -432,7 +479,7 @@ export default function AdminPayoutSetups() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onSearchKeyDown}
-          placeholder="Search uid/role/kyc/bank/code/last4/note… (Enter)"
+          placeholder="Search uid/role/kyc/bank/code/last4/subaccounts/status… (Enter)"
           style={{
             height: 44,
             borderRadius: 12,
@@ -449,7 +496,6 @@ export default function AdminPayoutSetups() {
         </LuxeBtn>
       </div>
 
-      {/* Table */}
       <div
         style={{
           borderRadius: 16,
@@ -483,12 +529,27 @@ export default function AdminPayoutSetups() {
               width: "100%",
               borderCollapse: "separate",
               borderSpacing: 0,
-              minWidth: 1320,
+              minWidth: 1720,
             }}
           >
             <thead>
               <tr style={{ background: "rgba(255,255,255,.02)", color: "#aeb6c2", textAlign: "left" }}>
-                {["Updated", "UID", "Role", "KYC", "Bank", "Code", "Account", "BVN", "Status", "Note", "Actions"].map((h) => (
+                {[
+                  "Updated",
+                  "UID",
+                  "Role",
+                  "KYC",
+                  "Bank",
+                  "Code",
+                  "Account",
+                  "BVN",
+                  "Payout Status",
+                  "Provisioning",
+                  "Paystack",
+                  "Flutterwave",
+                  "Note",
+                  "Actions",
+                ].map((h) => (
                   <th key={h} style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
                     {h}
                   </th>
@@ -499,7 +560,7 @@ export default function AdminPayoutSetups() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={14} style={{ padding: 20, color: "#aeb6c2" }}>
                     Loading…
                   </td>
                 </tr>
@@ -507,7 +568,7 @@ export default function AdminPayoutSetups() {
 
               {!loading && pageItems.length === 0 && (
                 <tr>
-                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={14} style={{ padding: 20, color: "#aeb6c2" }}>
                     No results.
                   </td>
                 </tr>
@@ -518,6 +579,7 @@ export default function AdminPayoutSetups() {
                   const uid = p.uid;
                   const updated = safeDateIso(p.updatedAt);
                   const payoutStatus = safeUpper(p.payoutStatus || "PENDING_REVIEW");
+                  const provisioningStatus = safeUpper(p.provisioningStatus || "INACTIVE");
                   const isBusy = busyUid === uid;
                   const canAct = payoutStatus === "PENDING_REVIEW";
 
@@ -527,12 +589,7 @@ export default function AdminPayoutSetups() {
                         {updated ? dayjs(updated).format("YYYY-MM-DD, HH:mm") : "—"}
                       </td>
 
-                      <td
-                        style={{
-                          padding: "12px 16px",
-                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                        }}
-                      >
+                      <td style={{ padding: "12px 16px", ...monoText(uid || "—") }}>
                         {uid || "—"}
                       </td>
 
@@ -559,28 +616,62 @@ export default function AdminPayoutSetups() {
                         {p.bankCode || "—"}
                       </td>
 
-                      <td
-                        style={{
-                          padding: "12px 16px",
-                          whiteSpace: "nowrap",
-                          color: "rgba(255,255,255,.75)",
-                        }}
-                      >
+                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap", color: "rgba(255,255,255,.75)" }}>
                         {p.accountNumberMasked || "—"}
                       </td>
 
-                      <td
-                        style={{
-                          padding: "12px 16px",
-                          whiteSpace: "nowrap",
-                          color: "rgba(255,255,255,.75)",
-                        }}
-                      >
+                      <td style={{ padding: "12px 16px", whiteSpace: "nowrap", color: "rgba(255,255,255,.75)" }}>
                         {p.bvnMasked || "—"}
                       </td>
 
                       <td style={{ padding: "12px 16px" }}>
                         <Chip label={payoutStatus} tone={payoutStatus} />
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        <Chip label={provisioningStatus} tone={provisioningStatus} />
+                        {arrayify(p.provisioningErrors).length > 0 ? (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              fontSize: 11,
+                              color: "rgba(245,158,11,.95)",
+                              maxWidth: 220,
+                              whiteSpace: "normal",
+                              lineHeight: 1.35,
+                            }}
+                            title={arrayify(p.provisioningErrors).join("\n")}
+                          >
+                            {arrayify(p.provisioningErrors)[0]}
+                            {arrayify(p.provisioningErrors).length > 1
+                              ? ` (+${arrayify(p.provisioningErrors).length - 1} more)`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        <div style={{ ...monoText(p.paystackSubaccountCode || "—"), maxWidth: 180 }}>
+                          {p.paystackSubaccountCode || "—"}
+                        </div>
+                      </td>
+
+                      <td style={{ padding: "12px 16px" }}>
+                        <div style={{ ...monoText(p.flutterwaveCollectionSubaccountId || "—"), maxWidth: 180 }}>
+                          {p.flutterwaveCollectionSubaccountId || "—"}
+                        </div>
+                        {p.flutterwavePayoutSubaccountRef ? (
+                          <div
+                            style={{
+                              ...monoText(p.flutterwavePayoutSubaccountRef),
+                              maxWidth: 180,
+                              marginTop: 6,
+                              color: "rgba(255,255,255,.62)",
+                            }}
+                          >
+                            payout: {p.flutterwavePayoutSubaccountRef}
+                          </div>
+                        ) : null}
                       </td>
 
                       <td style={{ padding: "12px 16px", color: "rgba(255,255,255,.65)", maxWidth: 260 }}>
@@ -636,7 +727,6 @@ export default function AdminPayoutSetups() {
           </table>
         </div>
 
-        {/* Footer */}
         <div
           style={{
             display: "flex",
@@ -715,7 +805,6 @@ export default function AdminPayoutSetups() {
         Luxury best-practice: verify payout destination before enabling withdrawals to reduce fraud and protect brand trust.
       </div>
 
-      {/* View Modal */}
       <Modal
         open={viewOpen}
         title={`Payout details — ${viewUid || ""}`}
@@ -732,7 +821,7 @@ export default function AdminPayoutSetups() {
           <div style={{ color: "rgba(255,255,255,.7)" }}>No data.</div>
         ) : (
           <div style={{ display: "grid", gap: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
               <div
                 style={{
                   padding: 12,
@@ -764,6 +853,25 @@ export default function AdminPayoutSetups() {
                   <Chip
                     label={safeUpper(viewData.payoutStatus || "PENDING_REVIEW")}
                     tone={safeUpper(viewData.payoutStatus || "PENDING_REVIEW")}
+                  />
+                </div>
+              </div>
+
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,.10)",
+                  background: "rgba(255,255,255,.04)",
+                }}
+              >
+                <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>
+                  Provisioning
+                </div>
+                <div style={{ marginTop: 6 }}>
+                  <Chip
+                    label={safeUpper(viewData.paymentProfiles?.provisioningStatus || "INACTIVE")}
+                    tone={safeUpper(viewData.paymentProfiles?.provisioningStatus || "INACTIVE")}
                   />
                 </div>
               </div>
@@ -847,6 +955,106 @@ export default function AdminPayoutSetups() {
                   {resolveResult.ok
                     ? `✓ Validated via ${resolveResult.provider}: ${resolveResult.accountName}`
                     : `✕ Validation failed: ${resolveResult.message}`}
+                </div>
+              ) : null}
+            </div>
+
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 14,
+                border: "1px solid rgba(255,255,255,.10)",
+                background: "rgba(0,0,0,.25)",
+              }}
+            >
+              <div style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".14em" }}>
+                Provider profiles
+              </div>
+
+              <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,.08)",
+                    background: "rgba(255,255,255,.03)",
+                  }}
+                >
+                  <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 8 }}>Paystack</div>
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>Subaccount code</div>
+                  <div style={{ ...monoText(viewData.paymentProfiles?.paystack?.subaccountCode || "—"), marginTop: 4 }}>
+                    {viewData.paymentProfiles?.paystack?.subaccountCode || "—"}
+                  </div>
+
+                  <div style={{ fontSize: 12, opacity: 0.65, marginTop: 10 }}>Status</div>
+                  <div style={{ marginTop: 4 }}>
+                    <Chip
+                      label={safeUpper(viewData.paymentProfiles?.paystack?.status || "INACTIVE")}
+                      tone={safeUpper(viewData.paymentProfiles?.paystack?.status || "INACTIVE")}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,.08)",
+                    background: "rgba(255,255,255,.03)",
+                  }}
+                >
+                  <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 8 }}>Flutterwave</div>
+
+                  <div style={{ fontSize: 12, opacity: 0.65 }}>Collection subaccount ID</div>
+                  <div
+                    style={{
+                      ...monoText(viewData.paymentProfiles?.flutterwave?.collectionSubaccountId || "—"),
+                      marginTop: 4,
+                    }}
+                  >
+                    {viewData.paymentProfiles?.flutterwave?.collectionSubaccountId || "—"}
+                  </div>
+
+                  <div style={{ fontSize: 12, opacity: 0.65, marginTop: 10 }}>Payout reference</div>
+                  <div
+                    style={{
+                      ...monoText(viewData.paymentProfiles?.flutterwave?.payoutSubaccountRef || "—"),
+                      marginTop: 4,
+                    }}
+                  >
+                    {viewData.paymentProfiles?.flutterwave?.payoutSubaccountRef || "—"}
+                  </div>
+
+                  <div style={{ fontSize: 12, opacity: 0.65, marginTop: 10 }}>Status</div>
+                  <div style={{ marginTop: 4 }}>
+                    <Chip
+                      label={safeUpper(viewData.paymentProfiles?.flutterwave?.status || "INACTIVE")}
+                      tone={safeUpper(viewData.paymentProfiles?.flutterwave?.status || "INACTIVE")}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {arrayify(viewData.paymentProfiles?.provisioningErrors).length > 0 ? (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: "1px solid rgba(245,158,11,.25)",
+                    background: "rgba(245,158,11,.08)",
+                  }}
+                >
+                  <div style={{ fontWeight: 900, color: "#fde68a", marginBottom: 8 }}>
+                    Provisioning errors
+                  </div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {arrayify(viewData.paymentProfiles?.provisioningErrors).map((err, i) => (
+                      <div key={i} style={{ fontSize: 12, color: "rgba(255,255,255,.82)" }}>
+                        • {safeStr(err)}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ) : null}
             </div>

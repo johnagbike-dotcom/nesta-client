@@ -48,7 +48,24 @@ const Card = ({ title, children }) => (
   </section>
 );
 
-/* ------------------------------ Demo fallbacks ------------------------------ */
+
+/* ── Ghost / test booking filter (mirrors pattern used across all admin pages) ── */
+const GHOST_STATUSES = new Set([
+  "initialized", "pending", "hold", "hold-pending",
+  "awaiting_payment", "reserved_unpaid", "pending_payment",
+]);
+
+function isRealBooking(row) {
+  if (row.archived === true) return false;
+  const s = String(row.status || "").toLowerCase();
+  const hasRef = !!(row.reference || row.paymentRef || row.paymentReference || row.transactionId);
+  const isPaid = String(row.paymentStatus || "").toLowerCase() === "paid" || row.paid === true;
+  if (hasRef || isPaid) return true;
+  if (GHOST_STATUSES.has(s)) return false;
+  return true;
+}
+
+
 const demoBookings = [
   {
     id: "demo-bk-1",
@@ -145,7 +162,10 @@ export default function ReportsExports() {
       try {
         const qb = query(collection(db, "bookings"), orderBy("createdAt", "desc"));
         const sb = await getDocs(qb);
-        sb.forEach((d) => b.push({ id: d.id, ...d.data() }));
+        sb.forEach((d) => {
+          const row = { id: d.id, ...d.data() };
+          if (isRealBooking(row)) b.push(row);
+        });
       } catch {
         // ignore bookings preview failure
       }

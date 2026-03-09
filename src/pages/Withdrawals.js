@@ -137,6 +137,8 @@ export default function Withdrawals() {
     payoutStatus: "",
     payoutPreview: null,
     minWithdrawal: MIN_WITHDRAWAL_N_FALLBACK,
+    gatewayBreakdown: null,
+    splitMessage: "",
   });
 
   const [amount, setAmount] = useState("");
@@ -218,6 +220,8 @@ export default function Withdrawals() {
           payoutStatus: data.payoutStatus || "",
           payoutPreview: data.payoutPreview || null,
           minWithdrawal: Number(data.minWithdrawal || MIN_WITHDRAWAL_N_FALLBACK),
+          gatewayBreakdown: data.gatewayBreakdown || null,
+          splitMessage: data.splitMessage || "",
         };
 
         applyWalletState(next);
@@ -558,6 +562,43 @@ export default function Withdrawals() {
             </div>
           ) : null}
 
+          {/* ── Gateway breakdown panel ── */}
+          {!loading && availableN > 0 && wallet.gatewayBreakdown ? (() => {
+            const ps  = Number(wallet.gatewayBreakdown.paystack    || 0);
+            const flw = Number(wallet.gatewayBreakdown.flutterwave || 0);
+            const hasBoth = ps > 0 && flw > 0;
+
+            return (
+              <div className="mt-4 rounded-2xl border border-sky-400/20 bg-sky-500/8 px-4 py-3 text-xs text-white/80 leading-relaxed">
+                <div className="font-semibold text-white/90 mb-2">How your withdrawal will arrive</div>
+
+                <div className="flex flex-wrap gap-3">
+                  {ps > 0 && (
+                    <div className="flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3 py-1.5">
+                      <span className="text-emerald-300 font-semibold">🔵 Paystack</span>
+                      <span className="font-bold text-white">{money(ps)}</span>
+                    </div>
+                  )}
+                  {flw > 0 && (
+                    <div className="flex items-center gap-2 rounded-xl border border-orange-400/25 bg-orange-500/10 px-3 py-1.5">
+                      <span className="text-orange-300 font-semibold">⚡ Flutterwave</span>
+                      <span className="font-bold text-white">{money(flw)}</span>
+                    </div>
+                  )}
+                </div>
+
+                {wallet.splitMessage ? (
+                  <div className="mt-2 text-white/60">{wallet.splitMessage}</div>
+                ) : hasBoth ? (
+                  <div className="mt-2 text-white/60">
+                    You will receive two separate bank credits — both to your registered account.
+                    The total equals your available balance.
+                  </div>
+                ) : null}
+              </div>
+            );
+          })() : null}
+
           <div className="mt-6 space-y-4">
             <div>
               <label className="block text-sm text-white/80 mb-1">Amount (₦)</label>
@@ -690,6 +731,15 @@ export default function Withdrawals() {
                         >
                           {String(r.status || "pending")}
                         </span>
+                        {r.sourceGateway ? (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                            String(r.sourceGateway).toLowerCase() === "flutterwave"
+                              ? "border-orange-400/40 bg-orange-500/10 text-orange-200"
+                              : "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+                          }`}>
+                            {String(r.sourceGateway).toLowerCase() === "flutterwave" ? "⚡ FLW" : "🔵 PS"}
+                          </span>
+                        ) : null}
                       </div>
 
                       <div className="mt-1 text-xs text-white/50">

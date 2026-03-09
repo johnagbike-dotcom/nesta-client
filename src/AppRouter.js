@@ -1,6 +1,7 @@
 // src/AppRouter.js
-import React from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import React, { useEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { initGA, trackPageView } from "./utils/analytics";
 
 import Header from "./components/Header";
 import Footer from "./components/Footer";
@@ -89,6 +90,20 @@ import {
   OnboardingGate,
 } from "./routes/guards";
 
+/* ---------- GA4 route tracker ---------- */
+// Fires a page_view event on every route change.
+// Respects cookie consent — only tracks if user accepted analytics cookies.
+function RouteTracker() {
+  const location = useLocation();
+  useEffect(() => {
+    const consent = localStorage.getItem("nesta_cookie_consent");
+    if (consent === "all" || consent === "analytics") {
+      trackPageView(location.pathname + location.search);
+    }
+  }, [location]);
+  return null;
+}
+
 /* ---------- Local admin guard ---------- */
 function RequireAdmin({ children }) {
   const { user, profile, loading } = useAuth();
@@ -110,11 +125,15 @@ function RequireAdmin({ children }) {
 }
 
 export default function AppRouter() {
+  // Initialise GA4 once on app load
+  useEffect(() => { initGA(); }, []);
+
   return (
     <AuthProvider>
       <InboxProvider>
         <BrowserRouter>
           <ToastProvider>
+            <RouteTracker />
             <Header />
 
             <Routes>

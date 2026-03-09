@@ -4,7 +4,7 @@ import dayjs from "dayjs";
 import axios from "axios";
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../context/ToastContext";
 import { getAuth } from "firebase/auth";
 
 /* ------------------------------ axios base ------------------------------ */
@@ -231,13 +231,11 @@ export default function Transactions() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
 
-  const toast = useToast();
-  const notify = (msg, type = "success") => {
-    if (toast?.show) return toast.show(msg, type);
-    if (type === "error" && toast?.error) return toast.error(msg);
-    if (type === "success" && toast?.success) return toast.success(msg);
-    alert(msg);
-  };
+  const { showToast } = useToast();
+  const notify = useCallback(
+    (msg, type = "success") => { try { showToast?.(msg, type); } catch { /* no-op */ } },
+    [showToast]
+  );
 
   /* ------------------------------- load -------------------------------- */
   const load = useCallback(async () => {

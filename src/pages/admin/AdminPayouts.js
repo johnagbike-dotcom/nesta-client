@@ -82,6 +82,56 @@ const Chip = ({ label, tone = "pending" }) => {
   );
 };
 
+const GatewayBadge = ({ gateway }) => {
+  const isFlw = String(gateway || "").toLowerCase() === "flutterwave";
+  if (!gateway) return <span style={{ color: "rgba(255,255,255,.3)", fontSize: 12 }}>—</span>;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "3px 10px",
+        borderRadius: 999,
+        fontSize: 11,
+        fontWeight: 800,
+        background: isFlw ? "rgba(255,107,0,.15)" : "rgba(0,200,120,.12)",
+        color: isFlw ? "#fb923c" : "#4ade80",
+        border: `1px solid ${isFlw ? "rgba(255,107,0,.30)" : "rgba(0,200,120,.25)"}`,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {isFlw ? "⚡ FLW" : "🔵 PS"}
+    </span>
+  );
+};
+
+const BalanceCard = ({ label, amount, color, error, loading }) => (
+  <div
+    style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      padding: "14px 20px",
+      borderRadius: 14,
+      background: "rgba(255,255,255,.05)",
+      border: `1px solid ${error ? "rgba(239,68,68,.35)" : "rgba(255,255,255,.10)"}`,
+      minWidth: 210,
+    }}
+  >
+    <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 700 }}>{label}</div>
+    {loading ? (
+      <div style={{ fontSize: 13, color: "#64748b" }}>Loading…</div>
+    ) : error ? (
+      <div style={{ fontSize: 12, color: "#f87171" }}>{error}</div>
+    ) : (
+      <div style={{ fontSize: 22, fontWeight: 900, color }}>
+        {Number(amount || 0).toLocaleString("en-NG", { style: "currency", currency: "NGN", maximumFractionDigits: 0 })}
+      </div>
+    )}
+  </div>
+);
+
 const money = (n) =>
   Number(n || 0).toLocaleString("en-NG", {
     style: "currency",
@@ -169,6 +219,8 @@ export default function AdminPayouts() {
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [balances, setBalances] = useState(null);
+  const [balLoading, setBalLoading] = useState(false);
 
   const [busyId, setBusyId] = useState(null);
   const [busyAction, setBusyAction] = useState("");
@@ -177,6 +229,19 @@ export default function AdminPayouts() {
   const [queryStr, setQueryStr] = useState("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(10);
+
+  const loadBalances = async () => {
+    setBalLoading(true);
+    try {
+      const { data } = await api.get("/admin/payouts/balances");
+      setBalances(data?.balances || null);
+    } catch (e) {
+      console.error("Failed to load gateway balances", e);
+      setBalances(null);
+    } finally {
+      setBalLoading(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -207,6 +272,7 @@ export default function AdminPayouts() {
 
   useEffect(() => {
     load();
+    loadBalances();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -235,6 +301,7 @@ export default function AdminPayouts() {
         const transferCode = String(r.transferCode || "").toLowerCase();
         const gatewayStatus = String(r.gatewayStatus || "").toLowerCase();
         const amount = String(r.amount || "").toLowerCase();
+        const sourceGateway = String(r.sourceGateway || "").toLowerCase();
 
         return (
           id.includes(q) ||
@@ -248,6 +315,7 @@ export default function AdminPayouts() {
           transferRef.includes(q) ||
           transferCode.includes(q) ||
           gatewayStatus.includes(q) ||
+          sourceGateway.includes(q) ||
           amount.includes(q)
         );
       });
@@ -369,6 +437,78 @@ export default function AdminPayouts() {
     }
   };
 
+  const sendViaFlutterwave = async (row) => {
+    const id = row?.id;
+    if (!id) return;
+
+    const amountText = money(row?.amount || 0);
+    const proceed = window.confirm(
+      `Send ${amountText} to this host/partner via Flutterwave now?`
+    );
+    if (!proceed) return;
+
+    const note = window.prompt("Optional payout note / reason", "") || "";
+
+    setBusyId(id);
+    setBusyAction("flutterwave-send");
+
+    try {
+      const { data } = await api.post(
+        `/admin/payouts/${encodeURIComponent(id)}/flutterwave-send`,
+        { note }
+      );
+
+      const status = String(data?.status || "").toLowerCase();
+      if (status === "paid") {
+        tOk("Flutterwave payout sent and settled successfully.");
+      } else if (status === "failed") {
+        tErr("Flutterwave payout failed and funds were returned.");
+      } else {
+        tInfo("Flutterwave payout initiated. Status is processing.");
+      }
+
+      await load();
+      await loadBalances();
+    } catch (e) {
+      console.error("Flutterwave send failed", e);
+      tErr(extractError(e, "Flutterwave payout failed."));
+    } finally {
+      setBusyId(null);
+      setBusyAction("");
+    }
+  };
+
+  const syncFlutterwave = async (row) => {
+    const id = row?.id;
+    if (!id) return;
+
+    setBusyId(id);
+    setBusyAction("flutterwave-sync");
+
+    try {
+      const { data } = await api.post(
+        `/admin/payouts/${encodeURIComponent(id)}/flutterwave-sync`
+      );
+
+      const status = String(data?.status || "").toLowerCase();
+      if (status === "paid") {
+        tOk("Flutterwave payout synced and marked paid.");
+      } else if (status === "failed") {
+        tErr("Flutterwave payout synced as failed and funds were returned.");
+      } else {
+        tInfo("Flutterwave payout is still processing.");
+      }
+
+      await load();
+    } catch (e) {
+      console.error("Flutterwave sync failed", e);
+      tErr(extractError(e, "Flutterwave sync failed."));
+    } finally {
+      setBusyId(null);
+      setBusyAction("");
+    }
+  };
+
   const isBusy = (id, action = "") =>
     busyId === id && (!action || busyAction === action);
 
@@ -377,15 +517,38 @@ export default function AdminPayouts() {
       <AdminHeader
         back
         title="Payout requests"
-        subtitle="Manage withdrawals and send host/partner payouts via Paystack."
+        subtitle="Manage withdrawals. Gateway badge shows which balance to pay from — always check before sending."
         rightActions={
           <div style={{ display: "flex", gap: 8 }}>
-            <LuxeBtn small onClick={load} title="Refresh">
+            <LuxeBtn small onClick={() => { load(); loadBalances(); }} title="Refresh">
               {loading ? "Loading…" : "Refresh"}
             </LuxeBtn>
           </div>
         }
       />
+
+      {/* ── Live gateway balance cards ── */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <BalanceCard
+          label="🔵 Paystack Balance (NGN)"
+          amount={balances?.paystack?.ngn}
+          color="#4ade80"
+          error={balances?.paystack?.error}
+          loading={balLoading}
+        />
+        <BalanceCard
+          label="⚡ Flutterwave Balance (NGN)"
+          amount={balances?.flutterwave?.ngn}
+          color="#fb923c"
+          error={balances?.flutterwave?.error}
+          loading={balLoading}
+        />
+        <div style={{ paddingBottom: 8 }}>
+          <span style={{ fontSize: 12, color: "#475569" }}>
+            Ensure the correct gateway has sufficient funds before sending.
+          </span>
+        </div>
+      </div>
 
       <div
         style={{
@@ -467,7 +630,7 @@ export default function AdminPayouts() {
               width: "100%",
               borderCollapse: "separate",
               borderSpacing: 0,
-              minWidth: 1480,
+              minWidth: 1680,
             }}
           >
             <thead>
@@ -484,6 +647,7 @@ export default function AdminPayouts() {
                   "UID",
                   "Role",
                   "Amount",
+                  "Source",
                   "Bank",
                   "Account",
                   "Status",
@@ -501,7 +665,7 @@ export default function AdminPayouts() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={12} style={{ padding: 20, color: "#aeb6c2" }}>
                     Loading…
                   </td>
                 </tr>
@@ -509,7 +673,7 @@ export default function AdminPayouts() {
 
               {!loading && pageItems.length === 0 && (
                 <tr>
-                  <td colSpan={11} style={{ padding: 20, color: "#aeb6c2" }}>
+                  <td colSpan={12} style={{ padding: 20, color: "#aeb6c2" }}>
                     No results.
                   </td>
                 </tr>
@@ -524,14 +688,19 @@ export default function AdminPayouts() {
                   const status = normalizeStatus(p.status);
                   const gatewayStatus = String(p.gatewayStatus || "").toLowerCase();
                   const transferRef = p.transferRef || "-";
+                  const sourceGateway = String(p.sourceGateway || "").toLowerCase();
+                  const isFlwSource = sourceGateway === "flutterwave";
 
                   const canManualProcess = status === "pending";
-                  const canManualSettle =
-                    status === "pending" || status === "processing";
-                  const canSendPaystack =
-                    status === "pending" || status === "processing";
-                  const canSyncPaystack =
-                    status === "processing" && !!p.transferRef;
+                  const canManualSettle = status === "pending" || status === "processing";
+
+                  // Send buttons: enabled for pending/processing, highlighted when matching sourceGateway
+                  const canSendPaystack  = status === "pending" || status === "processing";
+                  const canSendFlw       = status === "pending" || status === "processing";
+
+                  // Sync buttons: only once a transfer is in flight
+                  const canSyncPaystack  = status === "processing" && !!p.transferRef && !isFlwSource;
+                  const canSyncFlw       = status === "processing" && !!p.transferRef && isFlwSource;
 
                   return (
                     <tr key={id}>
@@ -551,6 +720,11 @@ export default function AdminPayouts() {
 
                       <td style={{ padding: "12px 16px", whiteSpace: "nowrap", fontWeight: 900 }}>
                         {money(amount)}
+                      </td>
+
+                      {/* Source gateway badge */}
+                      <td style={{ padding: "12px 16px" }}>
+                        <GatewayBadge gateway={p.sourceGateway} />
                       </td>
 
                       <td style={{ padding: "12px 16px" }}>
@@ -628,23 +802,48 @@ export default function AdminPayouts() {
                             {isBusy(id, "failed") ? "Working…" : "Mark failed"}
                           </LuxeBtn>
 
+                          {/* Paystack send — amber (recommended) when sourceGateway is paystack */}
                           <LuxeBtn
                             small
-                            kind="amber"
+                            kind={!isFlwSource ? "amber" : "slate"}
                             disabled={isBusy(id) || !canSendPaystack}
                             onClick={() => sendViaPaystack(p)}
                           >
-                            {isBusy(id, "paystack-send") ? "Sending…" : "Send via Paystack"}
+                            {isBusy(id, "paystack-send") ? "Sending…" : "🔵 Send via Paystack"}
                           </LuxeBtn>
 
+                          {/* Flutterwave send — amber (recommended) when sourceGateway is flutterwave */}
                           <LuxeBtn
                             small
-                            kind="slate"
-                            disabled={isBusy(id) || !canSyncPaystack}
-                            onClick={() => syncPaystack(p)}
+                            kind={isFlwSource ? "amber" : "slate"}
+                            disabled={isBusy(id) || !canSendFlw}
+                            onClick={() => sendViaFlutterwave(p)}
                           >
-                            {isBusy(id, "paystack-sync") ? "Syncing…" : "Sync payout"}
+                            {isBusy(id, "flutterwave-send") ? "Sending…" : "⚡ Send via Flutterwave"}
                           </LuxeBtn>
+
+                          {/* Sync — only shown for the matching gateway once processing */}
+                          {canSyncPaystack && (
+                            <LuxeBtn
+                              small
+                              kind="slate"
+                              disabled={isBusy(id)}
+                              onClick={() => syncPaystack(p)}
+                            >
+                              {isBusy(id, "paystack-sync") ? "Syncing…" : "Sync PS"}
+                            </LuxeBtn>
+                          )}
+
+                          {canSyncFlw && (
+                            <LuxeBtn
+                              small
+                              kind="slate"
+                              disabled={isBusy(id)}
+                              onClick={() => syncFlutterwave(p)}
+                            >
+                              {isBusy(id, "flutterwave-sync") ? "Syncing…" : "Sync FLW"}
+                            </LuxeBtn>
+                          )}
                         </div>
 
                         {!!p.note && (

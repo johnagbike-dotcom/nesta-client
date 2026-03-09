@@ -14,10 +14,8 @@ import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../context/ToastContext";
 
-// ✅ Your AppRouter uses "/host"
 const HOST_DASHBOARD_PATH = "/host";
 
-// ✅ API base normalization (prevents /api/api mistakes)
 const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
 const API_BASE = /\/api$/i.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/api`;
 
@@ -65,7 +63,38 @@ function safeLower(v) {
   return String(v || "").toLowerCase();
 }
 
-// ✅ Normalized “needs attention”
+// ─── Real booking guard ──────────────────────────────────────────────────────
+// Excludes pre-payment ghost records: no payment reference AND unstarted status.
+const GHOST_STATUSES = new Set([
+  "initialized",
+  "pending",
+  "hold",
+  "hold-pending",
+  "awaiting_payment",
+  "reserved_unpaid",
+  "pending_payment",
+]);
+
+function isRealBooking(row) {
+  // Archived = soft deleted — always exclude
+  if (row.archived === true) return false;
+
+  const s = safeLower(row.status || "");
+  const hasRef = !!(row.reference || row.paymentRef || row.paymentReference || row.transactionId);
+  const payStatus = safeLower(row.paymentStatus || "");
+  const isPaid = payStatus === "paid" || row.paid === true;
+
+  // If it has a payment reference or is marked paid, it's real regardless of status
+  if (hasRef || isPaid) return true;
+
+  // Ghost: unpaid status with no reference
+  if (GHOST_STATUSES.has(s)) return false;
+
+  // Anything else (confirmed, cancelled, refunded, etc.) is real
+  return true;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 const isAttentionStatus = (statusRaw, row = {}) => {
   const s = String(statusRaw || "").toLowerCase();
 
@@ -83,24 +112,16 @@ const isAttentionStatus = (statusRaw, row = {}) => {
   if (flags) return true;
 
   return [
-    "pending",
-    "hold",
-    "hold-pending",
-    "awaiting_payment",
-    "reserved_unpaid",
-    "pending_payment",
-    "initialized",
-    "change-request",
-    "date-change",
     "cancel-request",
     "cancel_request",
     "refund_requested",
     "paid-needs-review",
     "payment-review",
+    "change-request",
+    "date-change",
   ].includes(s);
 };
 
-// Normalise a Firestore booking row into something consistent
 const normalizeBooking = (docSnap) => {
   const data = docSnap.data ? docSnap.data() : docSnap;
   const id = docSnap.id || data.id;
@@ -160,6 +181,40 @@ async function apiPost(path, token, body = undefined) {
   return payload || { ok: true };
 }
 
+// ─── Inline confirm modal ────────────────────────────────────────────────────
+function ConfirmModal({ open, title, body, confirmLabel = "Confirm", confirmTone = "amber", onConfirm, onCancel }) {
+  if (!open) return null;
+  const btnClass =
+    confirmTone === "red"
+      ? "bg-red-600 hover:bg-red-500 text-white border-red-500"
+      : confirmTone === "emerald"
+      ? "bg-emerald-600 hover:bg-emerald-500 text-black border-emerald-500"
+      : "bg-amber-500 hover:bg-amber-400 text-black border-amber-400";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0b0f17] shadow-[0_30px_80px_rgba(0,0,0,0.7)] p-6">
+        <h3 className="text-base font-semibold text-white mb-2">{title}</h3>
+        {body && <p className="text-sm text-white/65 mb-5 leading-relaxed">{body}</p>}
+        <div className="flex justify-end gap-3">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded-xl text-sm bg-white/5 border border-white/15 hover:bg-white/10 text-white"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`px-4 py-2 rounded-xl text-sm font-semibold border ${btnClass}`}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function HostReservationsPage({
   ownerField = "hostId",
   pageTitle = "Host reservations",
@@ -173,10 +228,15 @@ export default function HostReservationsPage({
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  const [tab, setTab] = useState("all"); // all | upcoming | past | attention
+  const [tab, setTab] = useState("all");
   const [selected, setSelected] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [busy, setBusy] = useState({}); // per-row action state
+  const [busy, setBusy] = useState({});
+
+  // ── Modal state ──────────────────────────────────────────────────────────
+  const [modal, setModal] = useState(null); // { type, row }
+  const closeModal = () => setModal(null);
+  // ─────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const sp = new URLSearchParams(location.search || "");
@@ -196,7 +256,10 @@ export default function HostReservationsPage({
         orderBy("createdAt", "desc")
       );
       const snap = await getDocs(qRef);
-      const out = snap.docs.map((d) => normalizeBooking(d));
+      // ✅ Filter out archived + ghost pre-payment records client-side
+      const out = snap.docs
+        .map((d) => normalizeBooking(d))
+        .filter(isRealBooking);
       setRows(out);
     } catch (e) {
       console.error("[HostReservations] load failed:", e);
@@ -213,9 +276,7 @@ export default function HostReservationsPage({
       if (!alive) return;
       await reload();
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [reload]);
 
   const filtered = useMemo(() => {
@@ -227,60 +288,27 @@ export default function HostReservationsPage({
   }, [rows, tab]);
 
   const stats = useMemo(() => {
-    let confirmed = 0;
-    let pending = 0;
-    let cancelled = 0;
-    let refunded = 0;
-    let attention = 0;
+    let confirmed = 0, pending = 0, cancelled = 0, refunded = 0, attention = 0;
 
     rows.forEach((r) => {
       const s = safeLower(r.status || "");
-
-      // ✅ Confirmed bucket includes current lifecycle
-      if (
-        [
-          "confirmed",
-          "paid",
-          "completed",
-          "paid_pending_release",
-          "checked_in",
-          "released",
-        ].includes(s)
-      ) {
+      if (["confirmed", "paid", "completed", "paid_pending_release", "checked_in", "released"].includes(s)) {
         confirmed += 1;
-      } else if (
-        [
-          "pending",
-          "hold",
-          "reserved_unpaid",
-          "awaiting_payment",
-          "pending_payment",
-          "initialized",
-        ].includes(s)
-      ) {
+      } else if (["pending", "hold", "reserved_unpaid", "awaiting_payment", "pending_payment", "initialized"].includes(s)) {
         pending += 1;
       } else if (["cancelled", "canceled"].includes(s)) {
         cancelled += 1;
       } else if (s === "refunded") {
         refunded += 1;
       }
-
       if (isAttentionStatus(s, r)) attention += 1;
     });
 
     return { confirmed, pending, cancelled, refunded, attention, total: rows.length };
   }, [rows]);
 
-  const openDrawerFor = (row) => {
-    setSelected(row);
-    setDrawerOpen(true);
-  };
-
-  const closeDrawer = () => {
-    setDrawerOpen(false);
-    setSelected(null);
-  };
-
+  const openDrawerFor = (row) => { setSelected(row); setDrawerOpen(true); };
+  const closeDrawer = () => { setDrawerOpen(false); setSelected(null); };
   const markBusy = (id, flag) => setBusy((prev) => ({ ...prev, [id]: flag }));
 
   const redirectToDashboardRefresh = useCallback(
@@ -289,9 +317,7 @@ export default function HostReservationsPage({
       qp.set("refresh", "1");
       qp.set("fromTab", String(fromTab || "all"));
       if (actionLabel) qp.set("action", actionLabel);
-
       await sleep(350);
-
       nav(`${HOST_DASHBOARD_PATH}?${qp.toString()}`, {
         replace: true,
         state: { refresh: true, from: "host-reservations", fromTab, action: actionLabel },
@@ -300,42 +326,22 @@ export default function HostReservationsPage({
     [nav]
   );
 
-  /**
-   * ✅ Confirm/Stamp endpoint should ONLY be offered after payment is paid.
-   */
-  const handleConfirm = async (row) => {
-    if (!row?.id) return;
+  // ── Actions (all modal-gated, no window.confirm / alert) ─────────────────
 
-    const s = safeLower(row.status || "");
+  const execConfirm = async (row) => {
+    closeModal();
+    if (!row?.id) return;
     const payStatus = safeLower(row.paymentStatus || "");
     const isPaid = payStatus === "paid" || row.paid === true;
-
-    if (!isPaid) {
-      toast("Payment is not verified as paid yet. Confirmation is blocked.", "info");
-      return;
-    }
-
-    if (!["paid_pending_release", "paid", "confirmed", "checked_in", "released", "completed"].includes(s)) {
-      toast("This booking is not in a confirmable state.", "info");
-      return;
-    }
-
-    if (!window.confirm("Stamp this booking as confirmed (audit stamp)?")) return;
+    if (!isPaid) { toast("Payment is not verified as paid yet. Confirmation is blocked.", "info"); return; }
 
     markBusy(row.id, true);
     try {
       let token = "";
-      try {
-        token = user ? await user.getIdToken() : "";
-      } catch {
-        token = "";
-      }
-
+      try { token = user ? await user.getIdToken() : ""; } catch { token = ""; }
       await apiPost(`/bookings/${row.id}/confirm`, token, {});
-
       closeDrawer();
       await reload();
-
       toast("Booking confirmed ✅", "success");
       await redirectToDashboardRefresh(tab, "confirmed");
     } catch (e) {
@@ -346,22 +352,15 @@ export default function HostReservationsPage({
     }
   };
 
-  // (kept) Cancel: still direct Firestore update for now.
-  const handleCancel = async (row) => {
+  const execCancel = async (row) => {
+    closeModal();
     if (!row?.id) return;
-    if (!window.confirm("Cancel this booking?")) return;
-
     markBusy(row.id, true);
     try {
-      await updateDoc(doc(db, "bookings", row.id), {
-        status: "cancelled",
-        updatedAt: new Date(),
-      });
-
+      await updateDoc(doc(db, "bookings", row.id), { status: "cancelled", updatedAt: new Date() });
       closeDrawer();
       await reload();
-
-      toast("Booking cancelled ✅", "info");
+      toast("Booking cancelled", "info");
       await redirectToDashboardRefresh(tab, "cancelled");
     } catch (e) {
       console.error("[HostReservations] cancel failed:", e);
@@ -371,25 +370,14 @@ export default function HostReservationsPage({
     }
   };
 
-  const handleRefund = async (row) => {
+  const execRefund = async (row) => {
+    closeModal();
     if (!row?.id) return;
-    if (
-      !window.confirm(
-        "Mark this booking as refunded? Make sure you have processed payment in your gateway."
-      )
-    )
-      return;
-
     markBusy(row.id, true);
     try {
-      await updateDoc(doc(db, "bookings", row.id), {
-        status: "refunded",
-        updatedAt: new Date(),
-      });
-
+      await updateDoc(doc(db, "bookings", row.id), { status: "refunded", updatedAt: new Date() });
       closeDrawer();
       await reload();
-
       toast("Marked as refunded ✅", "success");
       await redirectToDashboardRefresh(tab, "refunded");
     } catch (e) {
@@ -400,40 +388,24 @@ export default function HostReservationsPage({
     }
   };
 
-  // ✅ check-in schedules release server-side
-  const handleCheckinRelease = async (row) => {
+  const execCheckinRelease = async (row) => {
+    closeModal();
     if (!row?.id) return;
-
     const s = safeLower(row.status || "");
     const payStatus = safeLower(row.paymentStatus || "");
     const isPaid = payStatus === "paid" || row.paid === true;
-
-    const eligible =
-      s === "paid_pending_release" &&
-      isPaid &&
-      isTodayOrPast(row.checkIn);
-
+    const eligible = s === "paid_pending_release" && isPaid && isTodayOrPast(row.checkIn);
     if (!eligible) {
       toast("Not eligible yet. Booking must be paid and the check-in date must be today or earlier.", "info");
       return;
     }
-
-    if (!window.confirm("Confirm guest check-in and schedule payout release?")) return;
-
     markBusy(row.id, true);
     try {
       let token = "";
-      try {
-        token = user ? await user.getIdToken() : "";
-      } catch {
-        token = "";
-      }
-
+      try { token = user ? await user.getIdToken() : ""; } catch { token = ""; }
       const payload = await apiPost(`/bookings/${row.id}/checkin`, token, {});
-
       closeDrawer();
       await reload();
-
       if (payload?.scheduledRelease) {
         toast("Guest check-in confirmed ✅ Payout release scheduled.", "success");
         await redirectToDashboardRefresh(tab, "checked_in");
@@ -452,20 +424,16 @@ export default function HostReservationsPage({
     }
   };
 
-  // ✅ ChatPage expects state.partnerUid + state.listing
   const handleMessage = (row) => {
     if (!row?.id) return;
-
     const partnerUid = row.guestUid || null;
     const listing = row.listingId
       ? { id: row.listingId, title: row.listingTitle || "Listing" }
       : null;
-
     if (!partnerUid || !listing?.id) {
-      alert("This booking is missing guest or listing information for chat.");
+      toast("This booking is missing guest or listing information for chat.", "error");
       return;
     }
-
     nav("/chat", {
       state: {
         partnerUid,
@@ -476,16 +444,63 @@ export default function HostReservationsPage({
     });
   };
 
+  // Modal-gated action handlers (open modal, execute on confirm)
+  const handleConfirm = (row) => setModal({ type: "confirm", row });
+  const handleCancel = (row) => setModal({ type: "cancel", row });
+  const handleRefund = (row) => setModal({ type: "refund", row });
+  const handleCheckinRelease = (row) => setModal({ type: "checkin", row });
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   return (
     <main className="min-h-screen bg-[#05070b] text-white pt-20 pb-10 px-4">
+
+      {/* ── Inline confirm modals ─────────────────────────────────────────── */}
+      <ConfirmModal
+        open={modal?.type === "confirm"}
+        title="Stamp booking as confirmed?"
+        body="This is an audit stamp only. The webhook already confirms payment. Use this to manually mark a verified booking."
+        confirmLabel="Stamp confirmed"
+        confirmTone="emerald"
+        onConfirm={() => execConfirm(modal.row)}
+        onCancel={closeModal}
+      />
+      <ConfirmModal
+        open={modal?.type === "cancel"}
+        title="Cancel this booking?"
+        body="This will set the booking status to cancelled. If payment was received, process a refund separately through your gateway."
+        confirmLabel="Cancel booking"
+        confirmTone="red"
+        onConfirm={() => execCancel(modal.row)}
+        onCancel={closeModal}
+      />
+      <ConfirmModal
+        open={modal?.type === "refund"}
+        title="Mark as refunded?"
+        body="Confirm only after you have processed the actual refund in Paystack or Flutterwave. This updates the booking record only."
+        confirmLabel="Mark refunded"
+        confirmTone="amber"
+        onConfirm={() => execRefund(modal.row)}
+        onCancel={closeModal}
+      />
+      <ConfirmModal
+        open={modal?.type === "checkin"}
+        title="Confirm guest check-in?"
+        body="This will confirm the guest's check-in and schedule the payout release. Only do this once the guest has physically checked in."
+        confirmLabel="Confirm check-in"
+        confirmTone="emerald"
+        onConfirm={() => execCheckinRelease(modal.row)}
+        onCancel={closeModal}
+      />
+      {/* ─────────────────────────────────────────────────────────────────── */}
+
       <div className="max-w-6xl mx-auto">
-        {/* Header */}
         <header className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <div>
             <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
               {pageTitle || "Host reservations"}
             </h1>
-            <p className="text-sm text-white/70 mt-1">
+            <p className="text-sm text-white/60 mt-1">
               Review guest bookings, manage check-in and payout release, and handle exceptions from one place.
             </p>
           </div>
@@ -508,7 +523,7 @@ export default function HostReservationsPage({
         </section>
 
         {/* Tabs */}
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-2 mb-4 flex-wrap">
           {[
             ["all", "All"],
             ["upcoming", "Upcoming"],
@@ -530,7 +545,7 @@ export default function HostReservationsPage({
         </div>
 
         {loading && (
-          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm">
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/60">
             Loading reservations…
           </div>
         )}
@@ -544,8 +559,14 @@ export default function HostReservationsPage({
         {!loading && !err && filtered.length === 0 && (
           <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm">
             <p className="font-semibold mb-1">No reservations found.</p>
-            <p className="text-white/70">
-              Once guests book your listing, reservations will appear here.
+            <p className="text-white/60">
+              {tab === "attention"
+                ? "No bookings currently need attention."
+                : tab === "upcoming"
+                ? "No upcoming check-outs."
+                : tab === "past"
+                ? "No past stays yet."
+                : "Once guests book your listing, reservations will appear here."}
             </p>
           </div>
         )}
@@ -574,14 +595,14 @@ export default function HostReservationsPage({
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-white/60 mt-0.5">Guest: {row.guestEmail}</p>
-                      <p className="text-xs text-white/50 mt-0.5">
+                      <p className="text-xs text-white/55 mt-0.5">Guest: {row.guestEmail}</p>
+                      <p className="text-xs text-white/45 mt-0.5">
                         {fmtDate(row.checkIn)} → {fmtDate(row.checkOut)} · {row.guests || 1} guest(s)
                       </p>
                     </div>
-                    <div className="text-right text-xs md:text-sm">
-                      <div className="font-semibold">{formatNgn(row.amount || 0)}</div>
-                      <div className="text-white/50 mt-0.5">
+                    <div className="text-right text-xs md:text-sm shrink-0">
+                      <div className="font-semibold text-amber-200">{formatNgn(row.amount || 0)}</div>
+                      <div className="text-white/40 mt-0.5">
                         Ref:{" "}
                         <span className="font-mono">
                           {(row.reference || row.id || "—").toString().slice(0, 10)}
@@ -600,10 +621,7 @@ export default function HostReservationsPage({
       <BookingDetailDrawer
         open={drawerOpen}
         booking={selected}
-        onClose={() => {
-          setDrawerOpen(false);
-          setSelected(null);
-        }}
+        onClose={closeDrawer}
         onConfirm={selected ? () => handleConfirm(selected) : undefined}
         onCancel={selected ? () => handleCancel(selected) : undefined}
         onRefund={selected ? () => handleRefund(selected) : undefined}
@@ -616,7 +634,7 @@ export default function HostReservationsPage({
   );
 }
 
-/* ---------- Small subcomponents ---------- */
+/* ── Subcomponents ─────────────────────────────────────────────────────────── */
 
 function Kpi({ label, value, tone }) {
   const toneClasses =
@@ -632,7 +650,7 @@ function Kpi({ label, value, tone }) {
 
   return (
     <div className={`rounded-2xl px-3 py-2 border ${toneClasses} flex flex-col justify-between`}>
-      <div className="text-[10px] uppercase tracking-[0.16em] text-white/55">{label}</div>
+      <div className="text-[10px] uppercase tracking-[0.16em] text-white/50">{label}</div>
       <div className="mt-1 text-base md:text-lg font-semibold">
         {Number(value || 0).toLocaleString()}
       </div>
@@ -649,7 +667,7 @@ function StatusChip({ status, row }) {
 
   if (s === "paid_pending_release") {
     classes = "border-amber-400/60 text-amber-200 bg-amber-500/10";
-    label = "paid pending release";
+    label = "paid · pending release";
   } else if (s === "checked_in") {
     classes = "border-sky-400/60 text-sky-200 bg-sky-500/10";
     label = "checked in";
@@ -670,7 +688,7 @@ function StatusChip({ status, row }) {
   );
 }
 
-/* ---------- Booking detail drawer ---------- */
+/* ── Booking detail drawer ─────────────────────────────────────────────────── */
 
 function BookingDetailDrawer({
   open,
@@ -710,9 +728,7 @@ function BookingDetailDrawer({
     ["paid_pending_release", "paid", "confirmed", "checked_in", "released", "completed"].includes(s);
 
   const canScheduleRelease =
-    s === "paid_pending_release" &&
-    isPaid &&
-    isTodayOrPast(booking.checkIn);
+    s === "paid_pending_release" && isPaid && isTodayOrPast(booking.checkIn);
 
   const alreadyCheckedIn = s === "checked_in";
   const alreadyReleased = s === "released";
@@ -724,13 +740,7 @@ function BookingDetailDrawer({
     const ci = toDateObj(booking.checkIn);
     const co = toDateObj(booking.checkOut);
     const fmt = (d) =>
-      d
-        ? d.toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-          })
-        : "—";
+      d ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
     return `${fmt(ci)} → ${fmt(co)}`;
   };
 
@@ -738,17 +748,11 @@ function BookingDetailDrawer({
 
   const fetchContact = async () => {
     if (!booking?.id) return;
-
     setContactLoading(true);
     setContactErr("");
     try {
       let token = "";
-      try {
-        token = user ? await user.getIdToken() : "";
-      } catch {
-        token = "";
-      }
-
+      try { token = user ? await user.getIdToken() : ""; } catch { token = ""; }
       const res = await fetch(`${apiBase}/bookings/${booking.id}/contact`, {
         method: "GET",
         headers: {
@@ -756,26 +760,17 @@ function BookingDetailDrawer({
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
-
       let payload = null;
-      try {
-        payload = await res.json();
-      } catch {
-        payload = null;
-      }
-
+      try { payload = await res.json(); } catch { payload = null; }
       if (!res.ok) {
         const msg =
           payload?.message ||
           payload?.error ||
-          (res.status === 403
-            ? "Contact details are locked right now."
-            : "Could not fetch contact details.");
+          (res.status === 403 ? "Contact details are locked right now." : "Could not fetch contact details.");
         setContactErr(msg);
         setContact(null);
         return;
       }
-
       setContact({ phone: payload?.phone || null, email: payload?.email || null });
       if (!payload?.phone && !payload?.email) {
         setContactErr("No contact details found for this booking.");
@@ -790,8 +785,10 @@ function BookingDetailDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-sm">
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/50 backdrop-blur-sm">
       <div className="w-full max-w-md h-full bg-[#05070b] border-l border-white/10 shadow-2xl flex flex-col">
+
+        {/* Drawer header */}
         <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2">
           <button
             onClick={onClose}
@@ -799,14 +796,12 @@ function BookingDetailDrawer({
           >
             ← Back
           </button>
-
           <div className="text-right">
             <h2 className="text-sm font-semibold text-white">Booking details</h2>
             <p className="text-[11px] text-white/50 truncate max-w-[220px]">
               {booking.listingTitle || booking.title || "Listing"} · {booking.guestEmail || "guest"}
             </p>
           </div>
-
           <button
             onClick={onClose}
             className="px-2 py-1 rounded-lg bg-white/5 border border-white/15 text-xs hover:bg-white/10"
@@ -816,54 +811,56 @@ function BookingDetailDrawer({
           </button>
         </div>
 
+        {/* Drawer body */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 text-sm">
+
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-            <div className="text-xs text-white/60">Dates</div>
+            <div className="text-xs text-white/55">Dates</div>
             <div className="font-semibold mt-0.5">{datesLabel()}</div>
-            <div className="text-xs text-white/60 mt-1">
+            <div className="text-xs text-white/50 mt-1">
               {booking.nights || 0} night(s) · {booking.guests || 1} guest(s)
             </div>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-            <div className="text-xs text-white/60">Amount</div>
-            <div className="font-semibold mt-0.5">{formatNgn(amount)}</div>
-            <div className="text-xs text-white/60 mt-1">
+            <div className="text-xs text-white/55">Amount</div>
+            <div className="font-semibold mt-0.5 text-amber-200">{formatNgn(amount)}</div>
+            <div className="text-xs text-white/50 mt-1">
               Provider: {booking.provider || "—"} · Ref: {booking.reference || booking.id || "—"}
             </div>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-            <div className="text-xs text-white/60">Status</div>
+            <div className="text-xs text-white/55">Status</div>
             <div className="mt-1 inline-flex items-center gap-2 flex-wrap">
               <StatusChip status={s} row={booking} />
-              {s === "paid_pending_release" ? (
+              {s === "paid_pending_release" && (
                 <span className="px-2 py-1 rounded-md border border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-200">
                   Paid — waiting for check-in
                 </span>
-              ) : null}
-              {s === "checked_in" ? (
+              )}
+              {s === "checked_in" && (
                 <span className="px-2 py-1 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200">
                   Check-in confirmed — release scheduled
                 </span>
-              ) : null}
-              {s === "released" ? (
+              )}
+              {s === "released" && (
                 <span className="px-2 py-1 rounded-md border border-emerald-400/40 bg-emerald-500/10 text-[11px] text-emerald-200">
                   Payout released
                 </span>
-              ) : null}
+              )}
             </div>
           </div>
 
+          {/* Contact reveal */}
           <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-xs text-white/60">Contact details</div>
-                <div className="text-[11px] text-white/45 mt-1">
+                <div className="text-xs text-white/55">Contact details</div>
+                <div className="text-[11px] text-white/40 mt-1">
                   Locked until eligible booking rules are met.
                 </div>
               </div>
-
               <button
                 onClick={fetchContact}
                 disabled={contactLoading}
@@ -876,33 +873,31 @@ function BookingDetailDrawer({
                 {contactLoading ? "Checking…" : "Reveal"}
               </button>
             </div>
-
-            {contactErr ? (
+            {contactErr && (
               <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-100">
                 {contactErr}
               </div>
-            ) : null}
-
-            {contact && (contact.phone || contact.email) ? (
+            )}
+            {contact && (contact.phone || contact.email) && (
               <div className="mt-3 space-y-2">
-                {contact.phone ? (
+                {contact.phone && (
                   <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-                    <div className="text-xs text-white/60">Phone</div>
+                    <div className="text-xs text-white/55">Phone</div>
                     <div className="text-sm font-semibold">{contact.phone}</div>
                   </div>
-                ) : null}
-
-                {contact.email ? (
+                )}
+                {contact.email && (
                   <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-                    <div className="text-xs text-white/60">Email</div>
+                    <div className="text-xs text-white/55">Email</div>
                     <div className="text-sm font-semibold">{contact.email}</div>
                   </div>
-                ) : null}
+                )}
               </div>
-            ) : null}
+            )}
           </div>
         </div>
 
+        {/* Drawer footer actions */}
         <div className="px-4 py-3 border-t border-white/10 flex flex-wrap items-center gap-3">
           <div className="flex flex-wrap gap-2">
             <button

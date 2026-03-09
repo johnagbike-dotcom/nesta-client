@@ -10,7 +10,7 @@ import { ref as sRef, listAll, getDownloadURL } from "firebase/storage";
 
 import AdminHeader from "../../components/AdminHeader";
 import LuxeBtn from "../../components/LuxeBtn";
-import { useToast } from "../../components/Toast";
+import { useToast } from "../../context/ToastContext";
 
 /* ------------------------------ axios base (normalized) ------------------------------ */
 const RAW_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
@@ -313,15 +313,12 @@ function Modal({ open, onClose, title, children }) {
 
 /* ------------------------------ Page ------------------------------ */
 export default function KycReviewPage() {
-  const toast = useToast();
+  const { showToast } = useToast();
 
-  const notify = (msg, type = "success") => {
-    if (toast?.showToast) return toast.showToast(msg, type);
-    if (toast?.show) return toast.show(msg, type);
-    if (type === "error" && toast?.error) return toast.error(msg);
-    if (type === "success" && toast?.success) return toast.success(msg);
-    return alert(msg);
-  };
+  const notify = useCallback(
+    (msg, type = "success") => { try { showToast?.(msg, type); } catch { /* no-op */ } },
+    [showToast]
+  );
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);

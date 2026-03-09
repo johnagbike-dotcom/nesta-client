@@ -1,7 +1,9 @@
 // src/pages/admin/OnboardingQueue.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import dayjs from "dayjs";
 import AdminHeader from "../../components/AdminHeader";
+import LuxeBtn from "../../components/LuxeBtn";
+import { useToast } from "../../context/ToastContext";
 import { db, storage } from "../../firebase";
 import {
   collection,
@@ -34,77 +36,6 @@ function normalizeStatus(v) {
 
 function userKeyFromRow(row) {
   return row?.uid || row?.userId || row?.id || "";
-}
-
-/* ─────────────────── Luxury mini button ─────────────────── */
-function LuxeBtn({
-  kind = "slate",
-  small = false,
-  onClick,
-  children,
-  title,
-  disabled,
-}) {
-  const tones = {
-    gold: {
-      bg: "linear-gradient(180deg,#ffd74a,#ffb31e 60%,#ffad0c)",
-      text: "#1b1608",
-      ring: "rgba(255,210,64,.75)",
-    },
-    emerald: {
-      bg: "#16a34a",
-      text: "#ecfdf5",
-      ring: "rgba(34,197,94,.55)",
-    },
-    ruby: {
-      bg: "#dc2626",
-      text: "#fff1f2",
-      ring: "rgba(248,113,113,.55)",
-    },
-    slate: {
-      bg: "rgba(255,255,255,.08)",
-      text: "#e6e9ef",
-      ring: "rgba(255,255,255,.18)",
-    },
-  };
-
-  const t = tones[kind] || tones.slate;
-
-  return (
-    <button
-      title={title}
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        borderRadius: 999,
-        padding: small ? "8px 14px" : "12px 18px",
-        fontWeight: 900,
-        fontSize: small ? 13 : 14,
-        background: t.bg,
-        color: t.text,
-        border: `1px solid ${t.ring}`,
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,.06)",
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.6 : 1,
-        whiteSpace: "nowrap",
-        transition: "filter .15s ease, transform .04s ease",
-      }}
-      onMouseDown={(e) => {
-        e.currentTarget.style.transform = "translateY(1px)";
-      }}
-      onMouseUp={(e) => {
-        e.currentTarget.style.transform = "translateY(0)";
-      }}
-      onMouseEnter={(e) => {
-        if (!disabled) e.currentTarget.style.filter = "brightness(1.04)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.filter = "none";
-      }}
-    >
-      {children}
-    </button>
-  );
 }
 
 /* ───────────────────── Status chip ───────────────────── */
@@ -297,9 +228,34 @@ async function listDocsForPossibleKeys(storageInstance, possibleKeys = []) {
 
 /* ═══════════════════ Onboarding Queue (admin) ═══════════════════ */
 export default function OnboardingQueue() {
+  const { showToast } = useToast();
+  const notify = useCallback(
+    (msg, type = "success") => { try { showToast?.(msg, type); } catch { /* no-op */ } },
+    [showToast]
+  );
+
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [blockedMsg, setBlockedMsg] = useState("");
+
+  // Inline "More info" modal state — replaces window.prompt
+  const [moreInfoOpen, setMoreInfoOpen]   = useState(false);
+  const [moreInfoRow, setMoreInfoRow]     = useState(null);
+  const [moreInfoNote, setMoreInfoNote]   = useState("Please upload the remaining KYC documents.");
+  const [moreInfoDocs, setMoreInfoDocs]   = useState("passport, utility_bill");
+  const [moreInfoBusy, setMoreInfoBusy]   = useState(false);
+
+  // Inline "Verify" modal state — replaces window.prompt
+  const [verifyOpen, setVerifyOpen]       = useState(false);
+  const [verifyRow, setVerifyRow]         = useState(null);
+  const [verifyNote, setVerifyNote]       = useState("Verified after physical inspection / documentation review.");
+  const [verifyBusy, setVerifyBusy]       = useState(false);
+
+  // Inline "Unverify" confirm state — replaces window.confirm + window.prompt
+  const [unverifyOpen, setUnverifyOpen]   = useState(false);
+  const [unverifyRow, setUnverifyRow]     = useState(null);
+  const [unverifyNote, setUnverifyNote]   = useState("Verification removed.");
+  const [unverifyBusy, setUnverifyBusy]   = useState(false);
 
   const [tab, setTab] = useState("all");
   const [typeTab, setTypeTab] = useState("all");
@@ -572,7 +528,7 @@ export default function OnboardingQueue() {
       await setDoc(doc(db, "users", userKey), patch, { merge: true });
       await fetchUserProfile(row);
     } catch (e) {
-      alert("Could not update verification: " + (e?.message || e));
+      notify("Could not update verification: " + (e?.message || e), "error");
     }
   };
 
@@ -693,33 +649,62 @@ export default function OnboardingQueue() {
       );
 
       closeReview();
+      notify(`Status updated to ${nextUpper.toLowerCase()}.`, "success");
     } catch (e) {
-      alert("Could not update status: " + (e?.message || e));
+      notify("Could not update status: " + (e?.message || e), "error");
     }
   };
 
-  const handleMoreInfo = async (row) => {
+  const handleMoreInfo = (row) => {
     if (!row) return;
+    setMoreInfoRow(row);
+    setMoreInfoNote("Please upload the remaining KYC documents.");
+    setMoreInfoDocs("passport, utility_bill");
+    setMoreInfoOpen(true);
+  };
 
-    const note = window.prompt(
-      "Message to the host/partner (this will be shown on their KYC page):",
-      "Please upload the remaining KYC documents."
-    );
-    if (note === null) return;
-
-    const docsLine = window.prompt(
-      "List the required documents (comma-separated, e.g. passport, utility_bill):",
-      "passport, utility_bill"
-    );
-
-    const requiredDocs = docsLine
-      ? docsLine
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
+  const submitMoreInfo = async () => {
+    if (!moreInfoRow) return;
+    setMoreInfoBusy(true);
+    const requiredDocs = moreInfoDocs
+      ? moreInfoDocs.split(",").map((s) => s.trim()).filter(Boolean)
       : [];
+    await setStatus(moreInfoRow, "MORE_INFO_REQUIRED", moreInfoNote, requiredDocs);
+    setMoreInfoOpen(false);
+    setMoreInfoRow(null);
+    setMoreInfoBusy(false);
+  };
 
-    await setStatus(row, "MORE_INFO_REQUIRED", note, requiredDocs);
+  const openVerify = (row) => {
+    setVerifyRow(row);
+    setVerifyNote("Verified after physical inspection / documentation review.");
+    setVerifyOpen(true);
+  };
+
+  const submitVerify = async () => {
+    if (!verifyRow) return;
+    setVerifyBusy(true);
+    await setVerified(verifyRow, true, verifyNote);
+    notify("Verification badge granted.", "success");
+    setVerifyOpen(false);
+    setVerifyRow(null);
+    setVerifyBusy(false);
+  };
+
+  const openUnverify = (row) => {
+    setUnverifyRow(row);
+    setUnverifyNote("Verification removed.");
+    setUnverifyOpen(true);
+  };
+
+  const submitUnverify = async () => {
+    if (!unverifyRow) return;
+    setUnverifyBusy(true);
+    await setVerified(unverifyRow, false, unverifyNote);
+    notify("Verification badge removed.", "success");
+    setUnverifyOpen(false);
+    setUnverifyRow(null);
+    setUnverifyBusy(false);
   };
 
   return (
@@ -1161,14 +1146,7 @@ export default function OnboardingQueue() {
                       ? "Approve first, then verify."
                       : "Mark as Verified (badge)."
                   }
-                  onClick={() => {
-                    const note = window.prompt(
-                      "Verification note (optional):",
-                      "Verified after physical inspection / documentation review."
-                    );
-                    if (note === null) return;
-                    setVerified(revRow, true, note);
-                  }}
+                  onClick={() => openVerify(revRow)}
                 >
                   Verify ✅
                 </LuxeBtn>
@@ -1181,13 +1159,7 @@ export default function OnboardingQueue() {
                     !isVerifiedForType(revUser, revRow.type)
                   }
                   title="Remove Verified badge"
-                  onClick={() => {
-                    const ok = window.confirm("Remove Verified status for this user?");
-                    if (!ok) return;
-                    const note = window.prompt("Reason (optional):", "Verification removed.");
-                    if (note === null) return;
-                    setVerified(revRow, false, note);
-                  }}
+                  onClick={() => openUnverify(revRow)}
                 >
                   Unverify
                 </LuxeBtn>
@@ -1196,6 +1168,99 @@ export default function OnboardingQueue() {
           </div>
         )}
       </Modal>
+
+      {/* ── More info inline modal ── */}
+      <Modal open={moreInfoOpen} onClose={() => { setMoreInfoOpen(false); setMoreInfoRow(null); }} title="Request more information">
+        <div style={{ display: "grid", gap: 14 }}>
+          <div>
+            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+              Message to host/partner
+            </label>
+            <textarea
+              value={moreInfoNote}
+              onChange={(e) => setMoreInfoNote(e.target.value)}
+              rows={3}
+              style={{ width: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "10px 12px", fontSize: 13, resize: "vertical" }}
+            />
+          </div>
+          <div>
+            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+              Required documents (comma-separated)
+            </label>
+            <input
+              value={moreInfoDocs}
+              onChange={(e) => setMoreInfoDocs(e.target.value)}
+              placeholder="e.g. passport, utility_bill"
+              style={{ width: "100%", height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "0 12px", fontSize: 13 }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <LuxeBtn kind="gold" onClick={submitMoreInfo} disabled={moreInfoBusy}>
+              {moreInfoBusy ? "Sending…" : "Send request"}
+            </LuxeBtn>
+            <LuxeBtn kind="slate" onClick={() => { setMoreInfoOpen(false); setMoreInfoRow(null); }}>
+              Cancel
+            </LuxeBtn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Verify inline modal ── */}
+      <Modal open={verifyOpen} onClose={() => { setVerifyOpen(false); setVerifyRow(null); }} title="Grant verification badge">
+        <div style={{ display: "grid", gap: 14 }}>
+          <p style={{ fontSize: 13, opacity: 0.7 }}>
+            This grants the verified badge to the host/partner. Add an optional note for your records.
+          </p>
+          <div>
+            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+              Verification note (optional)
+            </label>
+            <textarea
+              value={verifyNote}
+              onChange={(e) => setVerifyNote(e.target.value)}
+              rows={2}
+              style={{ width: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "10px 12px", fontSize: 13, resize: "vertical" }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <LuxeBtn kind="emerald" onClick={submitVerify} disabled={verifyBusy}>
+              {verifyBusy ? "Verifying…" : "Confirm verify ✅"}
+            </LuxeBtn>
+            <LuxeBtn kind="slate" onClick={() => { setVerifyOpen(false); setVerifyRow(null); }}>
+              Cancel
+            </LuxeBtn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Unverify confirm modal ── */}
+      <Modal open={unverifyOpen} onClose={() => { setUnverifyOpen(false); setUnverifyRow(null); }} title="Remove verification badge">
+        <div style={{ display: "grid", gap: 14 }}>
+          <p style={{ fontSize: 13, color: "#fca5a5", fontWeight: 700 }}>
+            This will remove the verified badge from this host/partner.
+          </p>
+          <div>
+            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+              Reason (optional)
+            </label>
+            <textarea
+              value={unverifyNote}
+              onChange={(e) => setUnverifyNote(e.target.value)}
+              rows={2}
+              style={{ width: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "10px 12px", fontSize: 13, resize: "vertical" }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <LuxeBtn kind="ruby" onClick={submitUnverify} disabled={unverifyBusy}>
+              {unverifyBusy ? "Removing…" : "Confirm remove"}
+            </LuxeBtn>
+            <LuxeBtn kind="slate" onClick={() => { setUnverifyOpen(false); setUnverifyRow(null); }}>
+              Cancel
+            </LuxeBtn>
+          </div>
+        </div>
+      </Modal>
+
     </div>
   );
 }

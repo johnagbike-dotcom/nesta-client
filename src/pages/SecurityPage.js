@@ -2,14 +2,14 @@ import React from "react";
 
 export default function SecurityPage() {
   return (
-    <main className="min-h-screen bg-[#0b0f14] text-white px-4 pt-28 pb-20">
+    <main className="min-h-screen bg-[#05070a] text-white px-4 pt-20 pb-20">
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-amber-300 mb-4">
-          Security at Nesta
+          Security at NestaNg
         </h1>
         <p className="text-lg text-white/70 max-w-2xl">
-          Nesta is built as a security-first platform. From encrypted checkouts
+          NestaNg is built as a security-first platform. From encrypted checkouts
           to strict access controls, we design every layer to protect your data,
           your payments, and your stays.
         </p>
@@ -33,7 +33,7 @@ export default function SecurityPage() {
         <section className="mt-12">
           <h2 className="text-2xl font-bold mb-3">Data Protection</h2>
           <p className="text-white/70 leading-relaxed">
-            All communication with Nesta is protected using modern encryption
+            All communication with NestaNg is protected using modern encryption
             protocols. We do not store raw card details on our servers; payment
             information is handled by trusted, PCI-DSS compliant providers.
           </p>
@@ -48,7 +48,7 @@ export default function SecurityPage() {
         <section className="mt-12">
           <h2 className="text-2xl font-bold mb-3">Payments &amp; Payouts</h2>
           <p className="text-white/70 leading-relaxed">
-            Payments on Nesta are processed through regulated payment gateways
+            Payments on Ng are processed through regulated payment gateways
             such as Paystack and Flutterwave. These providers handle card
             tokenisation, fraud checks and secure authorisation.
           </p>
@@ -63,7 +63,7 @@ export default function SecurityPage() {
         <section className="mt-12">
           <h2 className="text-2xl font-bold mb-3">Account &amp; Login Security</h2>
           <p className="text-white/70 leading-relaxed">
-            Your Nesta account is the key to your bookings, listings and
+            Your NestaNg account is the key to your bookings, listings and
             payouts. We protect it with modern authentication and verification
             flows.
           </p>
@@ -81,7 +81,7 @@ export default function SecurityPage() {
             Platform &amp; Infrastructure Security
           </h2>
           <p className="text-white/70 leading-relaxed">
-            Nesta runs on modern cloud infrastructure with hardened defaults and
+            NestaNg runs on modern cloud infrastructure with hardened defaults and
             least-privilege access.
           </p>
           <ul className="mt-3 space-y-2 text-white/70 leading-relaxed">
@@ -108,10 +108,10 @@ export default function SecurityPage() {
             If you believe you have found a vulnerability or security weakness,
             please contact us at{" "}
             <a
-              href="mailto:security@nestanaija.com"
+              href="mailto:support@nestanaija.com"
               className="text-amber-300 hover:underline"
             >
-              security@nestanaija.com
+              support@nestanaija.com
             </a>{" "}
             with as much detail as possible.
           </p>
@@ -137,10 +137,10 @@ export default function SecurityPage() {
           <p className="text-white/60 leading-relaxed">
             For any security-related question, please email{" "}
             <a
-              href="mailto:security@nestanaija.com"
+              href="mailto:support@nestanaija.com"
               className="text-amber-300 hover:underline"
             >
-              security@nestanaija.com
+              support@nestanaija.com
             </a>{" "}
             or contact us via the{" "}
             <a href="/help" className="text-amber-300 hover:underline">

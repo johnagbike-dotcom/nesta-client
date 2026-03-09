@@ -3,19 +3,19 @@ import React from "react";
 
 export default function CancellationPolicy() {
   return (
-    <main className="min-h-screen bg-[#05070a] text-white px-4 pb-16 pt-24">
+    <main className="min-h-screen bg-[#05070a] text-white px-4 pb-16 pt-20">
       <div className="mx-auto max-w-4xl">
 
         {/* Heading */}
         <header className="mb-8">
           <p className="text-xs tracking-[0.18em] text-white/50 uppercase">
-            NESTA • CANCELLATIONS & REFUNDS
+            NESTANg • CANCELLATIONS & REFUNDS
           </p>
           <h1 className="mt-2 text-3xl md:text-4xl font-extrabold tracking-tight">
             Cancellations & Refund Policy
           </h1>
           <p className="mt-2 text-white/70 text-sm md:text-base max-w-2xl">
-            A clear, fair and hospitality-driven framework for booking changes and refunds across the Nesta platform.
+            A clear, fair and hospitality-driven framework for booking changes and refunds across the NestaNg platform.
           </p>
         </header>
 
@@ -23,9 +23,9 @@ export default function CancellationPolicy() {
         <section className="mb-8">
           <h2 className="text-xl font-bold mb-2">1. General Principles</h2>
           <p className="text-white/70 leading-relaxed">
-            Every stay listed on Nesta is managed by a Host or Verified Partner. 
+            Every stay listed on NestaNg is managed by a Host or Verified Partner. 
             Because each property is unique, cancellation terms may differ across listings. 
-            However, all cancellation policies must comply with Nesta’s platform standards, 
+            However, all cancellation policies must comply with NestaNg’s platform standards, 
             and all refunds must be processed securely through our approved payment providers.
           </p>
         </section>
@@ -87,7 +87,7 @@ export default function CancellationPolicy() {
           <div className="rounded-xl bg-white/5 border border-white/10 p-4 text-sm space-y-2">
             <p>• Most banks reflect refunds within <strong>5–10 business days</strong>.</p>
             <p>• Refund speed may vary depending on your bank, card issuer or mobile money provider.</p>
-            <p>• Nesta does not control bank processing times after a refund is issued.</p>
+            <p>• NestaNg does not control bank processing times after a refund is issued.</p>
           </div>
         </section>
 
@@ -107,7 +107,7 @@ export default function CancellationPolicy() {
         <section className="mb-8">
           <h2 className="text-xl font-bold mb-2">6. Exceptional Circumstances</h2>
           <p className="text-white/70 leading-relaxed mb-3">
-            In rare cases involving safety, access issues, or unforeseeable events, Nesta may support 
+            In rare cases involving safety, access issues, or unforeseeable events, NestaNg may support 
             resolution beyond the standard policy. This includes:
           </p>
 
@@ -127,7 +127,7 @@ export default function CancellationPolicy() {
         <section className="mb-8">
           <h2 className="text-xl font-bold mb-2">7. Service Fees</h2>
           <p className="text-white/70 leading-relaxed">
-            Nesta’s service fee supports platform security, customer support, and payment operations. 
+            NestaNg’s service fee supports platform security, customer support, and payment operations. 
             Service fees may be refundable or non-refundable depending on the stage and nature of the cancellation. 
             This will always be communicated clearly during resolution.
           </p>
