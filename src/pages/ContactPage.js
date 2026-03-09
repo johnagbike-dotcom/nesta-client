@@ -128,6 +128,32 @@ export default function ContactPage() {
           </div>
         </section>
 
+        {/* Social media */}
+        <section className="rounded-3xl border border-white/8 bg-[#0c0f16] p-6 space-y-4">
+          <h2 className="text-base font-bold text-white">Find us on social</h2>
+          <div className="flex flex-wrap gap-3">
+            {[
+              { label: "Instagram", handle: "@nestanaija",       href: "https://www.instagram.com/nestanaija/" },
+              { label: "Facebook",  handle: "Nesta Ng",           href: "https://www.facebook.com/profile.php?id=61587022831024" },
+              { label: "LinkedIn",  handle: "nesta-naija",       href: "https://www.linkedin.com/company/nesta-naija/" },
+              { label: "YouTube",   handle: "@NestaNaija",       href: "https://www.youtube.com/@NestaNaija" },
+              { label: "WhatsApp",  handle: "+234 813 858 8058", href: "https://wa.me/2348138588058" },
+            ].map((s) => (
+              <a
+                key={s.label}
+                href={s.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl border border-white/10 bg-white/5 hover:border-amber-400/30 hover:bg-amber-400/5 hover:text-amber-200 text-white/70 text-sm transition-all"
+              >
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/70">{s.label}</span>
+                <span className="text-white/30">·</span>
+                <span>{s.handle}</span>
+              </a>
+            ))}
+          </div>
+        </section>
+
       </div>
     </main>
   );

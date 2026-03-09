@@ -2,6 +2,7 @@
 import React, { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { initGA, trackPageView } from "./utils/analytics";
+import CookieConsentBanner from "./components/CookieConsentBanner";
 
 import Header from "./components/Header";
 import Footer from "./components/Footer";
@@ -92,13 +93,19 @@ import {
 
 /* ---------- GA4 route tracker ---------- */
 // Fires a page_view event on every route change.
-// Respects cookie consent — only tracks if user accepted analytics cookies.
+// Reads consent from CookieConsentBanner's stored object { prefs: { analytics: true } }
 function RouteTracker() {
   const location = useLocation();
   useEffect(() => {
-    const consent = localStorage.getItem("nesta_cookie_consent");
-    if (consent === "all" || consent === "analytics") {
-      trackPageView(location.pathname + location.search);
+    try {
+      const raw = localStorage.getItem("nesta_cookie_consent");
+      if (!raw) return;
+      const record = JSON.parse(raw);
+      if (record?.prefs?.analytics === true) {
+        trackPageView(location.pathname + location.search);
+      }
+    } catch {
+      // ignore parse errors
     }
   }, [location]);
   return null;
@@ -517,6 +524,7 @@ export default function AppRouter() {
             </Routes>
 
             <Footer />
+            <CookieConsentBanner />
           </ToastProvider>
         </BrowserRouter>
       </InboxProvider>
