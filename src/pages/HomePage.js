@@ -16,21 +16,21 @@ const destinations = [
     name: "Lagos",
     tagline: "Ikoyi • Lekki • Victoria Island",
     query: "Lagos",
-    img: "https://images.unsplash.com/photo-1501877008226-4fca48ee50c1?q=80&w=1600&auto=format&fit=crop",
+    img: "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?q=80&w=1600&auto=format&fit=crop",
   },
   {
     id: "abuja",
     name: "Abuja",
     tagline: "Maitama • Asokoro • Wuse 2",
     query: "Abuja",
-    img: "https://images.unsplash.com/photo-1502672023488-70e25813eb80?q=80&w=1600&auto=format&fit=crop",
+    img: "https://images.unsplash.com/photo-1613490493576-7fde63acd811?q=80&w=1600&auto=format&fit=crop",
   },
   {
     id: "ph",
     name: "Port Harcourt",
     tagline: "Waterfront apartments and business stays",
     query: "Port Harcourt",
-    img: "https://images.unsplash.com/photo-1505691723518-36a5ac3be353?q=80&w=1600&auto=format&fit=crop",
+    img: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?q=80&w=1600&auto=format&fit=crop",
   },
 ];
 
@@ -618,7 +618,7 @@ export default function HomePage() {
             <img
               className="host-img"
               alt="Elegant bedroom interior"
-              src="https://images.unsplash.com/photo-1505691723518-36a5ac3be353?q=80&w=1400&auto=format&fit=crop"
+              src="https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?q=80&w=1400&auto=format&fit=crop"
             />
           </div>
         </section>
