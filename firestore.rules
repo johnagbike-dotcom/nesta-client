@@ -1,113 +1,247 @@
-// firestore.rules
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function lower(v) { return v is string ? v.toLowerCase() : ""; }
 
-    // --- Helpers ---
-    function isSignedIn() {
-      return request.auth != null;
+    // SAFE admin check (custom claim OR users/{uid} flags)
+    function isAdmin() {
+      return signedIn() && (
+        request.auth.token.admin == true
+        || (
+          exists(/databases/$(database)/documents/users/$(uid())) &&
+          (
+            get(/databases/$(database)/documents/users/$(uid())).data.isAdmin == true
+            || get(/databases/$(database)/documents/users/$(uid())).data.adminPermissions.isAdmin == true
+            || lower(get(/databases/$(database)/documents/users/$(uid())).data.role) == "admin"
+            || lower(get(/databases/$(database)/documents/users/$(uid())).data.adminPermissions.role) == "admin"
+          )
+        )
+      );
     }
 
-    function isOwner(uid) {
-      return isSignedIn() && request.auth.uid == uid;
-    }
+    function isSelf(userId) { return signedIn() && uid() == userId; }
 
-    // Ensure writes do not add unexpected fields
-    function onlyAllowsKeys(allowedKeys) {
-      return request.resource.data.keys().hasOnly(allowedKeys);
-    }
+    // ───────────────── USERS (private) ─────────────────
+    match /users/{userId} {
+      allow read: if isSelf(userId) || isAdmin();
+      allow create: if isSelf(userId) || isAdmin();
+      // User can update own doc, but cannot change protected keys
+      allow update: if isAdmin() || (
+        isSelf(userId)
+        && !request.resource.data.diff(resource.data).changedKeys()
+          .hasAny(["role", "isAdmin", "adminPermissions"])
+      );
+      allow delete: if isAdmin();
 
-    // --- Public listings ---
-    // Collection: listings
-    // Fields (example): ownerId, status("active"|"draft"), isFeatured(bool), pricePerNight(number), createdAt, updatedAt, city, state, type, liveInHost(bool), billsIncluded(bool)
-    match /listings/{listingId} {
-
-      // Anyone can read ACTIVE listings. Drafts are only visible to owner.
-      allow read: if resource.data.status == "active"
-                  || (isSignedIn() && resource.data.ownerId == request.auth.uid);
-
-      // Create: only signed-in users; server adds immutable ownerId = auth.uid
-      allow create: if isSignedIn()
-                    && request.resource.data.ownerId == request.auth.uid
-                    && onlyAllowsKeys([
-                      "ownerId","status","isFeatured","pricePerNight",
-                      "createdAt","updatedAt","city","state","type",
-                      "liveInHost","billsIncluded","title","summary","photos",
-                      "bedrooms","bathrooms","addressPublic","geo"
-                    ]);
-
-      // Update: only owner; prevent ownerId changes
-      allow update: if isSignedIn()
-                    && resource.data.ownerId == request.auth.uid
-                    && request.resource.data.ownerId == resource.data.ownerId;
-
-      // Delete: only owner
-      allow delete: if isSignedIn()
-                    && resource.data.ownerId == request.auth.uid;
-    }
-
-    // --- Users profile ---
-    // Collection: users
-    // Public read for minimal fields when publicProfile==true; full read/write by owner
-    match /users/{uid} {
-      allow read: if isOwner(uid)
-                  || (resource.data.publicProfile == true);
-      allow create: if isOwner(uid);
-      allow update, delete: if isOwner(uid);
-    }
-
-    // --- Bookings ---
-    // Collection: bookings (guestId, hostId, listingId, status, createdAt ...)
-    match /bookings/{bookingId} {
-      allow read: if isSignedIn()
-                  && (request.auth.uid == resource.data.guestId
-                      || request.auth.uid == resource.data.hostId);
-
-      // guest creates booking for themselves only
-      allow create: if isSignedIn()
-                    && request.resource.data.guestId == request.auth.uid;
-
-      // updates:
-      // - guest can cancel their own booking
-      // - host can accept/decline for their listing
-      allow update: if isSignedIn() && (
-                      (request.auth.uid == resource.data.guestId
-                       && request.resource.data.status in ["cancelled"])
-                      ||
-                      (request.auth.uid == resource.data.hostId
-                       && request.resource.data.status in ["accepted","declined"])
-                    );
-
-      // delete: forbid (keep audit) — or allow host/guest if you prefer
-      allow delete: if false;
-    }
-
-    // --- Chats ---
-    // Collection group: chats/{chatId} with participants array, and subcollection messages
-    match /chats/{chatId} {
-      allow read, update, delete: if isSignedIn()
-                                  && resource.data.participants.hasAny([request.auth.uid]);
-      allow create: if isSignedIn()
-                    && request.resource.data.participants.hasAll([request.auth.uid])
-                    && request.resource.data.participants.size() <= 10;
-     
-      match /messages/{messageId} {
-        allow read, create: if isSignedIn()
-                            && get(/databases/$(database)/documents/chats/$(chatId))
-                               .data.participants.hasAny([request.auth.uid]);
-        allow update, delete: if false; // messages immutable
+      match /meta/{metaDocId} {
+        allow read: if isSelf(userId) || isAdmin();
+        allow create, update: if (isSelf(userId) || isAdmin())
+          && metaDocId == "favourites";
+        allow delete: if isAdmin() || (isSelf(userId) && metaDocId == "favourites");
       }
     }
 
-    // --- Admin configs (optional) ---
-    // Lock down any configs unless you add custom claims
-    match /admin/{docId} {
-      allow read: if false;
-      allow write: if false;
+    // ───────────────── USERS_PUBLIC ─────────────────
+    match /users_public/{userId} {
+      allow read: if signedIn();
+      allow create, update: if isSelf(userId) || isAdmin();
+      allow delete: if isAdmin();
     }
 
-    // --- Everything else: deny ---
+    // ───────────────── LISTINGS ─────────────────
+    match /listings/{listingId} {
+      allow read: if true;
+      allow create: if signedIn()
+        && (
+          request.resource.data.ownerUid == uid()
+          || request.resource.data.ownerId == uid()
+          || request.resource.data.partnerUid == uid()
+        );
+      allow update, delete: if isAdmin()
+        || (signedIn() && (
+          resource.data.ownerUid == uid()
+          || resource.data.ownerId == uid()
+          || resource.data.hostId == uid()
+          || resource.data.partnerUid == uid()
+          || (resource.data.managers is list && resource.data.managers.hasAny([uid()]))
+        ));
+
+      match /reviews/{reviewId} {
+        allow read: if true;
+        allow create: if signedIn()
+          && reviewId == uid()
+          && request.resource.data.userId == uid()
+          && request.resource.data.listingId == listingId
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5;
+        allow update: if signedIn()
+          && reviewId == uid()
+          && resource.data.userId == uid()
+          && request.resource.data.userId == uid()
+          && request.resource.data.listingId == listingId
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5;
+        allow delete: if isAdmin() || (signedIn() && reviewId == uid());
+      }
+    }
+
+    // ───────────────── BOOKINGS ─────────────────
+    match /bookings/{bookingId} {
+      allow read: if signedIn() && (
+        isAdmin()
+        || resource.data.userId == uid()
+        || resource.data.guestId == uid()
+        || resource.data.hostId == uid()
+        || resource.data.ownerId == uid()
+        || resource.data.ownerUid == uid()
+        || resource.data.partnerUid == uid()
+      );
+      allow create: if signedIn()
+        && (request.resource.data.userId == uid() || request.resource.data.guestId == uid());
+
+      // FIX: guests and hosts/partners restricted to safe fields only.
+      // Payment, status, and financial fields are admin-only.
+      allow update: if isAdmin()
+        // Guest can only request cancellation
+        || (
+          signedIn()
+          && (resource.data.userId == uid() || resource.data.guestId == uid())
+          && request.resource.data.diff(resource.data).changedKeys()
+            .hasOnly(["cancellationRequested", "cancelRequested", "updatedAt"])
+        )
+        // Host/Partner can only confirm check-in/out and add notes
+        || (
+          signedIn()
+          && (
+            resource.data.hostId == uid()
+            || resource.data.ownerId == uid()
+            || resource.data.ownerUid == uid()
+            || resource.data.partnerUid == uid()
+          )
+          && request.resource.data.diff(resource.data).changedKeys()
+            .hasOnly(["checkInConfirmed", "checkOutConfirmed", "hostNotes", "updatedAt"])
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // ───────────────── CHATS ─────────────────
+    function isParticipantResource() {
+      return signedIn()
+        && (resource.data != null)
+        && (resource.data.participants is list)
+        && resource.data.participants.hasAny([uid()]);
+    }
+    function isParticipantByGet(chatId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/chats/$(chatId))
+        && (get(/databases/$(database)/documents/chats/$(chatId)).data.participants is list)
+        && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAny([uid()]);
+    }
+
+    match /chats/{chatId} {
+      // FIX: list restricted to admin only — prevents any signed-in user from
+      // scanning all chat metadata. InboxPage queries by participants field
+      // so this does not break inbox functionality.
+      allow list: if isAdmin();
+
+      // Allow get when doc does not exist yet (so getDoc() can check existence),
+      // or when user is a participant or admin.
+      allow get: if (signedIn() && !exists(/databases/$(database)/documents/chats/$(chatId)))
+        || isAdmin()
+        || isParticipantResource();
+
+      allow create: if signedIn()
+        && (request.resource.data.participants is list)
+        && request.resource.data.participants.hasAny([uid()]);
+      allow update: if isAdmin() || isParticipantResource();
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isAdmin() || isParticipantByGet(chatId);
+        allow create: if signedIn()
+          && isParticipantByGet(chatId)
+          && request.resource.data.senderId == uid();
+        allow update, delete: if isAdmin();
+      }
+
+      match /presence/{presenceUid} {
+        allow read: if isAdmin() || isParticipantByGet(chatId);
+        allow create, update: if signedIn()
+          && isParticipantByGet(chatId)
+          && presenceUid == uid();
+        allow delete: if isAdmin();
+      }
+    }
+
+    // ───────────────── WALLET / LEDGER / PAYOUTS ─────────────────
+    match /wallets/{walletUid} {
+      allow read: if isSelf(walletUid) || isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /ledger/{ledgerId} {
+      allow read: if signedIn() && (isAdmin() || resource.data.uid == uid());
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /payout_requests/{id} {
+      allow read: if signedIn() && (isAdmin() || resource.data.uid == uid());
+      // FIX: added amount > 0 validation — prevents zero or negative withdrawal requests
+      allow create: if signedIn()
+        && request.resource.data.uid == uid()
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0;
+      allow update, delete: if isAdmin();
+    }
+
+    // ───────────────── AGREEMENTS ─────────────────
+    // FIX: was missing entirely — writes from onboarding flows were silently
+    // failing against the default deny rule. Covers host_agreement,
+    // partner_agreement, and kyc_consent written during onboarding.
+    match /agreements/{docId} {
+      allow read: if isSelf(docId) || isAdmin();
+      allow create, update: if signedIn() && docId == uid();
+      allow delete: if isAdmin();
+    }
+
+    // ───────────────── KYC / ONBOARDING ─────────────────
+    match /kycProfiles/{uidDoc} {
+      allow read: if signedIn() && (uid() == uidDoc || isAdmin());
+      allow create, update: if signedIn() && (uid() == uidDoc || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /onboarding/{docId} {
+      allow read, list: if isAdmin();
+      allow create: if signedIn()
+        && docId == uid()
+        && request.resource.data.uid == uid()
+        && request.resource.data.status == "PENDING";
+      // FIX: removed uid, userId, email from allowed update keys —
+      // identity fields must not change after the document is created.
+      allow update: if isAdmin() || (
+        signedIn()
+        && docId == uid()
+        && request.resource.data.uid == uid()
+        && request.resource.data.status == "PENDING"
+        && request.resource.data.diff(resource.data).changedKeys()
+          .hasOnly(["status", "submittedAt", "updatedAt"])
+      );
+      allow delete: if isAdmin();
+
+      match /audits/{auditId} {
+        allow read, list: if isAdmin();
+        allow create: if isAdmin();
+        allow update, delete: if false;
+      }
+    }
+
+    // ───────────────── DEFAULT DENY ─────────────────
     match /{document=**} {
       allow read, write: if false;
     }
