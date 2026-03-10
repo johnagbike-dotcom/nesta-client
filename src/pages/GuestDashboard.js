@@ -22,7 +22,7 @@ const CITY_CHIPS = ["Lagos", "Abuja", "Port Harcourt", "Ibadan", "Enugu", "Owerr
 const PAGE_SIZE  = 12;
 const CORMORANT  = "'Cormorant Garamond', Georgia, serif";
 
-/* ─── Ghost booking filter (consistent with admin pages) ─── */
+/* ─── Ghost booking filter ─── */
 const GHOST_STATUSES = new Set([
   "initialized","pending","hold","hold-pending",
   "awaiting_payment","reserved_unpaid","pending_payment",
@@ -114,10 +114,10 @@ export default function GuestDashboard() {
   const { user }    = useAuth();
   const { profile } = useUserProfile(user?.uid);
 
-  const role           = (profile?.role || "").toLowerCase();
-  const isGuest        = !role || role === "guest";
+  const role            = (profile?.role || "").toLowerCase();
+  const isGuest         = !role || role === "guest";
   const isHostOrPartner = role === "host" || role === "partner";
-  const firstName      = profile?.displayName?.split(" ")[0] || profile?.firstName || null;
+  const firstName       = profile?.displayName?.split(" ")[0] || profile?.firstName || null;
 
   // Filters
   const [qText, setQText] = useState("");
@@ -144,7 +144,7 @@ export default function GuestDashboard() {
   // Load page
   useEffect(() => { loadPage(page); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [page, city, min, max]);
 
-  // Count total
+  // Count total (price filters only — city is client-side)
   useEffect(() => {
     (async () => {
       try {
@@ -157,14 +157,16 @@ export default function GuestDashboard() {
       }
     })();
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [city, min, max]);
+  }, [min, max]); // intentionally excludes city — city is filtered client-side
 
   async function buildQuery({ after = null, justForCount = false }) {
     const base       = collection(db, "listings");
     const hasMin     = min !== "" && !Number.isNaN(Number(min));
     const hasMax     = max !== "" && !Number.isNaN(Number(max));
     const clauses    = [];
-    if (city)   clauses.push(where("city", "==", city));
+    // NOTE: city is NOT filtered in Firestore — hosts enter free text so
+    // "Abuja", "Abuja FCT", "ABUJA" would all miss an exact-match query.
+    // City is filtered client-side using case-insensitive includes() below.
     if (hasMin) clauses.push(where("pricePerNight", ">=", Number(min)));
     if (hasMax) clauses.push(where("pricePerNight", "<=", Number(max)));
     const needsPrice = hasMin || hasMax;
@@ -200,15 +202,22 @@ export default function GuestDashboard() {
     }
   }
 
+  // Client-side filter — city chip uses case-insensitive includes to handle
+  // "Abuja", "Abuja FCT", "ABUJA", "FCT Abuja" etc. + keyword search
   const filtered = useMemo(() => {
-    const kw = qText.trim().toLowerCase();
-    if (!kw) return rows;
-    return rows.filter((l) =>
-      (l.title || "").toLowerCase().includes(kw) ||
-      (l.area  || "").toLowerCase().includes(kw) ||
-      (l.city  || "").toLowerCase().includes(kw)
-    );
-  }, [rows, qText]);
+    const kw         = qText.trim().toLowerCase();
+    const cityFilter = city.trim().toLowerCase();
+    return rows.filter((l) => {
+      const titleL = (l.title || "").toLowerCase();
+      const areaL  = (l.area  || "").toLowerCase();
+      const cityL  = (l.city  || "").toLowerCase();
+      // City chip: listing city must contain the selected city name
+      if (cityFilter && !cityL.includes(cityFilter)) return false;
+      // Keyword search
+      if (kw) return titleL.includes(kw) || areaL.includes(kw) || cityL.includes(kw);
+      return true;
+    });
+  }, [rows, qText, city]);
 
   const resetAll = () => { setQText(""); setMin(""); setMax(""); setCity(""); };
 
@@ -378,11 +387,9 @@ export default function GuestDashboard() {
               {Array.from({ length: 6 }).map((_, i) => <div key={i} style={S.skeleton} />)}
             </div>
           ) : filtered.length === 0 ? (
-            <div style={{
-              textAlign: "center", padding: "48px 0", color: "rgba(255,255,255,0.4)", fontSize: 14,
-            }}>
+            <div style={{ textAlign: "center", padding: "48px 0", color: "rgba(255,255,255,0.4)", fontSize: 14 }}>
               <p style={{ fontSize: 18, fontWeight: 500, color: "rgba(255,255,255,0.7)", marginBottom: 8 }}>No listings found</p>
-              <p>Try adjusting your city, price range or search term.</p>
+              <p>{city ? `No listings found in ${city}. Try browsing all cities.` : "Try adjusting your price range or search term."}</p>
               <button style={{ ...S.btnPrimary, marginTop: 20 }} onClick={resetAll}>Clear filters</button>
             </div>
           ) : (
@@ -465,7 +472,8 @@ export default function GuestDashboard() {
                 })}
               </div>
 
-              <Pagination page={page} totalPages={totalPages} onPage={(p) => setPage(p)} />
+              {/* Only show pagination when no city filter active — city filters client-side across all loaded pages */}
+              {!city && <Pagination page={page} totalPages={totalPages} onPage={(p) => setPage(p)} />}
             </>
           )}
         </div>

@@ -1,6 +1,6 @@
 // src/components/Header.js
 import React, { useEffect, useMemo, useState } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import useUserProfile from "../hooks/useUserProfile";
 import useUnreadCount from "../hooks/useUnreadCount";
@@ -206,11 +206,19 @@ export default function Header() {
 
   const initials = getInitials(profile, user);
   const shortName = getShortName(profile, user);
+  const avatarPhoto = profile?.photoURL || user?.photoURL || null;
 
+  // ── Desktop user pill — now a link to /profile ──
   const userPill = user ? (
-    <div className="hidden lg:flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1.5 backdrop-blur-md">
-      <div className="grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-[#f5b301] to-[#c89200] text-sm font-extrabold text-black shadow-[0_10px_24px_rgba(0,0,0,.35)]">
-        {initials}
+    <Link
+      to="/profile"
+      title="Edit your profile"
+      className="hidden lg:flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1.5 backdrop-blur-md transition-all duration-300 hover:border-amber-400/30 hover:bg-white/[0.08]"
+    >
+      <div className="grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-[#f5b301] to-[#c89200] text-sm font-extrabold text-black shadow-[0_10px_24px_rgba(0,0,0,.35)] overflow-hidden flex-shrink-0">
+        {avatarPhoto
+          ? <img src={avatarPhoto} alt={shortName} className="w-full h-full object-cover" />
+          : initials}
       </div>
 
       <div className="max-w-[190px] leading-tight">
@@ -219,7 +227,7 @@ export default function Header() {
         </div>
         <div className="truncate text-[11px] text-white/50">{user.email}</div>
       </div>
-    </div>
+    </Link>
   ) : null;
 
   const logoutBtn = (
@@ -274,11 +282,7 @@ export default function Header() {
       return [
         { to: "/host", label: "Host dashboard", end: true },
         { to: "/host-reservations", label: "Reservations", attention: true },
-        {
-          to: "/withdrawals",
-          label: "Wallet",
-          title: "Withdrawals & payout history",
-        },
+        { to: "/withdrawals", label: "Wallet", title: "Withdrawals & payout history" },
         { to: "/host-listings", label: "Manage listings" },
         { to: "/inbox", label: inboxLabel },
       ];
@@ -288,11 +292,7 @@ export default function Header() {
       return [
         { to: "/partner", label: "Partner dashboard", end: true },
         { to: "/reservations", label: "Reservations", attention: true },
-        {
-          to: "/withdrawals",
-          label: "Wallet",
-          title: "Withdrawals & payout history",
-        },
+        { to: "/withdrawals", label: "Wallet", title: "Withdrawals & payout history" },
         { to: "/partner-listings", label: "My portfolio" },
         { to: "/inbox", label: inboxLabel },
       ];
@@ -322,12 +322,7 @@ export default function Header() {
         <nav className="hidden md:flex items-center gap-1 rounded-full border border-white/8 bg-white/[0.03] px-2 py-1 backdrop-blur-md">
           {navLinks.map((l) =>
             l.attention ? (
-              <AttentionReservationsLink
-                key={l.to}
-                to={l.to}
-                label={l.label}
-                uid={user?.uid}
-              />
+              <AttentionReservationsLink key={l.to} to={l.to} label={l.label} uid={user?.uid} />
             ) : (
               <NavItem key={l.to} to={l.to} end={l.end} title={l.title}>
                 {l.label}
@@ -340,11 +335,7 @@ export default function Header() {
           {user ? (
             <>
               {userPill}
-              <VerifiedBadge
-                isKycApproved={isKycApproved}
-                isHost={isHost}
-                isPartner={isPartner}
-              />
+              <VerifiedBadge isKycApproved={isKycApproved} isHost={isHost} isPartner={isPartner} />
               {logoutBtn}
             </>
           ) : (
@@ -368,39 +359,33 @@ export default function Header() {
         <div className="md:hidden border-t border-white/10 bg-[#07090d]/95 backdrop-blur-xl">
           <div className="mx-auto max-w-6xl px-3 py-4">
             {user ? (
-              <div className="mb-3 flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3">
-                <div className="grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-[#f5b301] to-[#c89200] text-sm font-extrabold text-black shadow-[0_10px_24px_rgba(0,0,0,.35)]">
-                  {initials}
+              // ── Mobile user card — now a link to /profile ──
+              <Link
+                to="/profile"
+                onClick={() => setOpen(false)}
+                className="mb-3 flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3 transition-all hover:border-amber-400/25 hover:bg-white/[0.07]"
+              >
+                <div className="grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-[#f5b301] to-[#c89200] text-sm font-extrabold text-black shadow-[0_10px_24px_rgba(0,0,0,.35)] overflow-hidden flex-shrink-0">
+                  {avatarPhoto
+                    ? <img src={avatarPhoto} alt={shortName} className="w-full h-full object-cover" />
+                    : initials}
                 </div>
 
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-semibold text-white">
-                    {shortName}
-                  </div>
-                  <div className="truncate text-[11px] text-white/55">
-                    {user.email}
-                  </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-semibold text-white">{shortName}</div>
+                  <div className="truncate text-[11px] text-white/55">{user.email}</div>
                 </div>
-              </div>
+
+                <span className="text-[11px] text-white/30 flex-shrink-0">Edit profile →</span>
+              </Link>
             ) : null}
 
             <div className="grid gap-1.5">
               {navLinks.map((l) =>
                 l.attention ? (
-                  <AttentionReservationsLinkMobile
-                    key={l.to}
-                    to={l.to}
-                    label={l.label}
-                    uid={user?.uid}
-                  />
+                  <AttentionReservationsLinkMobile key={l.to} to={l.to} label={l.label} uid={user?.uid} />
                 ) : (
-                  <NavItem
-                    key={l.to}
-                    to={l.to}
-                    end={l.end}
-                    title={l.title}
-                    mobile
-                  >
+                  <NavItem key={l.to} to={l.to} end={l.end} title={l.title} mobile>
                     {l.label}
                   </NavItem>
                 )
@@ -410,12 +395,7 @@ export default function Header() {
             <div className="pt-4 flex flex-wrap items-center gap-2">
               {user ? (
                 <>
-                  <VerifiedBadge
-                    isKycApproved={isKycApproved}
-                    isHost={isHost}
-                    isPartner={isPartner}
-                    mobile
-                  />
+                  <VerifiedBadge isKycApproved={isKycApproved} isHost={isHost} isPartner={isPartner} mobile />
                   {logoutBtn}
                 </>
               ) : (

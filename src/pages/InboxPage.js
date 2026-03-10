@@ -9,6 +9,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
   writeBatch,
@@ -126,6 +127,15 @@ export default function InboxPage() {
   const uid = user?.uid || null;
 
   const role = String(profile?.role || "").trim().toLowerCase();
+
+  // Publish own public profile on load so counterparts see correct name/avatar in chat
+  useEffect(() => {
+    if (!uid || !profile) return;
+    const displayName = profile.displayName || user?.displayName || user?.email || "User";
+    const photoURL = profile.photoURL || user?.photoURL || "";
+    setDoc(doc(db, "users_public", uid), { displayName, photoURL }, { merge: true })
+      .catch((e) => console.warn("users_public self-publish failed:", e));
+  }, [uid, profile, user]);
 
   const [threads, setThreads] = useState([]);
   const [loading, setLoading] = useState(true);
