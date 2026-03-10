@@ -17,6 +17,8 @@ import SearchBrowse from "./pages/SearchBrowse";
 import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
 import CancellationPolicyPage from "./pages/CancellationPolicyPage";
+import HostAgreementPage from "./pages/HostAgreementPage";
+import PartnerAgreementPage from "./pages/PartnerAgreementPage";
 import ComplaintsPage from "./pages/ComplaintsPage";
 
 // Onboarding / KYC
@@ -158,6 +160,8 @@ export default function AppRouter() {
               <Route path="/terms" element={<Terms />} />
               <Route path="/privacy" element={<Privacy />} />
               <Route path="/cancellation-policy" element={<CancellationPolicyPage />} />
+              <Route path="/host-agreement" element={<HostAgreementPage />} />
+              <Route path="/partner-agreement" element={<PartnerAgreementPage />} />
               <Route path="/complaints" element={<ComplaintsPage />} />
               <Route path="/trust-and-safety" element={<TrustSafetyPage />} />
               <Route path="/security" element={<SecurityPage />} />

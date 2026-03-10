@@ -185,7 +185,11 @@ function PartnerAgreementModal({ onAccept, onClose, saving }) {
               className="mt-0.5 w-4 h-4 accent-amber-400 cursor-pointer disabled:opacity-40"
             />
             <span className={`text-xs leading-relaxed ${scrolled ? "text-white/80" : "text-white/35"}`}>
-              I confirm I am an authorised signatory and I agree to be bound by the NestaNg Verified Partner Agreement (Version {PARTNER_AGREEMENT_VERSION}), including the SLA, commission structure, cancellation penalty framework, and data protection obligations.
+              I confirm I am an authorised signatory and I agree to be bound by the NestaNg Verified Partner Agreement (Version {PARTNER_AGREEMENT_VERSION}), including the SLA, commission structure, cancellation penalty framework, and data protection obligations.{" "}
+              I also agree to NestaNg's{" "}
+              <a href="/terms" target="_blank" rel="noopener noreferrer" style={{ color: "rgba(245,158,11,0.8)", textDecoration: "underline" }}>Terms of Use</a>{" "}
+              and{" "}
+              <a href="/privacy" target="_blank" rel="noopener noreferrer" style={{ color: "rgba(245,158,11,0.8)", textDecoration: "underline" }}>Privacy Policy</a>.
             </span>
           </label>
 

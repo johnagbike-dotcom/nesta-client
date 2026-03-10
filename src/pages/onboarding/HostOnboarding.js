@@ -117,7 +117,11 @@ function HostAgreementModal({ onAccept, onClose, saving }) {
               className="mt-0.5 w-4 h-4 accent-amber-400 cursor-pointer disabled:opacity-40"
             />
             <span className={`text-xs leading-relaxed ${scrolled ? "text-white/80" : "text-white/35"}`}>
-              I have read and understood the NestaNg Host Agreement (Version {HOST_AGREEMENT_VERSION}). I agree to be bound by its terms, including the commission structure, payout model, cancellation policy, and host obligations.
+              I have read and understood the NestaNg Host Agreement (Version {HOST_AGREEMENT_VERSION}). I agree to be bound by its terms, including the commission structure, payout model, cancellation policy, and host obligations.{" "}
+              I also agree to NestaNg's{" "}
+              <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline decoration-amber-400/50 hover:text-amber-300">Terms of Use</a>{" "}
+              and{" "}
+              <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline decoration-amber-400/50 hover:text-amber-300">Privacy Policy</a>.
             </span>
           </label>
 

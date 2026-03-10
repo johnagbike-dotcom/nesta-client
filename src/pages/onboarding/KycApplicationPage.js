@@ -101,7 +101,10 @@ function KycConsentGate({ targetRole, onAccept }) {
             <span className="font-semibold text-white/90">Data collection consent: </span>
             I consent to NestaNg (Nesta Connect Limited) collecting and processing
             my personal and identity verification data for the purpose of KYC
-            verification as described above.
+            verification as described above. By proceeding I also confirm I have read and agree to NestaNg's{" "}
+            <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline text-amber-300/80 hover:text-amber-300">Terms of Use</a>{" "}
+            and{" "}
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline text-amber-300/80 hover:text-amber-300">Privacy Policy</a>.
           </span>
         </label>
 

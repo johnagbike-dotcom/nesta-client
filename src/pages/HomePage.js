@@ -663,50 +663,6 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* ═══════════════ SOCIAL STRIP ═══════════════ */}
-        <section style={{ padding: "56px 24px", textAlign: "center", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-          <p style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.32em", textTransform: "uppercase", color: "#c9a84c", marginBottom: 10 }}>
-            Follow the journey
-          </p>
-          <h2 style={{ fontFamily: "'Playfair Display, system-ui, serif'", fontSize: "clamp(26px,3.5vw,36px)", fontWeight: 700, color: "#f5f0e8", margin: "0 auto 10px", maxWidth: 380 }}>
-            NestaNg on social
-          </h2>
-          <p style={{ fontSize: 14, color: "rgba(255,255,255,0.45)", marginBottom: 32, fontWeight: 300 }}>
-            New listings, host spotlights and updates — follow us for the latest.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "center" }}>
-            {[
-              { label: "Instagram", href: "https://www.instagram.com/nestanaija/", handle: "@nestanaija" },
-              { label: "Facebook",  href: "https://www.facebook.com/profile.php?id=61587022831024",      handle: "Nesta Ng" },
-              { label: "LinkedIn",  href: "https://www.linkedin.com/company/nesta-naija/", handle: "nesta-naija" },
-              { label: "YouTube",   href: "https://www.youtube.com/@NestaNaija",   handle: "@NestaNaija" },
-              { label: "WhatsApp",  href: "https://wa.me/2348138588058",            handle: "+234 813 858 8058" },
-            ].map((s) => (
-              <a
-                key={s.label}
-                href={s.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 8,
-                  padding: "10px 18px", borderRadius: 999,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "rgba(255,255,255,0.04)",
-                  color: "rgba(255,255,255,0.72)",
-                  textDecoration: "none", fontSize: 13,
-                  transition: "all 0.15s ease",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(201,168,76,0.45)"; e.currentTarget.style.color = "#e8c96b"; e.currentTarget.style.background = "rgba(201,168,76,0.07)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"; e.currentTarget.style.color = "rgba(255,255,255,0.72)"; e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
-              >
-                <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", color: "rgba(201,168,76,0.75)", textTransform: "uppercase" }}>{s.label}</span>
-                <span style={{ color: "rgba(255,255,255,0.45)" }}>·</span>
-                <span>{s.handle}</span>
-              </a>
-            ))}
-          </div>
-        </section>
-
       </div>
     </>
   );
