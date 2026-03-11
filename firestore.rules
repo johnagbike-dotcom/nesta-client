@@ -144,10 +144,11 @@ service cloud.firestore {
     }
 
     match /chats/{chatId} {
-      // FIX: list restricted to admin only — prevents any signed-in user from
-      // scanning all chat metadata. InboxPage queries by participants field
-      // so this does not break inbox functionality.
-      allow list: if isAdmin();
+      // Signed-in users may list chats — InboxPage queries with
+      // .where("participants", "array-contains", uid) so only their
+      // own conversations are returned. Full document reads are still
+      // restricted to participants only via the get rule below.
+      allow list: if signedIn();
 
       // Allow get when doc does not exist yet (so getDoc() can check existence),
       // or when user is a participant or admin.
