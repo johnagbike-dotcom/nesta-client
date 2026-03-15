@@ -1,4 +1,3 @@
-// src/pages/admin/OnboardingQueue.jsx
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import dayjs from "dayjs";
 import AdminHeader from "../../components/AdminHeader";
@@ -36,6 +35,23 @@ function normalizeStatus(v) {
 
 function userKeyFromRow(row) {
   return row?.uid || row?.userId || row?.id || "";
+}
+
+function toJsDate(v) {
+  if (!v) return null;
+  try {
+    if (typeof v?.toDate === "function") return v.toDate();
+    if (typeof v?.seconds === "number") return new Date(v.seconds * 1000);
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+function displayDate(v) {
+  const d = toJsDate(v);
+  return d ? dayjs(d).format("YYYY-MM-DD HH:mm") : "—";
 }
 
 /* ───────────────────── Status chip ───────────────────── */
@@ -152,6 +168,8 @@ function Modal({ open, onClose, title, children }) {
           background:
             "linear-gradient(180deg, rgba(15,23,42,.98), rgba(15,23,42,.92))",
           boxShadow: "0 24px 48px rgba(0,0,0,.65)",
+          maxHeight: "90vh",
+          overflow: "auto",
         }}
       >
         <div
@@ -160,6 +178,11 @@ function Modal({ open, onClose, title, children }) {
             alignItems: "center",
             padding: 14,
             borderBottom: "1px solid rgba(255,255,255,.08)",
+            position: "sticky",
+            top: 0,
+            background:
+              "linear-gradient(180deg, rgba(15,23,42,.98), rgba(15,23,42,.92))",
+            zIndex: 2,
           }}
         >
           <h3 style={{ margin: 0, fontWeight: 900 }}>{title}</h3>
@@ -190,9 +213,8 @@ async function listAllFilesRecursively(folderRef) {
 
 function prettyNameFromFullPath(fullPath) {
   const parts = String(fullPath || "").split("/").filter(Boolean);
-  const label = parts.length >= 3 ? parts[parts.length - 2] : "document";
   const file = parts.length ? parts[parts.length - 1] : "file";
-  return `${label}: ${file}`;
+  return file;
 }
 
 async function listDocsForPossibleKeys(storageInstance, possibleKeys = []) {
@@ -214,6 +236,7 @@ async function listDocsForPossibleKeys(storageInstance, possibleKeys = []) {
           name: prettyNameFromFullPath(it.fullPath),
           url: await getDownloadURL(it),
           fullPath: it.fullPath,
+          source: "storage",
         }))
       );
 
@@ -226,11 +249,31 @@ async function listDocsForPossibleKeys(storageInstance, possibleKeys = []) {
   return { items: [], path: "", tried };
 }
 
+function normalizeKycFiles(files = []) {
+  if (!Array.isArray(files)) return [];
+  return files
+    .map((f, idx) => ({
+      id: f.path || f.url || `kyc-file-${idx}`,
+      name: safeStr(f.name || "").trim() || "Document",
+      url: safeStr(f.url || ""),
+      path: safeStr(f.path || ""),
+      uploadedAt: f.uploadedAt || null,
+      source: "firestore",
+    }))
+    .filter((f) => f.url);
+}
+
 /* ═══════════════════ Onboarding Queue (admin) ═══════════════════ */
 export default function OnboardingQueue() {
   const { showToast } = useToast();
   const notify = useCallback(
-    (msg, type = "success") => { try { showToast?.(msg, type); } catch { /* no-op */ } },
+    (msg, type = "success") => {
+      try {
+        showToast?.(msg, type);
+      } catch {
+        /* no-op */
+      }
+    },
     [showToast]
   );
 
@@ -238,24 +281,23 @@ export default function OnboardingQueue() {
   const [loading, setLoading] = useState(false);
   const [blockedMsg, setBlockedMsg] = useState("");
 
-  // Inline "More info" modal state — replaces window.prompt
-  const [moreInfoOpen, setMoreInfoOpen]   = useState(false);
-  const [moreInfoRow, setMoreInfoRow]     = useState(null);
-  const [moreInfoNote, setMoreInfoNote]   = useState("Please upload the remaining KYC documents.");
-  const [moreInfoDocs, setMoreInfoDocs]   = useState("passport, utility_bill");
-  const [moreInfoBusy, setMoreInfoBusy]   = useState(false);
+  const [moreInfoOpen, setMoreInfoOpen] = useState(false);
+  const [moreInfoRow, setMoreInfoRow] = useState(null);
+  const [moreInfoNote, setMoreInfoNote] = useState("Please upload the remaining KYC documents.");
+  const [moreInfoDocs, setMoreInfoDocs] = useState("passport, utility_bill");
+  const [moreInfoBusy, setMoreInfoBusy] = useState(false);
 
-  // Inline "Verify" modal state — replaces window.prompt
-  const [verifyOpen, setVerifyOpen]       = useState(false);
-  const [verifyRow, setVerifyRow]         = useState(null);
-  const [verifyNote, setVerifyNote]       = useState("Verified after physical inspection / documentation review.");
-  const [verifyBusy, setVerifyBusy]       = useState(false);
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [verifyRow, setVerifyRow] = useState(null);
+  const [verifyNote, setVerifyNote] = useState(
+    "Verified after physical inspection / documentation review."
+  );
+  const [verifyBusy, setVerifyBusy] = useState(false);
 
-  // Inline "Unverify" confirm state — replaces window.confirm + window.prompt
-  const [unverifyOpen, setUnverifyOpen]   = useState(false);
-  const [unverifyRow, setUnverifyRow]     = useState(null);
-  const [unverifyNote, setUnverifyNote]   = useState("Verification removed.");
-  const [unverifyBusy, setUnverifyBusy]   = useState(false);
+  const [unverifyOpen, setUnverifyOpen] = useState(false);
+  const [unverifyRow, setUnverifyRow] = useState(null);
+  const [unverifyNote, setUnverifyNote] = useState("Verification removed.");
+  const [unverifyBusy, setUnverifyBusy] = useState(false);
 
   const [tab, setTab] = useState("all");
   const [typeTab, setTypeTab] = useState("all");
@@ -277,6 +319,11 @@ export default function OnboardingQueue() {
   const [revKycLoading, setRevKycLoading] = useState(false);
   const [revKycError, setRevKycError] = useState("");
 
+  const [revUploads, setRevUploads] = useState(null);
+  const [revUploadsLoading, setRevUploadsLoading] = useState(false);
+  const [revUploadsError, setRevUploadsError] = useState("");
+  const [revUploadsNotice, setRevUploadsNotice] = useState("");
+
   const load = async () => {
     setLoading(true);
     setBlockedMsg("");
@@ -294,6 +341,8 @@ export default function OnboardingQueue() {
 
         list.push({
           id: d.id,
+          onboardingId: d.id,
+          source: "onboarding",
           userId: x.userId || x.uid || d.id,
           uid: x.uid || x.userId || null,
           email: x.email || "",
@@ -423,6 +472,42 @@ export default function OnboardingQueue() {
     }
   };
 
+  const fetchKycUploads = async (row) => {
+    const userKey = userKeyFromRow(row);
+    if (!userKey) {
+      return {
+        record: null,
+        files: [],
+        error: "Missing user key (uid/userId).",
+      };
+    }
+
+    try {
+      const snap = await getDoc(doc(db, "kyc", userKey));
+      const data = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+
+      if (!snap.exists()) {
+        return {
+          record: null,
+          files: [],
+          error: "No kyc/{uid} upload record found.",
+        };
+      }
+
+      return {
+        record: data,
+        files: normalizeKycFiles(data?.files || []),
+        error: "",
+      };
+    } catch (e) {
+      return {
+        record: null,
+        files: [],
+        error: "Could not load kyc/{uid}: " + (e?.message || e),
+      };
+    }
+  };
+
   const openReview = async (r) => {
     setRevRow(r);
     setRevOpen(true);
@@ -435,29 +520,62 @@ export default function OnboardingQueue() {
     setRevKycError("");
     fetchKycProfile(r);
 
+    setRevUploads(null);
+    setRevUploadsError("");
+    setRevUploadsNotice("");
+
     setDocs([]);
     setDocsError("");
     setStoragePathUsed("");
     setDocsLoading(true);
+    setRevUploadsLoading(true);
 
     try {
-      const possibleKeys = [
-        r.userId,
-        r.uid,
-        r.id,
-        r._raw?.firebaseUid,
-        r._raw?.userUID,
-      ].filter(Boolean);
+      const uploadResult = await fetchKycUploads(r);
+      setRevUploads(uploadResult.record);
+      setRevUploadsError(uploadResult.error || "");
+
+      if (uploadResult.files.length) {
+        setDocs(uploadResult.files);
+        setStoragePathUsed(`Firestore: kyc/${userKeyFromRow(r)}.files`);
+        setDocsError("");
+        setRevUploadsNotice("");
+        return;
+      }
+
+      const possibleKeys = Array.from(
+        new Set(
+          [
+            r.onboardingId,
+            r.id,
+            r.userId,
+            r.uid,
+            r?._raw?.userId,
+            r?._raw?.uid,
+            r?._raw?.firebaseUid,
+            r?._raw?.userUID,
+          ]
+            .map((v) => safeStr(v))
+            .filter(Boolean)
+        )
+      );
 
       const { items, path, tried } = await listDocsForPossibleKeys(storage, possibleKeys);
 
       if (items.length) {
         setDocs(items);
         setStoragePathUsed(path);
+        setDocsError("");
+        setRevUploadsNotice(
+          uploadResult.error
+            ? "Upload record unavailable — showing Storage documents instead."
+            : ""
+        );
       } else {
         setDocs([]);
         setStoragePathUsed(tried?.length ? tried.join("  •  ") : "");
-        setDocsError("No files found in Storage for the expected KYC folder.");
+        setDocsError("No files found in Firestore kyc/{uid}.files or Storage kyc/{uid}/.");
+        setRevUploadsNotice("");
       }
     } catch (e) {
       const msg = String(e?.message || e);
@@ -467,12 +585,14 @@ export default function OnboardingQueue() {
           "Storage access denied by rules. Ensure your admin claim is set (request.auth.token.admin == true) and Storage rules allow admins to read kyc/*."
         );
       } else {
-        setDocsError("Could not load Storage documents: " + msg);
+        setDocsError("Could not load KYC documents: " + msg);
       }
 
       setDocs([]);
+      setRevUploadsNotice("");
     } finally {
       setDocsLoading(false);
+      setRevUploadsLoading(false);
     }
   };
 
@@ -489,6 +609,11 @@ export default function OnboardingQueue() {
 
     setRevKyc(null);
     setRevKycError("");
+
+    setRevUploads(null);
+    setRevUploadsError("");
+    setRevUploadsNotice("");
+    setRevUploadsLoading(false);
   };
 
   const isVerifiedForType = (userDoc, type) => {
@@ -498,7 +623,6 @@ export default function OnboardingQueue() {
     return status === "verified";
   };
 
-  // ✅ Separate verification action
   const setVerified = async (row, verified, note = "") => {
     const userKey = userKeyFromRow(row);
     if (!userKey) return;
@@ -532,10 +656,6 @@ export default function OnboardingQueue() {
     }
   };
 
-  /**
-   * Approval grants ONLY host/partner role.
-   * Verification is NEVER automatic.
-   */
   const setStatus = async (row, next, reason = "", requiredDocs = []) => {
     if (!row?.id) return;
 
@@ -544,8 +664,7 @@ export default function OnboardingQueue() {
     const kind = normalizeType(row.type);
 
     try {
-      // 1) onboarding row
-      await updateDoc(doc(db, "onboarding", row.id), {
+      await updateDoc(doc(db, "onboarding", row.onboardingId || row.id), {
         status: nextUpper,
         reviewedAt: serverTimestamp(),
         adminNote: reason || null,
@@ -553,15 +672,13 @@ export default function OnboardingQueue() {
         updatedAt: serverTimestamp(),
       });
 
-      // 2) audit trail
-      await addDoc(collection(db, "onboarding", row.id, "audits"), {
+      await addDoc(collection(db, "onboarding", row.onboardingId || row.id, "audits"), {
         action: nextUpper,
         reason: reason || null,
         requiredDocuments: requiredDocs.length ? requiredDocs : null,
         reviewedAt: serverTimestamp(),
       });
 
-      // 3) kycProfiles mirror
       if (userKey) {
         await setDoc(
           doc(db, "kycProfiles", userKey),
@@ -637,7 +754,7 @@ export default function OnboardingQueue() {
 
       setRows((prev) =>
         prev.map((x) =>
-          x.id === row.id
+          (x.onboardingId || x.id) === (row.onboardingId || row.id)
             ? {
                 ...x,
                 status: nextUpper,
@@ -719,7 +836,6 @@ export default function OnboardingQueue() {
         subtitle="Host & partner onboarding (approval) + separate verification badge."
       />
 
-      {/* Filters */}
       <div
         style={{
           display: "grid",
@@ -815,7 +931,6 @@ export default function OnboardingQueue() {
         </div>
       ) : null}
 
-      {/* Table */}
       <div
         style={{
           borderRadius: 16,
@@ -879,7 +994,7 @@ export default function OnboardingQueue() {
 
               {!loading &&
                 filtered.map((r) => (
-                  <tr key={r.id}>
+                  <tr key={`${r.onboardingId || r.id}-${r.source || "onboarding"}`}>
                     <td style={{ padding: "12px 16px", textTransform: "capitalize" }}>
                       {r.type}
                     </td>
@@ -923,11 +1038,9 @@ export default function OnboardingQueue() {
         </div>
       </div>
 
-            {/* Review modal */}
       <Modal open={revOpen} onClose={closeReview} title="Onboarding review">
         {!revRow ? null : (
           <div style={{ display: "grid", gap: 14 }}>
-            {/* Header / flags */}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <SmallBadge
                 label={
@@ -999,6 +1112,22 @@ export default function OnboardingQueue() {
                 )}
               </div>
 
+              <div className="muted">Upload record (kyc/{`{uid}`})</div>
+              <div>
+                {revUploadsLoading ? (
+                  <span style={{ opacity: 0.7 }}>Loading…</span>
+                ) : revUploads ? (
+                  <span style={{ opacity: 0.95 }}>
+                    {safeUpper(revUploads.status || "PENDING")} • files:{" "}
+                    <strong>{Array.isArray(revUploads.files) ? revUploads.files.length : 0}</strong>
+                  </span>
+                ) : revUploadsNotice ? (
+                  <span style={{ opacity: 0.85, color: "#bfdbfe" }}>{revUploadsNotice}</span>
+                ) : (
+                  <span style={{ opacity: 0.7 }}>{revUploadsError || "—"}</span>
+                )}
+              </div>
+
               {revRow.adminNote ? (
                 <>
                   <div className="muted">Admin note</div>
@@ -1014,12 +1143,11 @@ export default function OnboardingQueue() {
               ) : null}
             </div>
 
-            {/* Documents */}
             <div style={{ borderTop: "1px solid rgba(255,255,255,.08)", paddingTop: 10 }}>
               <div style={{ fontWeight: 800, marginBottom: 8 }}>Documents</div>
 
               {docsLoading ? (
-                <div className="muted">Loading documents from Storage…</div>
+                <div className="muted">Loading documents…</div>
               ) : docsError ? (
                 <div
                   style={{
@@ -1034,7 +1162,7 @@ export default function OnboardingQueue() {
                   {docsError}
                   {storagePathUsed ? (
                     <div style={{ marginTop: 8, fontWeight: 600, opacity: 0.85 }}>
-                      Paths tried: <code style={{ opacity: 0.95 }}>{storagePathUsed}</code>
+                      Source checked: <code style={{ opacity: 0.95 }}>{storagePathUsed}</code>
                     </div>
                   ) : null}
                 </div>
@@ -1043,14 +1171,14 @@ export default function OnboardingQueue() {
                   No files found.
                   {storagePathUsed ? (
                     <div style={{ marginTop: 8 }}>
-                      Path used: <code>{storagePathUsed}</code>
+                      Source checked: <code>{storagePathUsed}</code>
                     </div>
                   ) : null}
                 </div>
               ) : (
                 <>
                   <div style={{ marginBottom: 10, opacity: 0.8 }}>
-                    Storage path: <code>{storagePathUsed}</code>
+                    Source: <code>{storagePathUsed}</code>
                   </div>
 
                   <div
@@ -1060,9 +1188,9 @@ export default function OnboardingQueue() {
                       gap: 10,
                     }}
                   >
-                    {docs.map((a) => (
+                    {docs.map((a, idx) => (
                       <a
-                        key={a.url}
+                        key={a.id || a.url || idx}
                         href={a.url}
                         target="_blank"
                         rel="noreferrer"
@@ -1083,9 +1211,21 @@ export default function OnboardingQueue() {
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                           }}
+                          title={a.name}
                         >
                           {a.name}
                         </div>
+
+                        <div
+                          style={{
+                            fontSize: 11,
+                            opacity: 0.55,
+                            marginBottom: 8,
+                          }}
+                        >
+                          {a.source === "firestore" ? "Firestore file record" : "Storage file"}
+                        </div>
+
                         <div
                           style={{
                             height: 120,
@@ -1097,6 +1237,12 @@ export default function OnboardingQueue() {
                         >
                           <span style={{ fontSize: 12, opacity: 0.7 }}>Open</span>
                         </div>
+
+                        {a.uploadedAt ? (
+                          <div style={{ marginTop: 8, fontSize: 11, opacity: 0.55 }}>
+                            {displayDate(a.uploadedAt)}
+                          </div>
+                        ) : null}
                       </a>
                     ))}
                   </div>
@@ -1104,7 +1250,6 @@ export default function OnboardingQueue() {
               )}
             </div>
 
-            {/* Actions */}
             <div
               style={{
                 display: "flex",
@@ -1169,98 +1314,202 @@ export default function OnboardingQueue() {
         )}
       </Modal>
 
-      {/* ── More info inline modal ── */}
-      <Modal open={moreInfoOpen} onClose={() => { setMoreInfoOpen(false); setMoreInfoRow(null); }} title="Request more information">
+      <Modal
+        open={moreInfoOpen}
+        onClose={() => {
+          setMoreInfoOpen(false);
+          setMoreInfoRow(null);
+        }}
+        title="Request more information"
+      >
         <div style={{ display: "grid", gap: 14 }}>
           <div>
-            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+            <label
+              style={{
+                display: "block",
+                fontWeight: 700,
+                marginBottom: 6,
+                fontSize: 13,
+                opacity: 0.7,
+              }}
+            >
               Message to host/partner
             </label>
             <textarea
               value={moreInfoNote}
               onChange={(e) => setMoreInfoNote(e.target.value)}
               rows={3}
-              style={{ width: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "10px 12px", fontSize: 13, resize: "vertical" }}
+              style={{
+                width: "100%",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,.12)",
+                background: "rgba(255,255,255,.05)",
+                color: "#dfe3ea",
+                padding: "10px 12px",
+                fontSize: 13,
+                resize: "vertical",
+              }}
             />
           </div>
           <div>
-            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+            <label
+              style={{
+                display: "block",
+                fontWeight: 700,
+                marginBottom: 6,
+                fontSize: 13,
+                opacity: 0.7,
+              }}
+            >
               Required documents (comma-separated)
             </label>
             <input
               value={moreInfoDocs}
               onChange={(e) => setMoreInfoDocs(e.target.value)}
               placeholder="e.g. passport, utility_bill"
-              style={{ width: "100%", height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "0 12px", fontSize: 13 }}
+              style={{
+                width: "100%",
+                height: 42,
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,.12)",
+                background: "rgba(255,255,255,.05)",
+                color: "#dfe3ea",
+                padding: "0 12px",
+                fontSize: 13,
+              }}
             />
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <LuxeBtn kind="gold" onClick={submitMoreInfo} disabled={moreInfoBusy}>
               {moreInfoBusy ? "Sending…" : "Send request"}
             </LuxeBtn>
-            <LuxeBtn kind="slate" onClick={() => { setMoreInfoOpen(false); setMoreInfoRow(null); }}>
+            <LuxeBtn
+              kind="slate"
+              onClick={() => {
+                setMoreInfoOpen(false);
+                setMoreInfoRow(null);
+              }}
+            >
               Cancel
             </LuxeBtn>
           </div>
         </div>
       </Modal>
 
-      {/* ── Verify inline modal ── */}
-      <Modal open={verifyOpen} onClose={() => { setVerifyOpen(false); setVerifyRow(null); }} title="Grant verification badge">
+      <Modal
+        open={verifyOpen}
+        onClose={() => {
+          setVerifyOpen(false);
+          setVerifyRow(null);
+        }}
+        title="Grant verification badge"
+      >
         <div style={{ display: "grid", gap: 14 }}>
           <p style={{ fontSize: 13, opacity: 0.7 }}>
-            This grants the verified badge to the host/partner. Add an optional note for your records.
+            This grants the verified badge to the host/partner. Add an optional note for
+            your records.
           </p>
           <div>
-            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+            <label
+              style={{
+                display: "block",
+                fontWeight: 700,
+                marginBottom: 6,
+                fontSize: 13,
+                opacity: 0.7,
+              }}
+            >
               Verification note (optional)
             </label>
             <textarea
               value={verifyNote}
               onChange={(e) => setVerifyNote(e.target.value)}
               rows={2}
-              style={{ width: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "10px 12px", fontSize: 13, resize: "vertical" }}
+              style={{
+                width: "100%",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,.12)",
+                background: "rgba(255,255,255,.05)",
+                color: "#dfe3ea",
+                padding: "10px 12px",
+                fontSize: 13,
+                resize: "vertical",
+              }}
             />
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <LuxeBtn kind="emerald" onClick={submitVerify} disabled={verifyBusy}>
               {verifyBusy ? "Verifying…" : "Confirm verify ✅"}
             </LuxeBtn>
-            <LuxeBtn kind="slate" onClick={() => { setVerifyOpen(false); setVerifyRow(null); }}>
+            <LuxeBtn
+              kind="slate"
+              onClick={() => {
+                setVerifyOpen(false);
+                setVerifyRow(null);
+              }}
+            >
               Cancel
             </LuxeBtn>
           </div>
         </div>
       </Modal>
 
-      {/* ── Unverify confirm modal ── */}
-      <Modal open={unverifyOpen} onClose={() => { setUnverifyOpen(false); setUnverifyRow(null); }} title="Remove verification badge">
+      <Modal
+        open={unverifyOpen}
+        onClose={() => {
+          setUnverifyOpen(false);
+          setUnverifyRow(null);
+        }}
+        title="Remove verification badge"
+      >
         <div style={{ display: "grid", gap: 14 }}>
           <p style={{ fontSize: 13, color: "#fca5a5", fontWeight: 700 }}>
             This will remove the verified badge from this host/partner.
           </p>
           <div>
-            <label style={{ display: "block", fontWeight: 700, marginBottom: 6, fontSize: 13, opacity: 0.7 }}>
+            <label
+              style={{
+                display: "block",
+                fontWeight: 700,
+                marginBottom: 6,
+                fontSize: 13,
+                opacity: 0.7,
+              }}
+            >
               Reason (optional)
             </label>
             <textarea
               value={unverifyNote}
               onChange={(e) => setUnverifyNote(e.target.value)}
               rows={2}
-              style={{ width: "100%", borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.05)", color: "#dfe3ea", padding: "10px 12px", fontSize: 13, resize: "vertical" }}
+              style={{
+                width: "100%",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,.12)",
+                background: "rgba(255,255,255,.05)",
+                color: "#dfe3ea",
+                padding: "10px 12px",
+                fontSize: 13,
+                resize: "vertical",
+              }}
             />
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <LuxeBtn kind="ruby" onClick={submitUnverify} disabled={unverifyBusy}>
               {unverifyBusy ? "Removing…" : "Confirm remove"}
             </LuxeBtn>
-            <LuxeBtn kind="slate" onClick={() => { setUnverifyOpen(false); setUnverifyRow(null); }}>
+            <LuxeBtn
+              kind="slate"
+              onClick={() => {
+                setUnverifyOpen(false);
+                setUnverifyRow(null);
+              }}
+            >
               Cancel
             </LuxeBtn>
           </div>
         </div>
       </Modal>
-
     </div>
   );
 }

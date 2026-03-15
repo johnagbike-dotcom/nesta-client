@@ -242,6 +242,14 @@ service cloud.firestore {
       }
     }
 
+    // ───────────────── PROMO CODES ─────────────────
+    // Public read for counter display ("X of 50 spots remaining")
+    // Only admin can write — assignment is server-side only
+    match /promoCodes/{promoId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // ───────────────── DEFAULT DENY ─────────────────
     match /{document=**} {
       allow read, write: if false;

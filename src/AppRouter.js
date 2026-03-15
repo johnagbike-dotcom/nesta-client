@@ -3,6 +3,7 @@ import React, { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { initGA, trackPageView } from "./utils/analytics";
 import CookieConsentBanner from "./components/CookieConsentBanner";
+import NestaNgAIChat from "./components/NestaNgAIChat";
 
 import Header from "./components/Header";
 import Footer from "./components/Footer";
@@ -533,6 +534,7 @@ export default function AppRouter() {
 
             <Footer />
             <CookieConsentBanner />
+           <NestaNgAIChat />
           </ToastProvider>
         </BrowserRouter>
       </InboxProvider>
